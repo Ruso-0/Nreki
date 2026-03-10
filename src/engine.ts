@@ -70,6 +70,8 @@ export interface EngineConfig {
     ignorePaths?: string[];
     /** Path to WASM grammar files. */
     wasmDir?: string;
+    /** Enable semantic embeddings (Pro mode). Default: false (Lite mode). */
+    enableEmbeddings?: boolean;
 }
 
 // ─── Default config ──────────────────────────────────────────────────
@@ -141,6 +143,7 @@ export class TokenGuardEngine {
             extensions: config.extensions ?? DEFAULT_EXTENSIONS,
             ignorePaths: config.ignorePaths ?? DEFAULT_IGNORE,
             wasmDir: config.wasmDir ?? "",
+            enableEmbeddings: config.enableEmbeddings ?? false,
         };
 
         this.db = new TokenGuardDB(this.config.dbPath);
@@ -190,9 +193,16 @@ export class TokenGuardEngine {
     /**
      * Index a single file: parse AST → generate embeddings → store chunks.
      * Skips files whose SHA-256 hash hasn't changed (Merkle diffing).
+     *
+     * In Lite mode, stores chunks without embeddings (keyword search only).
+     * In Pro mode, generates embeddings for hybrid search.
      */
     async indexFile(filePath: string): Promise<ParseResult | null> {
-        await this.initializeEmbedder();
+        if (this.config.enableEmbeddings) {
+            await this.initializeEmbedder();
+        } else {
+            await this.initialize();
+        }
 
         // FIX 7: Check file size and extension before processing
         let stat: fs.Stats;
@@ -229,7 +239,7 @@ export class TokenGuardEngine {
         // Clear old chunks for this file
         this.db.clearChunks(filePath);
 
-        // Generate embeddings and store in batch
+        // Generate embeddings (or null placeholder) and store in batch
         const chunkData: Array<{
             path: string;
             shorthand: string;
@@ -241,7 +251,13 @@ export class TokenGuardEngine {
         }> = [];
 
         for (const chunk of result.chunks) {
-            const { embedding } = await this.embedder.embed(chunk.shorthand);
+            let embedding: Float32Array;
+            if (this.config.enableEmbeddings) {
+                ({ embedding } = await this.embedder.embed(chunk.shorthand));
+            } else {
+                // Lite mode: empty embedding placeholder
+                embedding = new Float32Array(0);
+            }
             chunkData.push({
                 path: filePath,
                 shorthand: chunk.shorthand,
@@ -272,7 +288,11 @@ export class TokenGuardEngine {
         skipped: number;
         errors: number;
     }> {
-        await this.initializeEmbedder();
+        if (this.config.enableEmbeddings) {
+            await this.initializeEmbedder();
+        } else {
+            await this.initialize();
+        }
 
         let indexed = 0;
         let skipped = 0;
@@ -357,10 +377,28 @@ export class TokenGuardEngine {
      * This is the main search API — replaces grep/glob with a query
      * that understands code semantics. Returns ranked results with
      * shorthand signatures and full source code.
+     *
+     * In Lite mode (enableEmbeddings=false), uses BM25 keyword-only search.
+     * In Pro mode (enableEmbeddings=true), uses hybrid semantic + BM25 with RRF fusion.
      */
     async search(query: string, limit: number = 10): Promise<SearchResult[]> {
-        await this.initializeEmbedder();
+        if (!this.config.enableEmbeddings) {
+            // Lite mode: BM25 keyword-only search
+            await this.initialize();
+            const results = this.db.searchKeywordOnly(query, limit);
+            return results.map((r: HybridSearchResult) => ({
+                path: r.path,
+                shorthand: r.shorthand,
+                rawCode: r.raw_code,
+                nodeType: r.node_type,
+                startLine: r.start_line,
+                endLine: r.end_line,
+                score: r.rrf_score,
+            }));
+        }
 
+        // Pro mode: hybrid semantic + BM25
+        await this.initializeEmbedder();
         const { embedding } = await this.embedder.embed(query);
         const results = this.db.searchHybrid(embedding, query, limit);
 
@@ -478,7 +516,8 @@ export class TokenGuardEngine {
 
     /** Generate or return cached static repo map for prompt cache optimization. */
     async getRepoMap(forceRefresh: boolean = false): Promise<{ map: RepoMap; text: string; fromCache: boolean }> {
-        await this.initializeEmbedder();
+        // Repo map only needs parser (tree-sitter), not embedder
+        await this.initialize();
         const root = this.config.watchPaths[0] || process.cwd();
         return getOrGenerateRepoMap(root, this.parser, forceRefresh);
     }

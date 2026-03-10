@@ -2,6 +2,47 @@
 
 All notable changes to TokenGuard will be documented in this file.
 
+## [3.0.0] - 2026-03-10
+
+### Headline
+TokenGuard v3.0 — Architecture overhaul. 16 tools collapsed to 3 routers. Invisible middleware. Lite/Pro mode. 81% reduction in tool definition overhead.
+
+### BREAKING CHANGES
+- **16 tools → 3 router tools**: All MCP tool names have changed. LLMs must use the new `tg_navigate`, `tg_code`, `tg_guard` tool names with `action` parameters.
+- **`tg_validate` removed from MCP**: Now runs automatically as invisible middleware inside `tg_code action:"edit"`. No manual calls needed.
+- **`tg_circuit_breaker` removed from MCP**: Now runs as passive middleware monitoring all tool calls. Auto-resets after 60s inactivity or when a different action is called.
+- **`tg_audit` removed from MCP**: Moved to CLI only. Use `npx @ruso-0/tokenguard --audit`.
+
+### Added — Router Pattern
+- **`tg_navigate`** — Unified navigation tool replacing `tg_search`, `tg_def`, `tg_refs`, `tg_outline`, `tg_map`. Actions: `search`, `definition`, `references`, `outline`, `map`.
+- **`tg_code`** — Unified code tool replacing `tg_read`, `tg_compress`, `tg_semantic_edit`, `tg_undo`, `tg_terminal`. Actions: `read`, `compress`, `edit`, `undo`, `terminal`.
+- **`tg_guard`** — Unified safety tool replacing `tg_pin`, `tg_status`, `tg_session_report`. Actions: `pin`, `unpin`, `status`, `report`.
+- `src/router.ts` — Central dispatcher mapping `{tool, action}` to handler functions (~700 lines).
+
+### Added — Invisible Middleware
+- `src/middleware/validator.ts` — AST validation wrapper. Validates code via tree-sitter before disk writes inside `tg_code action:"edit"`.
+- `src/middleware/circuit-breaker.ts` — Passive circuit breaker. Wraps all handlers, records tool call results, trips on destructive patterns, auto-resets on action diversity or 60s inactivity.
+
+### Added — Lite / Pro Mode
+- **Lite mode (default)**: Instant startup (~100ms). BM25 keyword-only search. No ONNX model dependency.
+- **Pro mode (`--enable-embeddings`)**: Hybrid semantic + BM25 search with RRF fusion. Requires ONNX Runtime for jina-v2-small embeddings.
+- `searchKeywordOnly()` method added to `TokenGuardDB` for Lite mode BM25 search.
+- Engine methods (`indexFile`, `indexDirectory`, `search`, `getRepoMap`) now branch based on `enableEmbeddings` config.
+
+### Changed
+- **`src/index.ts`**: Rewritten from ~1,479 lines (16 tool registrations) to ~180 lines (3 router registrations).
+- **Tool definition overhead**: ~3,520 tokens → ~660 tokens (81% reduction).
+- **Test count**: 305 → 361 tests across 14 test suites.
+- **`package.json`**: Version bumped to 3.0.0. Description updated.
+- **`README.md`**: Complete rewrite for v3.0 architecture.
+
+### Added — Tests
+- `tests/router.test.ts` — 30 tests for router dispatch correctness across all 14 `{tool, action}` pairs.
+- `tests/middleware.test.ts` — 13 tests for validator and circuit breaker middleware behavior.
+- `tests/backward-compat.test.ts` — 13 tests verifying all 16 original tool behaviors work through the new 3-tool API.
+
+---
+
 ## [2.1.2] - 2026-03-10
 
 ### Headline

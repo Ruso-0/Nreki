@@ -899,6 +899,44 @@ export class TokenGuardDB {
         return results;
     }
 
+    /**
+     * Keyword-only search using BM25 (for Lite mode — no embeddings needed).
+     * Uses the in-memory KeywordIndex with path boosting.
+     */
+    searchKeywordOnly(
+        queryText: string,
+        limit: number = 10,
+    ): HybridSearchResult[] {
+        const kwResults = this.kwIndex.search(queryText, limit * 2);
+        const results: HybridSearchResult[] = [];
+
+        for (const { rowid, score } of kwResults) {
+            const stmt = this.db.prepare(
+                `SELECT id, path, shorthand, raw_code, node_type, start_line, end_line
+         FROM chunks WHERE id = ?`,
+            );
+            stmt.bind([rowid]);
+            if (stmt.step()) {
+                const row = stmt.getAsObject() as Record<string, number | string>;
+                const boostedScore = score * this.getPathBoost(row.path as string);
+                results.push({
+                    id: row.id as number,
+                    path: row.path as string,
+                    shorthand: row.shorthand as string,
+                    raw_code: row.raw_code as string,
+                    node_type: row.node_type as string,
+                    start_line: row.start_line as number,
+                    end_line: row.end_line as number,
+                    rrf_score: boostedScore,
+                });
+            }
+            stmt.free();
+        }
+
+        results.sort((a, b) => b.rrf_score - a.rrf_score);
+        return results.slice(0, limit);
+    }
+
     searchVector(
         queryEmbedding: Float32Array,
         limit: number = 10
