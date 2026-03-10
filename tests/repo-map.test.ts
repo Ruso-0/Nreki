@@ -17,6 +17,10 @@ import os from "os";
 import { ASTParser } from "../src/parser.js";
 import { generateRepoMap, repoMapToText } from "../src/repo-map.js";
 
+/** Same locale-independent comparator used in repo-map.ts */
+const stableCompare = (a: string, b: string) =>
+    a.localeCompare(b, "en", { numeric: true });
+
 // ─── Test Fixtures ──────────────────────────────────────────────────
 
 const testDir = path.join(os.tmpdir(), `tg-repomap-test-${Date.now()}`);
@@ -124,7 +128,7 @@ describe("Repo Map Generation", () => {
 
         // Entries must be sorted alphabetically by file path
         const paths = map1.entries.map(e => e.filePath);
-        const sorted = [...paths].sort();
+        const sorted = [...paths].sort(stableCompare);
         expect(paths).toEqual(sorted);
     });
 
@@ -262,7 +266,7 @@ describe("Repo Map Text Rendering", () => {
 
         for (let i = 1; i < map.entries.length; i++) {
             expect(
-                map.entries[i - 1].filePath.localeCompare(map.entries[i].filePath)
+                stableCompare(map.entries[i - 1].filePath, map.entries[i].filePath)
             ).toBeLessThan(0);
         }
     });
@@ -271,7 +275,7 @@ describe("Repo Map Text Rendering", () => {
         const map = await generateRepoMap(testDir, parser);
 
         for (const entry of map.entries) {
-            const sorted = [...entry.exports].sort();
+            const sorted = [...entry.exports].sort(stableCompare);
             expect(entry.exports).toEqual(sorted);
         }
     });
@@ -280,8 +284,41 @@ describe("Repo Map Text Rendering", () => {
         const map = await generateRepoMap(testDir, parser);
 
         for (const entry of map.entries) {
-            const sorted = [...entry.imports].sort();
+            const sorted = [...entry.imports].sort(stableCompare);
             expect(entry.imports).toEqual(sorted);
         }
+    });
+
+    it("should sort signatures alphabetically within each entry", async () => {
+        const map = await generateRepoMap(testDir, parser);
+
+        for (const entry of map.entries) {
+            const sorted = [...entry.signatures].sort(stableCompare);
+            expect(entry.signatures).toEqual(sorted);
+        }
+    });
+
+    it("should produce byte-identical output on repeated calls", async () => {
+        const map1 = await generateRepoMap(testDir, parser);
+        const text1 = repoMapToText(map1);
+
+        // Small delay to ensure any time-dependent behavior shows
+        await new Promise(r => setTimeout(r, 100));
+
+        const map2 = await generateRepoMap(testDir, parser);
+        const text2 = repoMapToText(map2);
+
+        expect(text1).toBe(text2); // BYTE IDENTICAL
+    });
+
+    it("should not use locale-dependent number formatting", async () => {
+        const map = await generateRepoMap(testDir, parser);
+        const text = repoMapToText(map);
+
+        // The header should use plain numbers, not locale-formatted (e.g., no commas in "1,234")
+        const headerMatch = text.match(/=== Repo Map \((\d+) files, (\d+) lines\) ===/);
+        expect(headerMatch).not.toBeNull();
+        expect(Number(headerMatch![1])).toBe(map.totalFiles);
+        expect(Number(headerMatch![2])).toBe(map.totalLines);
     });
 });

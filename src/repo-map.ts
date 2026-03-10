@@ -47,6 +47,10 @@ const IGNORE_DIRS = new Set([
 
 const STRIP_KEYWORD = /^(?:export|default|declare|abstract|public|private|protected|static|readonly|async|function|class|interface|type|enum|const|let|var|def|func)\s+/;
 
+/** Locale-independent comparator for deterministic sorting. */
+const stableCompare = (a: string, b: string) =>
+    a.localeCompare(b, "en", { numeric: true });
+
 // ─── Extraction Helpers ─────────────────────────────────────────────
 
 /** Extract signature from raw AST code (everything before opening `{` or `:` for Python). */
@@ -123,7 +127,7 @@ function extractExports(content: string, ext: string): string[] {
         }
     }
 
-    return [...exports].sort();
+    return [...exports].sort(stableCompare);
 }
 
 /** Extract import module names from file content. */
@@ -163,7 +167,7 @@ function extractImports(content: string, ext: string): string[] {
         }
     }
 
-    return [...imports].sort();
+    return [...imports].sort(stableCompare);
 }
 
 /** Shorten an import path for display: strip leading ./ and trailing .js/.ts */
@@ -183,6 +187,9 @@ function walkFiles(dirPath: string): string[] {
         } catch {
             return;
         }
+
+        // Sort directory entries for deterministic walk order
+        entries.sort((a, b) => stableCompare(a.name, b.name));
 
         for (const entry of entries) {
             const fullPath = path.join(dir, entry.name);
@@ -209,7 +216,7 @@ function walkFiles(dirPath: string): string[] {
     };
 
     walk(dirPath);
-    return files.sort();
+    return files.sort(stableCompare);
 }
 
 // ─── Repo Map Generation ────────────────────────────────────────────
@@ -255,12 +262,15 @@ export async function generateRepoMap(
             }
         }
 
+        // Sort signatures alphabetically for deterministic output
+        signatures.sort(stableCompare);
+
         const relPath = path.relative(projectRoot, filePath).replace(/\\/g, "/");
         entries.push({ filePath: relPath, exports, signatures, imports, lineCount });
     }
 
-    // Sort by file path for deterministic output
-    entries.sort((a, b) => a.filePath.localeCompare(b.filePath));
+    // Sort by file path for deterministic output (locale-independent)
+    entries.sort((a, b) => stableCompare(a.filePath, b.filePath));
 
     return {
         version: "1.0.0",
@@ -276,7 +286,7 @@ export async function generateRepoMap(
 export function repoMapToText(map: RepoMap): string {
     const lines: string[] = [];
 
-    lines.push(`=== Repo Map (${map.totalFiles} files, ${map.totalLines.toLocaleString()} lines) ===`);
+    lines.push(`=== Repo Map (${map.totalFiles} files, ${map.totalLines} lines) ===`);
     lines.push("");
 
     for (const entry of map.entries) {
