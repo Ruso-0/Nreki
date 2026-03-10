@@ -116,12 +116,13 @@ export class TokenGuardEngine {
     // ─── Initialization ────────────────────────────────────────────
 
     /**
-     * Initialize all subsystems: Tree-sitter WASM + embedding model.
+     * Initialize all subsystems: SQLite WASM + Tree-sitter WASM + embedding model.
      * Call this once before using search or indexing.
      */
     async initialize(): Promise<void> {
         if (this.initialized) return;
 
+        await this.db.initialize();
         await this.parser.initialize();
         await this.embedder.initialize();
         this.initialized = true;
@@ -224,6 +225,9 @@ export class TokenGuardEngine {
                 errors++;
             }
         }
+
+        // Persist to disk after batch indexing
+        this.db.save();
 
         return { indexed, skipped, errors };
     }

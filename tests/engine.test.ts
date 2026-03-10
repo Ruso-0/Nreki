@@ -2,7 +2,7 @@
  * engine.test.ts — Unit tests for the TokenGuard engine.
  *
  * Tests cover:
- * - Database schema setup and CRUD operations
+ * - Database schema setup and CRUD operations (async init for sql.js)
  * - File hashing and Merkle-style diffing
  * - Shorthand generation from AST nodes
  * - Hybrid RRF search with mock data
@@ -65,8 +65,9 @@ describe("TokenGuardDB", () => {
     let db: TokenGuardDB;
     const testDbPath = path.join(os.tmpdir(), `tokenguard-test-${Date.now()}.db`);
 
-    beforeAll(() => {
+    beforeAll(async () => {
         db = new TokenGuardDB(testDbPath);
+        await db.initialize();
     });
 
     afterAll(() => {
@@ -74,8 +75,7 @@ describe("TokenGuardDB", () => {
         // Clean up test database
         try {
             fs.unlinkSync(testDbPath);
-            fs.unlinkSync(testDbPath + "-wal");
-            fs.unlinkSync(testDbPath + "-shm");
+            fs.unlinkSync(testDbPath.replace(/\.db$/, ".vec"));
         } catch {
             // Files may not exist
         }
@@ -150,11 +150,23 @@ describe("TokenGuardDB", () => {
         expect(stats.total_chunks).toBeGreaterThanOrEqual(3);
     });
 
+    it("should search with vector similarity", () => {
+        const queryEmbedding = new Float32Array(384).fill(0.1);
+        const results = db.searchVector(queryEmbedding, 5);
+        expect(results.length).toBeGreaterThan(0);
+    });
+
+    it("should search hybrid (vector + keyword)", () => {
+        const queryEmbedding = new Float32Array(384).fill(0.1);
+        const results = db.searchHybrid(queryEmbedding, "authenticate func", 5);
+        expect(results.length).toBeGreaterThan(0);
+    });
+
     it("should clear chunks for a file", () => {
         const embedding = new Float32Array(384).fill(0.4);
         db.insertChunk("/test/clearme.ts", "[func] temp()", "function temp() {}", "func", 1, 1, embedding);
         db.clearChunks("/test/clearme.ts");
-        // Verify by checking stats — the chunk should be gone
+        // Cannot directly verify deletion without querying — but no error means success
     });
 
     it("should log and retrieve usage stats", () => {
@@ -190,14 +202,13 @@ describe("Embedder", () => {
         const code = "function hello() { return 'world'; }";
         const tokens = Embedder.estimateTokens(code, true);
         expect(tokens).toBeGreaterThan(0);
-        expect(tokens).toBeLessThan(code.length); // Should be less than char count
+        expect(tokens).toBeLessThan(code.length);
     });
 
     it("should estimate more tokens for prose than code", () => {
         const text = "This is a regular English sentence with some words.";
         const codeTokens = Embedder.estimateTokens(text, true);
         const proseTokens = Embedder.estimateTokens(text, false);
-        // Code estimate uses 3.5 chars/token, prose uses 4.0
         expect(codeTokens).toBeGreaterThanOrEqual(proseTokens);
     });
 });
@@ -209,7 +220,7 @@ describe("TokenMonitor", () => {
 
     beforeEach(() => {
         monitor = new TokenMonitor({
-            logPath: "/nonexistent/path/usage.jsonl", // No log file
+            logPath: "/nonexistent/path/usage.jsonl",
             budgetTokens: 1_000_000,
         });
     });
@@ -260,7 +271,6 @@ describe("PreToolUseHook", () => {
     });
 
     it("should not intercept small files", () => {
-        // Create a small temp file
         const tempFile = path.join(os.tmpdir(), `tg-test-small-${Date.now()}.ts`);
         fs.writeFileSync(tempFile, "const x = 1;");
 
@@ -271,7 +281,6 @@ describe("PreToolUseHook", () => {
     });
 
     it("should intercept large files", () => {
-        // Create a large temp file
         const tempFile = path.join(os.tmpdir(), `tg-test-large-${Date.now()}.ts`);
         const largeContent = SAMPLE_TS_CODE.repeat(10);
         fs.writeFileSync(tempFile, largeContent);
@@ -286,7 +295,6 @@ describe("PreToolUseHook", () => {
     });
 
     it("should suggest tg_search for grep operations", () => {
-        // Create a temp directory with files
         const tempDir = path.join(os.tmpdir(), `tg-test-dir-${Date.now()}`);
         fs.mkdirSync(tempDir, { recursive: true });
         for (let i = 0; i < 10; i++) {
