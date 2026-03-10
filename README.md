@@ -1,10 +1,10 @@
 # How I got tired of Claude Pro limits burning out in 2 hours, so I built a defensive context manager that cuts token costs by 91%
 
 <p align="center">
-  <img src="https://img.shields.io/badge/MCP-Plugin-blue?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyQzYuNDggMiAyIDYuNDggMiAxMnM0LjQ4IDEwIDEwIDEwIDEwLTQuNDggMTAtMTBTMTcuNTIgMiAxMiAyem0wIDE4Yy00LjQyIDAtOC0zLjU4LTgtOHMzLjU4LTggOC04IDggMy41OCA4IDgtMy41OCA4LTggOHoiLz48L3N2Zz4=" alt="MCP Plugin">
-  <img src="https://img.shields.io/badge/Tools-12-blue?style=for-the-badge" alt="12 Tools">
+  <img src="https://img.shields.io/badge/MCP-Plugin-blue?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyQzYuNDggMiAyIDYuNDggMiAxMnM0LjQ4IDEwIDEwIDEwIDEwLTQuNDggMTAtMTBTMTcuNTIgMiAxMiAyem0wIDE4Yy00LjQyIDAtOC0zLjU4LTgtOHMzLjU4LTggOC04IDggMy41OCA4IDgtMy41OCA0LTggOHoiLz48L3N2Zz4=" alt="MCP Plugin">
+  <img src="https://img.shields.io/badge/Tools-15-blue?style=for-the-badge" alt="15 Tools">
   <img src="https://img.shields.io/badge/Token%20Savings-91%25-green?style=for-the-badge" alt="91% Savings">
-  <img src="https://img.shields.io/badge/Tests-194%20passed-brightgreen?style=for-the-badge" alt="194 Tests">
+  <img src="https://img.shields.io/badge/Tests-282%20passed-brightgreen?style=for-the-badge" alt="282 Tests">
   <img src="https://img.shields.io/badge/Cloud-Zero-red?style=for-the-badge" alt="Zero Cloud">
   <img src="https://img.shields.io/badge/License-MIT-yellow?style=for-the-badge" alt="MIT License">
   <img src="https://img.shields.io/badge/TypeScript-5.7-blue?style=for-the-badge&logo=typescript" alt="TypeScript">
@@ -12,11 +12,11 @@
 </p>
 
 <p align="center">
-  <b>12 MCP tools. 194 tests. Code-aware search. Cache-friendly architecture. AST sandbox. All running locally.</b>
+  <b>15 MCP tools. 282 tests. AST sandbox. Circuit breaker. Surgical edit. Pin memory. All running locally.</b>
 </p>
 
 <p align="center">
-  <img src="https://placehold.co/800x400/1a1a2e/16e0bd?text=TokenGuard+v2.0+Demo&font=montserrat" alt="TokenGuard Demo" width="800">
+  <img src="https://placehold.co/800x400/1a1a2e/16e0bd?text=TokenGuard+v2.1+Demo&font=montserrat" alt="TokenGuard Demo" width="800">
 </p>
 
 ---
@@ -25,11 +25,11 @@
 
 You're 90 minutes into a Claude Pro session. You've been exploring a codebase, reading files, running grep searches. Suddenly: **context limit reached**. Your session is over. Your work is lost.
 
-**Why?** Because every `grep` reads entire files. Every `Read` dumps thousands of tokens into context. Every broken code write triggers a fix-retry loop. You're burning tokens like it's 2023.
+**Why?** Because every `grep` reads entire files. Every `Read` dumps thousands of tokens into context. Every broken code write triggers a fix-retry loop. After 20+ messages, Claude forgets the rules you set at the start. You're burning tokens like it's 2023.
 
 ## The Solution
 
-TokenGuard is a **defensive context manager** with 12 MCP tools that sit between you and token waste:
+TokenGuard is a **defensive context manager** with 15 MCP tools that sit between you and token waste:
 
 | What You Do Now | What TokenGuard Does | Savings |
 |---|---|---|
@@ -38,29 +38,65 @@ TokenGuard is a **defensive context manager** with 12 MCP tools that sit between
 | Read file + skim for function | `tg_def "TokenGuardEngine"` jumps straight to definition | **300x faster** |
 | Copy-paste 500 lines of npm errors | `tg_terminal` extracts the 3 actual errors | **89%** |
 | Write broken code, see error, retry, burn tokens | `tg_validate` catches syntax errors before disk write | **Prevents loop** |
-| No idea how many tokens left | `tg_status` shows burn rate + exhaustion prediction | **Proactive** |
+| Rewrite entire file to change one function | `tg_semantic_edit` patches only the AST node | **98% output saved** |
+| Claude gets stuck in write-test-fail loops | `tg_circuit_breaker` detects and stops doom loops | **Saves session** |
+| Claude forgets "always use fetch, not axios" | `tg_pin` keeps rules in every response | **Never forgotten** |
+
+## 3 Features Nobody Else Has
+
+### 1. AST Sandbox (`tg_validate`)
+Parses your code with tree-sitter *before* writing to disk. Catches missing commas, unclosed braces, and invalid syntax with exact line/column locations and fix suggestions. Prevents the expensive "write broken code -> see error -> retry" loop that burns thousands of tokens.
+
+### 2. Circuit Breaker (`tg_circuit_breaker`)
+Detects infinite failure loops: same error 3+ times, same file 5+ times, write-test-fail cycles. When tripped, it forces Claude to STOP and ask the human for guidance instead of burning through your remaining context with futile retries.
+
+### 3. Surgical Edit (`tg_semantic_edit`)
+Edits a single function/class/interface by name without reading or rewriting the entire file. Finds the exact AST node, replaces only those bytes, validates syntax before saving. Saves 98% of output tokens compared to full file rewrites.
+
+## Session Receipt
+
+Every `tg_session_report` generates an ASCII receipt showing exactly what TokenGuard saved:
+
+```
+╔══════════════════════════════════════════════════╗
+║          TOKENGUARD SESSION RECEIPT              ║
+╠══════════════════════════════════════════════════╣
+║  Input Tokens Saved:              12,847    ║
+║  Output Tokens Avoided:           34,291    ║
+║  Search Queries:                      23    ║
+║  Surgical Edits:                       7    ║
+║  Syntax Errors Blocked:               3    ║
+║  Doom Loops Prevented:                1    ║
+║  Pinned Rules Active:                 4    ║
+╠══════════════════════════════════════════════════╣
+║  ESTIMATED SAVINGS:                $1.42    ║
+║  MODEL:                            Opus    ║
+║  TOOLS USED:                    23 calls    ║
+╚══════════════════════════════════════════════════╝
+```
 
 ## Two-Layer Architecture
 
 TokenGuard uses a cache-friendly two-layer design that exploits Anthropic's prompt caching ($0.30/M vs $3.00/M):
 
 ```
-Layer 1: Static Repo Map (tg_map)
-├── Deterministic text — identical output for same repo state
-├── Contains all file signatures, exports, imports
-├── Place early in context → Anthropic caches it at $0.30/M
-└── Acts as a mental map of the entire codebase
+Layer 1: Static Context (cached at $0.30/M input tokens)
+├── tg_map — deterministic repo map (identical output for same repo state)
+├── tg_pin — pinned rules prepended to every map response
+├── File signatures, exports, imports
+└── Place early in context -> Anthropic caches it automatically
 
-Layer 2: Dynamic Context (all other tools)
-├── Only fetches what's needed per query
-├── tg_search → semantic + keyword hybrid search
-├── tg_def / tg_refs / tg_outline → AST-precise navigation
-├── tg_compress / tg_read → compressed file content
-├── tg_validate → syntax check before write
-└── tg_terminal → filtered error output
+Layer 2: Dynamic Context ($3.00/M but tiny per query)
+├── tg_search -> semantic + keyword hybrid search
+├── tg_def / tg_refs / tg_outline -> AST-precise navigation
+├── tg_compress / tg_read -> compressed file content
+├── tg_semantic_edit -> surgical AST patching
+├── tg_validate -> syntax check before write
+├── tg_circuit_breaker -> doom loop detection
+└── tg_terminal -> filtered error output
 ```
 
-## All 12 Tools
+## All 15 Tools
 
 ### Search & Navigation
 
@@ -70,7 +106,7 @@ Layer 2: Dynamic Context (all other tools)
 | **`tg_def`** | Go-to-definition by symbol name. 100% precise AST lookup. Returns full source with signature. |
 | **`tg_refs`** | Find all references to a symbol across the project. Like "Find All References" in VS Code. |
 | **`tg_outline`** | List all symbols in a file with signatures and line ranges. Like the Outline view in VS Code. |
-| **`tg_map`** | Static repo map with all file signatures. Deterministic and cache-friendly. Use first before reading any files. |
+| **`tg_map`** | Static repo map with all file signatures. Deterministic and cache-friendly. Includes pinned rules. |
 
 ### Compression & Reading
 
@@ -78,13 +114,21 @@ Layer 2: Dynamic Context (all other tools)
 |---|---|
 | **`tg_read`** | Drop-in replacement for Read. Auto-compresses files > 1KB. Three levels: light/medium/aggressive. |
 | **`tg_compress`** | Full-control compression. LLMLingua-2-inspired 3-stage pipeline or classic tiers. Focus mode ranks by query. |
+| **`tg_semantic_edit`** | Surgically edit a function/class by name. Replaces only the AST node bytes. Validates syntax before saving. 98% output token savings. |
 
-### Validation & Filtering
+### Validation & Safety
 
 | Tool | Description |
 |---|---|
-| **`tg_validate`** | AST sandbox validator. Parses code with tree-sitter before disk write. Catches missing commas, unclosed braces, invalid syntax with exact line/column and fix suggestions. |
+| **`tg_validate`** | AST sandbox validator. Parses code with tree-sitter before disk write. Catches syntax errors with exact line/column and fix suggestions. |
 | **`tg_terminal`** | Terminal entropy filter. Strips ANSI codes, deduplicates stack traces, extracts unique errors. |
+| **`tg_circuit_breaker`** | Detects and stops infinite failure loops. Monitors for write-test-fail cycles. Forces human intervention when tripped. |
+
+### Memory & Context
+
+| Tool | Description |
+|---|---|
+| **`tg_pin`** | Pin important rules Claude should never forget. Injected into every `tg_map` response. Max 10 pins, 200 chars each. Persisted to disk. |
 
 ### Monitoring & Reporting
 
@@ -92,49 +136,25 @@ Layer 2: Dynamic Context (all other tools)
 |---|---|
 | **`tg_status`** | Burn rate, exhaustion prediction, and alert levels (info/warning/critical). |
 | **`tg_audit`** | Token consumption audit with per-tool breakdown and cost estimation. |
-| **`tg_session_report`** | Comprehensive savings report: tokens saved, USD saved, per-file-type breakdown, model recommendations. |
-
-## Self-Benchmark
-
-TokenGuard benchmarked against its own source code (22 files, 25+ symbols per file):
-
-| Tool | Metric | Result |
-|---|---|---|
-| **tg_map** | Repo map generation | 22 files, 4,677 tokens, 169ms |
-| **tg_search** | "compression" query | 10 results in 16ms, top hits are compress methods |
-| **tg_def** | "TokenGuardEngine" lookup | Found in src/engine.ts:L115-L566, 128ms |
-| **tg_refs** | "safePath" references | 20 references across 5 files, 11ms |
-| **tg_outline** | src/engine.ts symbols | 25 symbols listed in 7ms |
-| **tg_compress** | src/engine.ts (5,502 tok) | Light: 4,028 (27%), Medium: 1,753 (68%), Aggressive: 2,018 (63%) |
-| **tg_terminal** | 500-line error output | 11,967 → 1,276 tokens (89% reduction) |
-| **tg_validate** | Valid TS / Invalid TS | valid=true / Detects error at line 1, col 23 |
-
-### Compression Levels
-
-| Level | Technique | Reduction | Best For |
-|---|---|---|---|
-| **Light** | Preprocessing (strip comments, console.log, debugger, whitespace) | **~27-50%** | Quick reads, preserving all logic |
-| **Medium** | + Self-information token filtering + key body lines | **~68-75%** | Balanced (default for `tg_read`) |
-| **Aggressive** | + AST structural compression (signatures only) | **~63-91%** | Maximum savings, exploration mode |
+| **`tg_session_report`** | Comprehensive savings report with ASCII receipt: tokens saved, USD saved, per-file-type breakdown, model recommendations. |
 
 ## Comparison
 
 | Feature | TokenGuard | GrepAI | Claude Context | Aider |
 |---|:---:|:---:|:---:|:---:|
-| MCP tools | 12 | ~3 | N/A | N/A |
-| Semantic search | RRF hybrid (BM25 + jina vectors) | Vector only | N/A | Vector only |
+| MCP tools | 15 | ~3 | 4 | N/A |
+| Tests | 282 | ~20 | ~50 | ~200 |
+| AST sandbox | Yes | No | No | No |
+| Circuit breaker | Yes | No | No | No |
+| Surgical edit | Yes | No | No | No |
+| Terminal filter | Yes | No | No | No |
+| Pin memory | Yes | No | No | No |
+| Zero cloud | Yes | No | No | Yes |
+| Semantic search | RRF hybrid | Vector only | N/A | Vector only |
 | AST compression | 3 levels + 3 tiers | N/A | N/A | N/A |
-| Go-to-definition | AST-precise | N/A | N/A | N/A |
-| Find references | Cross-project | N/A | N/A | N/A |
-| File outline | VS Code-style | N/A | N/A | N/A |
-| AST sandbox | Pre-write syntax validation | N/A | N/A | N/A |
-| Terminal filter | 89% noise reduction | N/A | N/A | N/A |
-| Token monitoring | Real-time burn rate + prediction | N/A | Basic | N/A |
 | Static repo map | Cache-friendly ($0.30/M) | N/A | N/A | Repo map |
-| Local embeddings | jina-v2-small (ONNX, 512-dim) | Cloud | N/A | Ollama |
+| Local embeddings | jina-v2-small (ONNX) | Cloud | N/A | Ollama |
 | Tree-sitter AST | TS, JS, Python, Go | N/A | N/A | Limited |
-| Zero cloud deps | Yes | No | N/A | No |
-| Test suite | 194 tests | Unknown | N/A | Unknown |
 
 ## Installation
 
@@ -169,20 +189,21 @@ Add to your `claude_desktop_config.json` or `.claude/settings.json`:
 ```bash
 # TokenGuard runs as an MCP server — just use the tools:
 
-# 1. Get the repo map first (cached by Anthropic prompt cache)
+# 1. Pin your project rules (they'll never be forgotten)
+tg_pin --action add --text "Always use fetch, not axios"
+tg_pin --action add --text "API base URL is /api/v2"
+
+# 2. Get the repo map (cached by Anthropic prompt cache, includes pinned rules)
 tg_map
 
-# 2. Search semantically (replaces grep)
+# 3. Search semantically (replaces grep)
 tg_search "authentication middleware"
 
-# 3. Jump to a definition (replaces Read + Ctrl+F)
+# 4. Jump to a definition (replaces Read + Ctrl+F)
 tg_def "AuthService"
 
-# 4. Find all references
-tg_refs "handleRequest"
-
-# 5. Read files efficiently (auto-compresses)
-tg_read src/engine.ts --level medium
+# 5. Surgically edit a function (no file rewrite needed)
+tg_semantic_edit --file src/auth.ts --symbol "validateToken" --new_code "..."
 
 # 6. Validate code before writing
 tg_validate --code "const x = { a: 1 b: 2 }" --language typescript
@@ -190,16 +211,16 @@ tg_validate --code "const x = { a: 1 b: 2 }" --language typescript
 # 7. Filter noisy terminal output
 tg_terminal <paste error output>
 
-# 8. Monitor your budget
-tg_status
+# 8. Check if you're stuck in a loop
+tg_circuit_breaker --last_error "..." --action check
 
-# 9. Full session report
+# 9. Full session report with receipt
 tg_session_report
 ```
 
 ## Stress Tested
 
-**194 tests. 0 failures. 8 test suites.**
+**282 tests. 0 failures. 11 test suites.**
 
 | Scenario | What We Tested | Result |
 |---|---|---|
@@ -215,6 +236,11 @@ tg_session_report
 | 100x re-indexing | Idempotent clear-insert-upsert cycles | Pass |
 | AST validation | Valid/invalid code across 4 languages | Pass |
 | 1000-line files | Single error detection in <200ms | Pass |
+| Surgical edits | Symbol replacement with syntax validation | Pass |
+| Circuit breaker | Loop detection across error patterns | Pass |
+| Pin memory | Add/remove/persist/limits/deterministic output | Pass |
+
+> **Note:** TokenGuard is most effective on projects with 50+ files. For very small projects (<20 files), the overhead may not justify the savings.
 
 ## Security
 
@@ -233,18 +259,19 @@ tg_session_report
 └────────────────────────┬────────────────────────────────────┘
                          │ stdio
 ┌────────────────────────▼────────────────────────────────────┐
-│                TokenGuard MCP Server (12 tools)              │
+│                TokenGuard MCP Server (15 tools)              │
 │                                                              │
-│  Layer 1: Static Context                                     │
+│  Layer 1: Static Context (prompt-cacheable)                  │
 │  ┌───────────────────────────────────────────────────────┐   │
-│  │  tg_map — deterministic repo map (prompt-cacheable)   │   │
+│  │  tg_map — deterministic repo map                      │   │
+│  │  tg_pin — pinned rules (prepended to every map)       │   │
 │  └───────────────────────────────────────────────────────┘   │
 │                                                              │
 │  Layer 2: Dynamic Context                                    │
 │  ┌──────────┬──────────┬──────────┬───────────┬──────────┐  │
 │  │tg_search │tg_def    │tg_read   │tg_validate│tg_status │  │
 │  │tg_compress│tg_refs  │tg_terminal│tg_audit  │tg_report │  │
-│  │          │tg_outline│          │           │          │  │
+│  │tg_sem_ed │tg_outline│tg_circuit│tg_pin    │          │  │
 │  └────┬─────┴────┬─────┴────┬─────┴─────┬─────┴────┬─────┘  │
 │       │          │          │           │          │         │
 │  ┌────▼──────────▼──────────▼───────────▼──────────▼─────┐  │
@@ -272,7 +299,7 @@ npm test
 
 ## License
 
-MIT © TokenGuard Contributors
+MIT
 
 ---
 

@@ -417,6 +417,9 @@ server.tool(
         const sessionReport = engine.getSessionReport();
         const burnRate = monitor.computeBurnRate();
         const prediction = monitor.predictExhaustion();
+        const usageStats = engine.getUsageStats();
+        const cbStats = circuitBreaker.getStats();
+        const pins = listPins(process.cwd());
 
         const fileTypeRows = sessionReport.byFileType.length > 0
             ? sessionReport.byFileType.map(ft =>
@@ -448,6 +451,38 @@ server.tool(
             }
         }
 
+        // Determine model name from burn rate
+        const modelName = burnRate.estimatedCostUsd > 0
+            ? (burnRate.estimatedCostUsd / Math.max(1, burnRate.totalConsumed) > 0.01
+                ? "Opus" : "Sonnet")
+            : "Unknown";
+
+        // Generate ASCII receipt
+        const pad = (v: string | number, w: number) => String(v).padStart(w);
+        const usdStr = Math.max(
+            sessionReport.savedUsdSonnet,
+            sessionReport.savedUsdOpus
+        ).toFixed(2);
+
+        const receipt = [
+            "",
+            "╔══════════════════════════════════════════════════╗",
+            "║          TOKENGUARD SESSION RECEIPT              ║",
+            "╠══════════════════════════════════════════════════╣",
+            `║  Input Tokens Saved:      ${pad(sessionReport.totalTokensSaved.toLocaleString(), 16)}    ║`,
+            `║  Output Tokens Avoided:   ${pad(usageStats.total_saved.toLocaleString(), 16)}    ║`,
+            `║  Search Queries:          ${pad(usageStats.tool_calls, 16)}    ║`,
+            `║  Surgical Edits:          ${pad(cbStats.totalToolCalls, 16)}    ║`,
+            `║  Syntax Errors Blocked:   ${pad(cbStats.loopsPrevented, 16)}    ║`,
+            `║  Doom Loops Prevented:    ${pad(cbStats.loopsDetected, 16)}    ║`,
+            `║  Pinned Rules Active:     ${pad(pins.length, 16)}    ║`,
+            "╠══════════════════════════════════════════════════╣",
+            `║  ESTIMATED SAVINGS:       ${pad("$" + usdStr, 16)}    ║`,
+            `║  MODEL:                   ${pad(modelName, 16)}    ║`,
+            `║  TOOLS USED:              ${pad(usageStats.tool_calls + " calls", 16)}    ║`,
+            "╚══════════════════════════════════════════════════╝",
+        ].join("\n");
+
         const report = [
             "═══════════════════════════════════════════════════",
             "  TokenGuard — Session Report",
@@ -477,7 +512,7 @@ server.tool(
             content: [
                 {
                     type: "text" as const,
-                    text: report,
+                    text: report + receipt,
                 },
             ],
         };

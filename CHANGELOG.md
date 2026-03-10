@@ -2,6 +2,35 @@
 
 All notable changes to TokenGuard will be documented in this file.
 
+## [2.1.0] - 2026-03-10
+
+### Headline
+TokenGuard v2.1 — 15 MCP tools, 282 tests, circuit breaker, surgical edit, pin memory, session receipt.
+
+### Added — New Tools
+- **`tg_semantic_edit`** — Surgically edit a function/class/interface by name without reading or rewriting the entire file. Finds the exact AST node, replaces only those bytes, validates syntax before saving. Saves 98% of output tokens vs full file rewrites.
+- **`tg_circuit_breaker`** — Detects infinite failure loops (same error 3+ times, same file 5+ times, write-test-fail cycles). When tripped, forces Claude to stop and ask the human for guidance. Prevents doom loops that burn through remaining context.
+- **`tg_pin`** — Pin important rules Claude should never forget. Pinned items are injected into every `tg_map` response, keeping project conventions permanently in Claude's attention window. Max 10 pins, 200 chars each, persisted to disk.
+
+### Added — New Modules
+- `src/semantic-edit.ts` — Zero-read surgical AST patching. Symbol name lookup, byte-level splice, syntax validation before write.
+- `src/circuit-breaker.ts` — Loop detection engine with sliding window analysis, consecutive failure tracking, and automatic trip/reset.
+- `src/pin-memory.ts` — Persistent pinned rules with deterministic output (sorted by id) for prompt cache compatibility.
+
+### Added — Session Receipt
+- `tg_session_report` now generates an ASCII receipt showing input tokens saved, output tokens avoided, search queries, surgical edits, syntax errors blocked, doom loops prevented, pinned rules active, estimated USD savings, and model info.
+
+### Changed
+- **Tool count**: 12 -> 15 MCP tools.
+- **Test count**: 194 -> 282 tests across 11 test suites.
+- **tg_map**: Now prepends pinned rules at the top of the repo map output.
+- **README**: Complete rewrite for v2.1 with comparison table, 3 unique features highlight, receipt preview, and updated architecture diagram.
+- **package.json**: Version bumped to 2.1.0.
+
+### Architecture
+- **Pin memory layer**: Pinned rules are stored in `.tokenguard/pins.json` and prepended to every `tg_map` response. Deterministic output (sorted by id) preserves prompt cache compatibility.
+- **Circuit breaker integration**: `tg_terminal` automatically feeds errors to the circuit breaker for proactive loop detection.
+
 ## [2.0.0] - 2026-03-10
 
 ### Headline
