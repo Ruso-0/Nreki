@@ -362,7 +362,7 @@ class KeywordIndex {
             if (subTokens.length > 0) {
                 for (const sub of subTokens) {
                     if (sub.length > 1 && !KeywordIndex.STOPWORDS.has(sub)) {
-                        allTerms.push(this.stem(sub));
+                        allTerms.push(sub);
                     }
                 }
             } else {

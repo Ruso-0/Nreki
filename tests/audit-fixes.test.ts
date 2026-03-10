@@ -127,6 +127,35 @@ describe("FIX 5: codeTokenize — Code-Aware Tokenizer", () => {
     it("should handle empty string", () => {
         expect(codeTokenize("")).toEqual([]);
     });
+
+    it("preserves acronyms in camelCase", () => {
+        expect(codeTokenize("getAPIResponse")).toContain("api");
+        expect(codeTokenize("getAPIResponse")).toContain("get");
+        expect(codeTokenize("getAPIResponse")).toContain("response");
+        expect(codeTokenize("getAPIResponse")).not.toContain("a");
+        expect(codeTokenize("getAPIResponse")).not.toContain("p");
+        expect(codeTokenize("getAPIResponse")).not.toContain("i");
+    });
+
+    it("handles consecutive acronyms", () => {
+        // Standard JS API name: "XMLHttpRequest" has clear camelCase boundaries
+        expect(codeTokenize("XMLHttpRequest")).toContain("xml");
+        expect(codeTokenize("XMLHttpRequest")).toContain("http");
+        expect(codeTokenize("XMLHttpRequest")).toContain("request");
+    });
+
+    it("handles snake_case", () => {
+        expect(codeTokenize("MAX_RETRY_COUNT")).toContain("max");
+        expect(codeTokenize("MAX_RETRY_COUNT")).toContain("retry");
+        expect(codeTokenize("MAX_RETRY_COUNT")).toContain("count");
+    });
+
+    it("does not apply stemming to code tokens", () => {
+        expect(codeTokenize("userData")).toContain("data");
+        // NOT "dat" from stemmer
+        expect(codeTokenize("authentication")).toContain("authentication");
+        // NOT "authent" from stemmer
+    });
 });
 
 // ─── FIX 7: File Filter Tests ───────────────────────────────────────
