@@ -46,11 +46,19 @@
     "typescript": "^5.7.3",
     "vitest": "^3.0.7"
   },
+  "files": [
+    "dist/",
+    "wasm/",
+    "scripts/download-wasm.js",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
   "engines": {
     "node": ">=20.0.0"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/YOUR_USERNAME/tokenguard"
+    "url": "https://github.com/Ruso-0/TokenGuard"
   }
 }

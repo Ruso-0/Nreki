@@ -162,19 +162,26 @@ Layer 2: Dynamic Context ($3.00/M but tiny per query)
 ## Installation
 
 ```bash
-# One command. That's it.
-npx tokenguard
+# One command — runs directly from GitHub:
+npx github:Ruso-0/TokenGuard
 ```
 
-Or install globally:
+Or install globally (once published to npm):
 
 ```bash
 npm install -g tokenguard
+npx tokenguard
 ```
 
 ### Claude Code Configuration
 
-Add to your `claude_desktop_config.json` or `.claude/settings.json`:
+**Option A — CLI (recommended):**
+
+```bash
+claude mcp add tokenguard -- npx tokenguard
+```
+
+**Option B — Manual config** in `.claude.json` or `claude_desktop_config.json`:
 
 ```json
 {
@@ -293,7 +300,7 @@ PRs welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) before submitting.
 
 ```bash
 # Development
-git clone https://github.com/YOUR_USERNAME/tokenguard.git
+git clone https://github.com/Ruso-0/TokenGuard.git
 cd tokenguard
 npm install
 npm run build

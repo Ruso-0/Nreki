@@ -3,7 +3,7 @@
 /**
  * index.ts — TokenGuard MCP Server entry point.
  *
- * Exposes 14 MCP tools to Claude Code:
+ * Exposes 16 MCP tools to Claude Code:
  *
  * 1. tg_search  — Hybrid semantic + keyword search (replaces grep)
  * 2. tg_audit   — Token consumption audit for the current session
@@ -20,6 +20,7 @@
  * 13. tg_circuit_breaker — Detects and stops infinite failure loops
  * 14. tg_semantic_edit — Zero-read surgical AST patching (saves 98% output tokens)
  * 15. tg_pin — Pin persistent rules Claude never forgets
+ * 16. tg_undo — Revert the last tg_semantic_edit on a file
  *
  * Every tool response appends a savings message:
  *   "[TokenGuard saved ~X tokens on this query]"

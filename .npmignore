@@ -1,0 +1,11 @@
+src/
+tests/
+.github/
+.tokenguard/
+scripts/
+*.test.ts
+tsconfig.json
+vitest.config.ts
+.gitignore
+.tokenguard-bench.vec
+.tokenguard-bench2.vec
