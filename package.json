@@ -1,5 +1,5 @@
 {
-  "name": "tokenguard",
+  "name": "@ruso-0/tokenguard",
   "version": "2.1.2",
   "description": "MCP plugin for Claude Code that optimizes and reduces token consumption automatically via semantic search, AST compression, and proactive monitoring.",
   "main": "dist/index.js",
