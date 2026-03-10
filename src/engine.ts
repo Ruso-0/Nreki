@@ -442,6 +442,18 @@ export class TokenGuardEngine {
         };
     }
 
+    // ─── Accessors ─────────────────────────────────────────────────
+
+    /** Get the AST parser instance (for use by AST navigator). */
+    getParser(): ASTParser {
+        return this.parser;
+    }
+
+    /** Get the project root directory. */
+    getProjectRoot(): string {
+        return this.config.watchPaths[0] || process.cwd();
+    }
+
     // ─── Repo Map ──────────────────────────────────────────────────
 
     /** Generate or return cached static repo map for prompt cache optimization. */

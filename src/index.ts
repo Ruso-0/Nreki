@@ -3,7 +3,7 @@
 /**
  * index.ts — TokenGuard MCP Server entry point.
  *
- * Exposes 8 MCP tools to Claude Code:
+ * Exposes 11 MCP tools to Claude Code:
  *
  * 1. tg_search  — Hybrid semantic + keyword search (replaces grep)
  * 2. tg_audit   — Token consumption audit for the current session
@@ -12,7 +12,10 @@
  * 5. tg_session_report — Comprehensive session savings report
  * 6. tg_map     — Static repo map for prompt cache optimization
  * 7. tg_terminal — Terminal entropy filter for error output
- * 8. tg_read    — Read file with automatic compression
+ * 8. tg_def     — Go to definition by symbol name (AST-based, 100% precise)
+ * 9. tg_refs    — Find all references to a symbol across the project
+ * 10. tg_outline — List all symbols in a file (like VS Code outline)
+ * 11. tg_read   — Read file with automatic compression
  *
  * Every tool response appends a savings message:
  *   "[TokenGuard saved ~X tokens on this query]"
@@ -30,6 +33,7 @@ import { Embedder } from "./embedder.js";
 import { safePath } from "./utils/path-jail.js";
 import { shouldProcess } from "./utils/file-filter.js";
 import { filterTerminalOutput } from "./terminal-filter.js";
+import { findDefinition, findReferences, getFileSymbols, type SymbolKind, type ReferenceResult } from "./ast-navigator.js";
 
 // ─── Initialization ──────────────────────────────────────────────────
 
@@ -586,7 +590,234 @@ server.tool(
     }
 );
 
-// ─── Tool 8: tg_read ───────────────────────────────────────────────
+// ─── Tool 8: tg_def ────────────────────────────────────────────────
+
+server.tool(
+    "tg_def",
+    "Go to definition. Finds the exact source code of any function, class, interface, " +
+    "type, or variable by name. Returns the complete definition with full body. " +
+    "100% precise AST-based lookup, no search needed. " +
+    "Use this instead of tg_read when you know the symbol name.",
+    {
+        symbol: z
+            .string()
+            .describe("Name of the symbol to find (function, class, interface, type, variable)"),
+        kind: z
+            .enum(["function", "class", "interface", "type", "variable", "enum", "method", "any"])
+            .default("any")
+            .describe("Filter by symbol kind (default: any)"),
+    },
+    async ({ symbol, kind }) => {
+        await engine.initialize();
+
+        const root = engine.getProjectRoot();
+        const parser = engine.getParser();
+        const results = await findDefinition(root, parser, symbol, kind as SymbolKind);
+
+        if (results.length === 0) {
+            return {
+                content: [
+                    {
+                        type: "text" as const,
+                        text:
+                            `No definition found for symbol: "${symbol}"` +
+                            (kind !== "any" ? ` (kind: ${kind})` : "") +
+                            `\n\n[TokenGuard saved ~0 tokens]`,
+                    },
+                ],
+            };
+        }
+
+        const formatted = results.map((r, i) => {
+            const exported = r.exportedAs ? ` [exported: ${r.exportedAs}]` : "";
+            return (
+                `### ${i + 1}. ${r.filePath}:L${r.startLine}-L${r.endLine} (${r.kind}${exported})\n` +
+                `**Signature:** \`${r.signature}\`\n` +
+                `\`\`\`\n${r.body}\n\`\`\``
+            );
+        });
+
+        const bodyTokens = results.reduce(
+            (sum, r) => sum + Embedder.estimateTokens(r.body),
+            0
+        );
+
+        engine.logUsage("tg_def", bodyTokens, bodyTokens, 0);
+
+        return {
+            content: [
+                {
+                    type: "text" as const,
+                    text:
+                        `## Definition: ${symbol}\n` +
+                        `Found ${results.length} definition(s).\n\n` +
+                        formatted.join("\n\n") +
+                        `\n\n[TokenGuard: ${bodyTokens.toLocaleString()} tokens — exact AST lookup, no search overhead]`,
+                },
+            ],
+        };
+    }
+);
+
+// ─── Tool 9: tg_refs ───────────────────────────────────────────────
+
+server.tool(
+    "tg_refs",
+    "Find all references to a symbol across the project. " +
+    "Shows every file and line where the symbol is used, with surrounding context. " +
+    "Like 'Find All References' in VS Code.",
+    {
+        symbol: z
+            .string()
+            .describe("Name of the symbol to find references for"),
+    },
+    async ({ symbol }) => {
+        await engine.initialize();
+
+        const root = engine.getProjectRoot();
+        const parser = engine.getParser();
+        const results = await findReferences(root, parser, symbol);
+
+        if (results.length === 0) {
+            return {
+                content: [
+                    {
+                        type: "text" as const,
+                        text:
+                            `No references found for: "${symbol}"\n\n` +
+                            `[TokenGuard saved ~0 tokens]`,
+                    },
+                ],
+            };
+        }
+
+        // Group by file
+        const byFile = new Map<string, ReferenceResult[]>();
+        for (const ref of results) {
+            const arr = byFile.get(ref.filePath) || [];
+            arr.push(ref);
+            byFile.set(ref.filePath, arr);
+        }
+
+        const formatted: string[] = [];
+        for (const [file, refs] of [...byFile.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+            formatted.push(`### ${file} (${refs.length} reference${refs.length > 1 ? "s" : ""})`);
+            for (const ref of refs) {
+                formatted.push(`**L${ref.line}:**`);
+                formatted.push(`\`\`\`\n${ref.context}\n\`\`\``);
+            }
+        }
+
+        const refTokens = results.reduce(
+            (sum, r) => sum + Embedder.estimateTokens(r.context),
+            0
+        );
+
+        engine.logUsage("tg_refs", refTokens, refTokens, 0);
+
+        return {
+            content: [
+                {
+                    type: "text" as const,
+                    text:
+                        `## References: ${symbol}\n` +
+                        `Found ${results.length} reference(s) across ${byFile.size} file(s).\n\n` +
+                        formatted.join("\n") +
+                        `\n\n[TokenGuard: ${refTokens.toLocaleString()} tokens]`,
+                },
+            ],
+        };
+    }
+);
+
+// ─── Tool 10: tg_outline ──────────────────────────────────────────
+
+server.tool(
+    "tg_outline",
+    "List all symbols in a file with their signatures. " +
+    "Shows functions, classes, interfaces, types, and methods. " +
+    "Like the Outline view in VS Code. Use this to understand a file's structure.",
+    {
+        file: z
+            .string()
+            .describe("File path (relative to project root or absolute)"),
+    },
+    async ({ file }) => {
+        await engine.initialize();
+
+        const root = engine.getProjectRoot();
+        let resolvedPath: string;
+        try {
+            resolvedPath = safePath(root, file);
+        } catch (err) {
+            return {
+                content: [
+                    {
+                        type: "text" as const,
+                        text: `Security error: ${(err as Error).message}\n\n[TokenGuard saved ~0 tokens]`,
+                    },
+                ],
+            };
+        }
+
+        const parser = engine.getParser();
+        const symbols = await getFileSymbols(resolvedPath, parser, root);
+
+        if (symbols.length === 0) {
+            return {
+                content: [
+                    {
+                        type: "text" as const,
+                        text:
+                            `No symbols found in: ${file}\n` +
+                            `(File may be empty, unsupported, or contain no declarations.)\n\n` +
+                            `[TokenGuard saved ~0 tokens]`,
+                    },
+                ],
+            };
+        }
+
+        const relPath = path.relative(root, resolvedPath).replace(/\\/g, "/");
+        const lines = [`## Outline: ${relPath}`, `${symbols.length} symbol(s)`, ""];
+
+        for (const sym of symbols) {
+            const exported = sym.exportedAs ? ` [${sym.exportedAs}]` : "";
+            lines.push(
+                `- **${sym.kind}** \`${sym.name}\`${exported} — L${sym.startLine}-L${sym.endLine}`
+            );
+            lines.push(`  \`${sym.signature}\``);
+        }
+
+        const outlineTokens = Embedder.estimateTokens(lines.join("\n"));
+
+        // Estimate savings: reading full file vs outline
+        try {
+            const fullContent = fs.readFileSync(resolvedPath, "utf-8");
+            const fullTokens = Embedder.estimateTokens(fullContent);
+            const saved = Math.max(0, fullTokens - outlineTokens);
+
+            engine.logUsage("tg_outline", outlineTokens, outlineTokens, saved);
+
+            lines.push("");
+            lines.push(`[TokenGuard saved ~${saved.toLocaleString()} tokens vs reading full file]`);
+        } catch {
+            engine.logUsage("tg_outline", outlineTokens, outlineTokens, 0);
+            lines.push("");
+            lines.push(`[TokenGuard: ${outlineTokens.toLocaleString()} tokens]`);
+        }
+
+        return {
+            content: [
+                {
+                    type: "text" as const,
+                    text: lines.join("\n"),
+                },
+            ],
+        };
+    }
+);
+
+// ─── Tool 11: tg_read ──────────────────────────────────────────────
 
 server.tool(
     "tg_read",
