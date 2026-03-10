@@ -19,6 +19,7 @@
  * 12. tg_validate — AST sandbox validator (catches syntax errors before disk)
  * 13. tg_circuit_breaker — Detects and stops infinite failure loops
  * 14. tg_semantic_edit — Zero-read surgical AST patching (saves 98% output tokens)
+ * 15. tg_pin — Pin persistent rules Claude never forgets
  *
  * Every tool response appends a savings message:
  *   "[TokenGuard saved ~X tokens on this query]"
@@ -40,6 +41,7 @@ import { findDefinition, findReferences, getFileSymbols, type SymbolKind, type R
 import { AstSandbox } from "./ast-sandbox.js";
 import { CircuitBreaker } from "./circuit-breaker.js";
 import { semanticEdit } from "./semantic-edit.js";
+import { addPin, removePin, listPins, getPinnedText } from "./pin-memory.js";
 
 // ─── Initialization ──────────────────────────────────────────────────
 
@@ -506,7 +508,11 @@ server.tool(
         }
 
         const { text, fromCache } = await engine.getRepoMap(refresh);
-        const tokens = Embedder.estimateTokens(text);
+
+        // Prepend pinned rules so they're always in Claude's attention window
+        const pinnedText = getPinnedText(process.cwd());
+        const fullText = pinnedText + text;
+        const tokens = Embedder.estimateTokens(fullText);
 
         engine.logUsage("tg_map", tokens, tokens, 0);
 
@@ -515,9 +521,10 @@ server.tool(
                 {
                     type: "text" as const,
                     text:
-                        text +
+                        fullText +
                         `\n[TokenGuard repo map: ${tokens.toLocaleString()} tokens | ` +
                         `${fromCache ? "from cache (prompt-cacheable)" : "freshly generated"} | ` +
+                        `${pinnedText ? `${listPins(process.cwd()).length} pinned rules | ` : ""}` +
                         `This text is deterministic — place it early in context for Anthropic prompt caching]`,
                 },
             ],
@@ -1218,6 +1225,138 @@ server.tool(
             ],
         };
     },
+);
+
+// ─── Tool 15: tg_pin ────────────────────────────────────────────────
+
+server.tool(
+    "tg_pin",
+    "Pin important rules or context that should never be forgotten. " +
+    "Pinned items are injected into every repo map response, keeping them " +
+    "permanently in Claude's attention window. Use for project conventions, " +
+    "API patterns, or architectural decisions. Max 10 pins.",
+    {
+        action: z
+            .enum(["add", "remove", "list"])
+            .default("list")
+            .describe("add=pin a new rule, remove=unpin by id, list=show all pins"),
+        text: z
+            .string()
+            .optional()
+            .describe("Rule text to pin (for add action, max 200 chars)"),
+        id: z
+            .string()
+            .optional()
+            .describe("Pin ID to remove (for remove action, e.g. pin_001)"),
+    },
+    async ({ action, text, id }) => {
+        const projectRoot = process.cwd();
+
+        if (action === "add") {
+            if (!text) {
+                return {
+                    content: [
+                        {
+                            type: "text" as const,
+                            text: "Error: `text` is required for the add action.\n\n[TokenGuard saved ~0 tokens]",
+                        },
+                    ],
+                };
+            }
+
+            const result = addPin(projectRoot, text, "claude");
+            if (!result.success) {
+                return {
+                    content: [
+                        {
+                            type: "text" as const,
+                            text: `## Pin: FAILED\n\n${result.error}\n\n[TokenGuard saved ~0 tokens]`,
+                        },
+                    ],
+                };
+            }
+
+            const pins = listPins(projectRoot);
+            return {
+                content: [
+                    {
+                        type: "text" as const,
+                        text:
+                            `## Pin: ADDED\n\n` +
+                            `**ID:** ${result.pin.id}\n` +
+                            `**Rule:** ${result.pin.text}\n` +
+                            `**Total pins:** ${pins.length}/${10}\n\n` +
+                            `This rule will appear in every tg_map response.\n\n` +
+                            `[TokenGuard saved ~0 tokens]`,
+                    },
+                ],
+            };
+        }
+
+        if (action === "remove") {
+            if (!id) {
+                return {
+                    content: [
+                        {
+                            type: "text" as const,
+                            text: "Error: `id` is required for the remove action.\n\n[TokenGuard saved ~0 tokens]",
+                        },
+                    ],
+                };
+            }
+
+            const removed = removePin(projectRoot, id);
+            if (!removed) {
+                return {
+                    content: [
+                        {
+                            type: "text" as const,
+                            text: `## Pin: NOT FOUND\n\nNo pin with id "${id}" exists.\n\n[TokenGuard saved ~0 tokens]`,
+                        },
+                    ],
+                };
+            }
+
+            return {
+                content: [
+                    {
+                        type: "text" as const,
+                        text: `## Pin: REMOVED\n\n**ID:** ${id}\n\nThis rule will no longer appear in tg_map responses.\n\n[TokenGuard saved ~0 tokens]`,
+                    },
+                ],
+            };
+        }
+
+        // action === "list"
+        const pins = listPins(projectRoot);
+        if (pins.length === 0) {
+            return {
+                content: [
+                    {
+                        type: "text" as const,
+                        text: "## Pinned Rules\n\nNo pins set. Use `action: \"add\"` to pin a rule.\n\n[TokenGuard saved ~0 tokens]",
+                    },
+                ],
+            };
+        }
+
+        const pinLines = pins.map(
+            (p) => `- **${p.id}** (${p.source}): ${p.text}`
+        );
+
+        return {
+            content: [
+                {
+                    type: "text" as const,
+                    text:
+                        `## Pinned Rules (${pins.length}/${10})\n\n` +
+                        pinLines.join("\n") +
+                        `\n\nThese rules are injected into every tg_map response.\n\n` +
+                        `[TokenGuard saved ~0 tokens]`,
+                },
+            ],
+        };
+    }
 );
 
 // ─── Server Startup ─────────────────────────────────────────────────
