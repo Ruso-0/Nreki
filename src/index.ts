@@ -1467,10 +1467,9 @@ async function main(): Promise<void> {
     // Connect and serve
     await server.connect(transport);
 
-    // Pre-initialize engine in background (non-blocking)
-    engine.initialize().catch((err) => {
-        console.error(`[TokenGuard] Background init error: ${err.message}`);
-    });
+    // Engine initialization is lazy — each tool calls engine.initialize()
+    // (fast: db + parser) or engine.initializeEmbedder() (full: + ONNX model)
+    // as needed. This keeps the MCP handshake under 100ms.
 }
 
 main().catch((err) => {

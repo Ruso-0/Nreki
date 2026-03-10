@@ -2,6 +2,23 @@
 
 All notable changes to TokenGuard will be documented in this file.
 
+## [2.1.2] - 2026-03-10
+
+### Headline
+TokenGuard v2.1.2 — Lazy ONNX loading fixes MCP handshake timeout for real-world users.
+
+### Fixed
+- **CRITICAL — MCP handshake timeout**: `engine.initialize()` was eagerly loading the ONNX embedding model (~5-10s) during startup, blocking ALL tool calls until the model was ready. Real users connecting via Claude Code would experience timeouts or slow first responses. Split initialization into two phases:
+  - **Fast path** (`initialize()`): SQLite + Tree-sitter only (~100ms). Used by 12/16 tools.
+  - **Embedder path** (`initializeEmbedder()`): Adds ONNX model load. Used only by `tg_search`, `tg_map`, and indexing operations.
+- **`tg_def` first-call latency**: Was 465ms because it waited for the embedder to load (which it doesn't use). Now completes in ~50ms on first call.
+- Removed background `engine.initialize()` from `main()` — tools now self-initialize at the correct level when first called.
+
+### Changed
+- **package.json**: Version bumped to 2.1.2.
+
+---
+
 ## [2.1.1] - 2026-03-10
 
 ### Headline

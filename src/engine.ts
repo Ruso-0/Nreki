@@ -124,6 +124,7 @@ export class TokenGuardEngine {
     private indexingQueue = new Set<string>();
     private isIndexing = false;
     private initialized = false;
+    private embedderReady = false;
 
     /** Session-level savings tracker. */
     private sessionSavings = {
@@ -154,20 +155,34 @@ export class TokenGuardEngine {
     // ─── Initialization ────────────────────────────────────────────
 
     /**
-     * Initialize all subsystems: SQLite WASM + Tree-sitter WASM + embedding model.
-     * Call this once before using search or indexing.
+     * Fast initialization: SQLite + Tree-sitter only.
+     * Completes in ~100ms. Does NOT load the ONNX embedding model.
+     * Safe to call from any tool — most tools don't need embeddings.
      */
     async initialize(): Promise<void> {
         if (this.initialized) return;
 
         await this.db.initialize();
         await this.parser.initialize();
+
+        this.initialized = true;
+    }
+
+    /**
+     * Full initialization: fast init + ONNX embedding model.
+     * Only needed for search, indexing, and repo map generation.
+     * The embedding model load can take 5-10s on first call (model download + WASM init).
+     */
+    async initializeEmbedder(): Promise<void> {
+        await this.initialize();
+        if (this.embedderReady) return;
+
         await this.embedder.initialize();
 
         // Guard: if embedding model changed, clear stale vectors
         this.db.checkEmbeddingDimension(this.embedder.getDimension());
 
-        this.initialized = true;
+        this.embedderReady = true;
     }
 
     // ─── File Indexing ─────────────────────────────────────────────
@@ -177,7 +192,7 @@ export class TokenGuardEngine {
      * Skips files whose SHA-256 hash hasn't changed (Merkle diffing).
      */
     async indexFile(filePath: string): Promise<ParseResult | null> {
-        await this.initialize();
+        await this.initializeEmbedder();
 
         // FIX 7: Check file size and extension before processing
         let stat: fs.Stats;
@@ -257,7 +272,7 @@ export class TokenGuardEngine {
         skipped: number;
         errors: number;
     }> {
-        await this.initialize();
+        await this.initializeEmbedder();
 
         let indexed = 0;
         let skipped = 0;
@@ -344,7 +359,7 @@ export class TokenGuardEngine {
      * shorthand signatures and full source code.
      */
     async search(query: string, limit: number = 10): Promise<SearchResult[]> {
-        await this.initialize();
+        await this.initializeEmbedder();
 
         const { embedding } = await this.embedder.embed(query);
         const results = this.db.searchHybrid(embedding, query, limit);
@@ -463,7 +478,7 @@ export class TokenGuardEngine {
 
     /** Generate or return cached static repo map for prompt cache optimization. */
     async getRepoMap(forceRefresh: boolean = false): Promise<{ map: RepoMap; text: string; fromCache: boolean }> {
-        await this.initialize();
+        await this.initializeEmbedder();
         const root = this.config.watchPaths[0] || process.cwd();
         return getOrGenerateRepoMap(root, this.parser, forceRefresh);
     }
