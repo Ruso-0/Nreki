@@ -223,7 +223,7 @@ const emoji_var = "🎉🎊🎈";
     it("database stores and retrieves unicode chunks", () => {
         const db = new TokenGuardDB(path.join(TMP_DIR, "unicode-test.db"));
         return db.initialize().then(() => {
-            const embedding = new Float32Array(384).fill(0.1);
+            const embedding = new Float32Array(512).fill(0.1);
             db.insertChunk(
                 "/test/unicode.ts",
                 "[class] データ処理 { 実行() }",
@@ -396,7 +396,7 @@ describe("Stress: Concurrent database operations", () => {
             nodeType: "func",
             startLine: 1,
             endLine: 10,
-            embedding: new Float32Array(384).fill(0.01 * i),
+            embedding: new Float32Array(512).fill(0.01 * i),
         }));
 
         // Batch insert should not throw
@@ -406,7 +406,7 @@ describe("Stress: Concurrent database operations", () => {
         expect(stats.total_chunks).toBe(50);
 
         // Search should work across all 50 chunks
-        const queryEmb = new Float32Array(384).fill(0.25);
+        const queryEmb = new Float32Array(512).fill(0.25);
         const results = db.searchHybrid(queryEmb, "handler request response", 10);
         expect(results.length).toBeGreaterThan(0);
         expect(results.length).toBeLessThanOrEqual(10);
@@ -418,7 +418,7 @@ describe("Stress: Concurrent database operations", () => {
         const db = new TokenGuardDB(path.join(TMP_DIR, "cycle-test.db"));
         await db.initialize();
 
-        const embedding = new Float32Array(384).fill(0.5);
+        const embedding = new Float32Array(512).fill(0.5);
 
         for (let i = 0; i < 20; i++) {
             db.insertChunk(
@@ -509,7 +509,7 @@ describe("Stress: Repeated 100x indexing (idempotency)", () => {
 
         const content = "export function repeat() { return 42; }";
         const hash = db.hashContent(content);
-        const embedding = new Float32Array(384).fill(0.42);
+        const embedding = new Float32Array(512).fill(0.42);
 
         for (let i = 0; i < 100; i++) {
             // Simulate re-indexing: clear + insert + upsert
@@ -541,7 +541,7 @@ describe("Stress: Repeated 100x indexing (idempotency)", () => {
         const db = new TokenGuardDB(path.join(TMP_DIR, "repeat-search-test.db"));
         await db.initialize();
 
-        const embedding = new Float32Array(384).fill(0.33);
+        const embedding = new Float32Array(512).fill(0.33);
 
         // Index the same file 50 times
         for (let i = 0; i < 50; i++) {

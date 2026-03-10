@@ -1,15 +1,15 @@
 /**
  * embedder.ts — Local embedding generation for TokenGuard.
  *
- * Uses Xenova/transformers (ONNX Runtime) to run all-MiniLM-L6-v2
+ * Uses Xenova/transformers (ONNX Runtime) to run jina-embeddings-v2-small-en
  * entirely on-device. No Ollama, no API keys, no cloud calls.
- * Produces 384-dimensional normalized embeddings for semantic search.
+ * Produces 512-dimensional normalized embeddings for semantic code search.
  */
 
 // ─── Types ───────────────────────────────────────────────────────────
 
 export interface EmbeddingResult {
-    /** Normalized 384-dim embedding vector. */
+    /** Normalized 512-dim embedding vector. */
     embedding: Float32Array;
     /** Time taken in milliseconds. */
     durationMs: number;
@@ -27,13 +27,14 @@ export interface BatchEmbeddingResult {
 // ─── Embedder ────────────────────────────────────────────────────────
 
 /**
- * Singleton embedding engine backed by Xenova/all-MiniLM-L6-v2.
+ * Singleton embedding engine backed by Xenova/jina-embeddings-v2-small-en.
  *
  * Design decisions:
+ * - Code-aware model: jina-v2-small trained on code + text (NDCG@10 ~0.71 on CodeSearchNet vs ~0.22 for MiniLM)
  * - Lazy initialization: model loads only when first embedding is requested
  * - Quantized mode: uses INT8 quantization for faster inference & smaller memory
  * - Mean pooling + L2 normalization: standard for sentence embeddings
- * - Singleton pattern: avoids loading ~32 MB model multiple times
+ * - Singleton pattern: avoids loading model multiple times
  */
 export class Embedder {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- FeatureExtractionPipeline from @xenova/transformers uses Tensor with incompatible DataArray union type
@@ -42,7 +43,7 @@ export class Embedder {
     private modelId: string;
     private isReady = false;
 
-    constructor(modelId: string = "Xenova/all-MiniLM-L6-v2") {
+    constructor(modelId: string = "Xenova/jina-embeddings-v2-small-en") {
         this.modelId = modelId;
     }
 
@@ -118,7 +119,7 @@ export class Embedder {
 
     /** Get the dimensionality of the embedding model. */
     getDimension(): number {
-        return 384; // all-MiniLM-L6-v2 always produces 384-dim vectors
+        return 512; // jina-embeddings-v2-small-en produces 512-dim vectors
     }
 
     /** Check if the model is loaded and ready. */

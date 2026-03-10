@@ -107,7 +107,7 @@ describe("TokenGuardDB", () => {
     });
 
     it("should insert and count chunks", () => {
-        const embedding = new Float32Array(384).fill(0.1);
+        const embedding = new Float32Array(512).fill(0.1);
 
         db.insertChunk(
             "/test/sample.ts",
@@ -132,7 +132,7 @@ describe("TokenGuardDB", () => {
                 nodeType: "func",
                 startLine: 1,
                 endLine: 3,
-                embedding: new Float32Array(384).fill(0.2),
+                embedding: new Float32Array(512).fill(0.2),
             },
             {
                 path: "/test/batch.ts",
@@ -141,7 +141,7 @@ describe("TokenGuardDB", () => {
                 nodeType: "func",
                 startLine: 5,
                 endLine: 7,
-                embedding: new Float32Array(384).fill(0.3),
+                embedding: new Float32Array(512).fill(0.3),
             },
         ];
 
@@ -151,19 +151,19 @@ describe("TokenGuardDB", () => {
     });
 
     it("should search with vector similarity", () => {
-        const queryEmbedding = new Float32Array(384).fill(0.1);
+        const queryEmbedding = new Float32Array(512).fill(0.1);
         const results = db.searchVector(queryEmbedding, 5);
         expect(results.length).toBeGreaterThan(0);
     });
 
     it("should search hybrid (vector + keyword)", () => {
-        const queryEmbedding = new Float32Array(384).fill(0.1);
+        const queryEmbedding = new Float32Array(512).fill(0.1);
         const results = db.searchHybrid(queryEmbedding, "authenticate func", 5);
         expect(results.length).toBeGreaterThan(0);
     });
 
     it("should clear chunks for a file", () => {
-        const embedding = new Float32Array(384).fill(0.4);
+        const embedding = new Float32Array(512).fill(0.4);
         db.insertChunk("/test/clearme.ts", "[func] temp()", "function temp() {}", "func", 1, 1, embedding);
         db.clearChunks("/test/clearme.ts");
         // Cannot directly verify deletion without querying — but no error means success
@@ -190,7 +190,7 @@ describe("TokenGuardDB", () => {
 describe("Embedder", () => {
     it("should report correct dimension", () => {
         const embedder = new Embedder();
-        expect(embedder.getDimension()).toBe(384);
+        expect(embedder.getDimension()).toBe(512);
     });
 
     it("should not be ready before initialization", () => {
@@ -334,30 +334,30 @@ describe("Porter Stemmer (via KeywordIndex)", () => {
     });
 
     it("should find stemmed matches (running -> run)", () => {
-        const embedding = new Float32Array(384).fill(0.1);
+        const embedding = new Float32Array(512).fill(0.1);
         db.insertChunk("/test/stem.ts", "[func] run() { /* TG:L1-L5 */ }", "function run() { ... }", "func", 1, 5, embedding);
 
         // "running" should match "run" via stemming
-        const results = db.searchHybrid(new Float32Array(384).fill(0.1), "running function", 5);
+        const results = db.searchHybrid(new Float32Array(512).fill(0.1), "running function", 5);
         expect(results.length).toBeGreaterThan(0);
     });
 
     it("should find stemmed matches (connections -> connect)", () => {
-        const embedding = new Float32Array(384).fill(0.15);
+        const embedding = new Float32Array(512).fill(0.15);
         db.insertChunk("/test/stem.ts", "[func] connectDatabase() { /* TG:L10-L20 */ }", "function connectDatabase() { ... }", "func", 10, 20, embedding);
 
-        const results = db.searchHybrid(new Float32Array(384).fill(0.15), "connections database", 5);
+        const results = db.searchHybrid(new Float32Array(512).fill(0.15), "connections database", 5);
         expect(results.length).toBeGreaterThan(0);
     });
 
     it("should boost bigram phrase matches", () => {
-        const embedding1 = new Float32Array(384).fill(0.2);
-        const embedding2 = new Float32Array(384).fill(0.25);
+        const embedding1 = new Float32Array(512).fill(0.2);
+        const embedding2 = new Float32Array(512).fill(0.25);
         db.insertChunk("/test/bigram1.ts", "[func] authMiddleware() auth middleware handler", "function authMiddleware() { ... }", "func", 1, 5, embedding1);
         db.insertChunk("/test/bigram2.ts", "[func] something() auth unrelated middleware", "function something() { ... }", "func", 1, 5, embedding2);
 
         // "auth middleware" as a phrase should boost bigram1 which has them adjacent
-        const results = db.searchHybrid(new Float32Array(384).fill(0.2), "auth middleware", 5);
+        const results = db.searchHybrid(new Float32Array(512).fill(0.2), "auth middleware", 5);
         expect(results.length).toBeGreaterThan(0);
     });
 });

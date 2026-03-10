@@ -562,7 +562,7 @@ export class TokenGuardDB {
         // Load vector index if it exists
         if (fs.existsSync(this.vecPath)) {
             const vecBuffer = fs.readFileSync(this.vecPath);
-            this.vecIndex = VectorIndex.deserialize(vecBuffer, 384);
+            this.vecIndex = VectorIndex.deserialize(vecBuffer, 512);
         }
 
         this.setupSchema();

@@ -207,10 +207,10 @@ describe("FIX 8+9: VectorIndex Optimization and RRF Scoring", () => {
 
     it("should return normalized cosine similarity results", () => {
         // Insert vectors with known cosine similarity behavior
-        const v1 = new Float32Array(384).fill(0);
+        const v1 = new Float32Array(512).fill(0);
         v1[0] = 1.0; // Unit vector along dim 0
 
-        const v2 = new Float32Array(384).fill(0);
+        const v2 = new Float32Array(512).fill(0);
         v2[0] = 0.5;
         v2[1] = 0.5; // Partial overlap with v1
 
@@ -226,8 +226,8 @@ describe("FIX 8+9: VectorIndex Optimization and RRF Scoring", () => {
 
     it("should use rank-based RRF fusion (not raw scores)", () => {
         // Insert chunks with distinct characteristics
-        const emb3 = new Float32Array(384).fill(0.3);
-        const emb4 = new Float32Array(384).fill(0.4);
+        const emb3 = new Float32Array(512).fill(0.3);
+        const emb4 = new Float32Array(512).fill(0.4);
 
         db.insertChunk("/test/rrf1.ts", "[func] authHandler(req, res)", "async function authHandler(req, res) { /* auth logic */ }", "func", 1, 5, emb3);
         db.insertChunk("/test/rrf2.ts", "[func] userController()", "function userController() { /* user logic */ }", "func", 1, 5, emb4);
@@ -253,7 +253,7 @@ describe("FIX 5 Integration: Code-aware search matching", () => {
         db = new TokenGuardDB(testDbPath);
         await db.initialize();
 
-        const embedding = new Float32Array(384).fill(0.1);
+        const embedding = new Float32Array(512).fill(0.1);
         db.insertChunk(
             "/test/camel.ts",
             "[func] getUserProfile(userId)",
@@ -271,13 +271,13 @@ describe("FIX 5 Integration: Code-aware search matching", () => {
     });
 
     it("should find camelCase function by sub-token 'user'", () => {
-        const results = db.searchHybrid(new Float32Array(384).fill(0.1), "user profile", 5);
+        const results = db.searchHybrid(new Float32Array(512).fill(0.1), "user profile", 5);
         expect(results.length).toBeGreaterThan(0);
         expect(results[0].shorthand).toContain("getUserProfile");
     });
 
     it("should find function by partial identifier 'profile'", () => {
-        const results = db.searchHybrid(new Float32Array(384).fill(0.1), "profile", 5);
+        const results = db.searchHybrid(new Float32Array(512).fill(0.1), "profile", 5);
         expect(results.length).toBeGreaterThan(0);
     });
 });

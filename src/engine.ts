@@ -4,7 +4,7 @@
  * Orchestrates the full indexing and retrieval pipeline:
  * 1. File watching via chokidar (real-time re-indexing)
  * 2. AST parsing via Tree-sitter WASM (semantic chunking)
- * 3. Local embeddings via Xenova/transformers (384-dim vectors)
+ * 3. Local embeddings via Xenova/transformers (512-dim vectors)
  * 4. Hybrid RRF search via SQLite + sqlite-vec + FTS5
  * 5. Merkle-style file diffing (skip unchanged files)
  *
