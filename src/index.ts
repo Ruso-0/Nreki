@@ -3,7 +3,7 @@
 /**
  * index.ts — TokenGuard MCP Server entry point.
  *
- * Exposes 11 MCP tools to Claude Code:
+ * Exposes 12 MCP tools to Claude Code:
  *
  * 1. tg_search  — Hybrid semantic + keyword search (replaces grep)
  * 2. tg_audit   — Token consumption audit for the current session
@@ -16,6 +16,7 @@
  * 9. tg_refs    — Find all references to a symbol across the project
  * 10. tg_outline — List all symbols in a file (like VS Code outline)
  * 11. tg_read   — Read file with automatic compression
+ * 12. tg_validate — AST sandbox validator (catches syntax errors before disk)
  *
  * Every tool response appends a savings message:
  *   "[TokenGuard saved ~X tokens on this query]"
@@ -34,6 +35,7 @@ import { safePath } from "./utils/path-jail.js";
 import { shouldProcess } from "./utils/file-filter.js";
 import { filterTerminalOutput } from "./terminal-filter.js";
 import { findDefinition, findReferences, getFileSymbols, type SymbolKind, type ReferenceResult } from "./ast-navigator.js";
+import { AstSandbox } from "./ast-sandbox.js";
 
 // ─── Initialization ──────────────────────────────────────────────────
 
@@ -43,6 +45,7 @@ const engine = new TokenGuardEngine({
 });
 
 const monitor = new TokenMonitor();
+const sandbox = new AstSandbox();
 
 const server = new McpServer({
     name: "TokenGuard",
@@ -925,6 +928,87 @@ server.tool(
                 ],
             };
         }
+    }
+);
+
+// ─── Tool 12: tg_validate ───────────────────────────────────────────
+
+server.tool(
+    "tg_validate",
+    "Validates code syntax before saving to disk. " +
+    "Parses the code with tree-sitter and checks for syntax errors. " +
+    "Use this before writing any file to prevent broken code from reaching the filesystem. " +
+    "Returns specific error locations and fix suggestions.",
+    {
+        code: z
+            .string()
+            .describe("The code to validate"),
+        language: z
+            .enum(["typescript", "javascript", "python", "go"])
+            .describe("Programming language of the code"),
+        file_path: z
+            .string()
+            .optional()
+            .describe(
+                "Optional file path. If the file exists on disk, validates as a diff against the original."
+            ),
+    },
+    async ({ code, language, file_path }) => {
+        let result;
+
+        // If file_path provided and file exists, use diff validation
+        if (file_path) {
+            try {
+                const resolvedPath = safePath(process.cwd(), file_path);
+                const original = fs.readFileSync(resolvedPath, "utf-8");
+                result = await sandbox.validateDiff(original, code, language);
+            } catch {
+                // File doesn't exist or path error — validate code only
+                result = await sandbox.validateCode(code, language);
+            }
+        } else {
+            result = await sandbox.validateCode(code, language);
+        }
+
+        const inputTokens = Embedder.estimateTokens(code);
+
+        if (result.valid) {
+            engine.logUsage("tg_validate", inputTokens, 0, 0);
+
+            return {
+                content: [
+                    {
+                        type: "text" as const,
+                        text:
+                            `## Validation: PASSED\n` +
+                            `Code is syntactically valid ${language}. Safe to write.\n\n` +
+                            `[TokenGuard saved ~0 tokens on this validation]`,
+                    },
+                ],
+            };
+        }
+
+        // Format errors
+        const errorLines = result.errors.map((e, i) =>
+            `${i + 1}. **Line ${e.line}, Col ${e.column}** (${e.nodeType}): \`${e.context.split("\n")[0].trim()}\``
+        );
+
+        const saved = inputTokens; // prevented a broken write + retry cycle
+        engine.logUsage("tg_validate", inputTokens, Embedder.estimateTokens(result.suggestion), saved);
+
+        return {
+            content: [
+                {
+                    type: "text" as const,
+                    text:
+                        `## Validation: FAILED — ${result.errors.length} syntax error(s)\n\n` +
+                        `### Errors\n${errorLines.join("\n")}\n\n` +
+                        `### Suggestions\n${result.suggestion}\n\n` +
+                        `Fix these errors before writing the file.\n\n` +
+                        `[TokenGuard saved ~${saved.toLocaleString()} tokens by catching errors before disk write]`,
+                },
+            ],
+        };
     }
 );
 
