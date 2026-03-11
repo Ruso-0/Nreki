@@ -2,6 +2,13 @@
 
 All notable changes to TokenGuard will be documented in this file.
 
+## [3.0.3] - 2026-03-11
+
+### Fixed
+- **CI macOS/Windows**: `safePath` now calls `realpathSync` on the workspace root as well as the resolved path, fixing false-positive "Symlink escape blocked" errors on macOS where `/tmp` is a symlink to `/private/tmp`. All 423 tests pass on all platforms.
+
+---
+
 ## [3.0.2] - 2026-03-10
 
 ### Headline

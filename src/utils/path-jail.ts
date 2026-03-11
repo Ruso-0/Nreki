@@ -58,10 +58,19 @@ export function safePath(workspaceRoot: string, inputPath: string): string {
         throw new Error(`Path traversal blocked: ${inputPath}`);
     }
 
-    // Resolve symlinks to detect symlink escapes
+    // Resolve symlinks to detect symlink escapes.
+    // Both resolved and root must be real-pathed so that systems where the
+    // workspace sits under a symlinked directory (e.g. macOS /tmp → /private/tmp)
+    // don't produce false-positive "escape" errors.
     try {
         const realPath = fs.realpathSync(resolved);
-        if (!realPath.startsWith(resolvedRoot)) {
+        let realRoot: string;
+        try {
+            realRoot = fs.realpathSync(resolvedRoot);
+        } catch {
+            realRoot = resolvedRoot;
+        }
+        if (!realPath.startsWith(realRoot)) {
             throw new Error(`Symlink escape blocked: ${inputPath} resolves outside workspace`);
         }
     } catch (err) {
