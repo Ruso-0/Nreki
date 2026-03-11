@@ -50,11 +50,13 @@ export function wrapWithCircuitBreaker(
             }
         }
 
-        // Auto-reset: different request type
+        // Soft reset on different request type: clears tripped state but
+        // preserves per-file failure counters. This prevents the bypass where
+        // alternating Edit(fail) → Read → Edit(fail) circumvents detection.
         if (toolAction !== lastToolAction && lastToolAction !== "") {
             const state = cb.getState();
             if (state.tripped) {
-                cb.reset();
+                cb.softReset();
             }
         }
 

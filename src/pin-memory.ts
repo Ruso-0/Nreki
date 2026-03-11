@@ -67,6 +67,35 @@ function nextId(pins: PinnedRule[]): string {
     return `pin_${String(maxNum + 1).padStart(3, "0")}`;
 }
 
+// ─── Pin Sanitization ────────────────────────────────────────────
+
+/** Patterns that should never appear in pinned rules (anti-poisoning). */
+const BLOCKED_PIN_PATTERNS: Array<{ pattern: RegExp; label: string }> = [
+    { pattern: /https?:\/\/[^\s]+/i, label: "URLs" },
+    { pattern: /\bsudo\b/i, label: "sudo commands" },
+    { pattern: /\brm\s+-rf\b/i, label: "destructive commands" },
+    { pattern: /\b(?:curl|wget)\b/i, label: "download commands" },
+    { pattern: /\.\.\//,            label: "path traversal" },
+    { pattern: /\$\(/,              label: "command substitution" },
+    { pattern: /`[^`]+`/,           label: "backtick execution" },
+    { pattern: /<script\b/i,        label: "script injection" },
+    { pattern: /\beval\s*\(/i,      label: "eval calls" },
+    { pattern: /\bexec\s*\(/i,      label: "exec calls" },
+];
+
+/**
+ * Validate pin text against poisoning patterns.
+ * Blocks URLs, shell commands, path traversal, and injection attempts.
+ */
+export function sanitizePin(text: string): { valid: true } | { valid: false; reason: string } {
+    for (const { pattern, label } of BLOCKED_PIN_PATTERNS) {
+        if (pattern.test(text)) {
+            return { valid: false, reason: `Pin text contains blocked pattern (${label}).` };
+        }
+    }
+    return { valid: true };
+}
+
 // ─── XML Escaping ────────────────────────────────────────────────
 
 /** Escape XML/HTML special characters to prevent prompt injection. */
@@ -95,6 +124,11 @@ export function addPin(
 
     if (text.trim().length === 0) {
         return { success: false, error: "Pin text cannot be empty." };
+    }
+
+    const sanitizeResult = sanitizePin(text.trim());
+    if (!sanitizeResult.valid) {
+        return { success: false, error: sanitizeResult.reason };
     }
 
     const pins = loadPins(projectRoot);

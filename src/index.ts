@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * index.ts — TokenGuard v3.0 MCP Server entry point.
+ * index.ts — TokenGuard v3.0.1 MCP Server entry point.
  *
  * Exposes 3 router tools to Claude Code (replaces 16 individual tools):
  *
@@ -12,6 +12,11 @@
  * Middleware (runs automatically, not exposed as tools):
  *   - AST Validation: validates code before disk writes (inside tg_code edit)
  *   - Circuit Breaker: detects and stops infinite failure loops
+ *   - File Lock: prevents concurrent edit corruption
+ *
+ * v3.0.1: Flat parameter schemas (explicit fields per action, no generic options bag),
+ * file-level mutex on edits, security hardening (symlink resolution, sensitive file
+ * blocklist, per-file circuit breaker tracking, pin sanitization).
  *
  * All processing is local. Zero cloud dependencies.
  */
@@ -30,6 +35,9 @@ import {
     handleCode,
     handleGuard,
     type RouterDependencies,
+    type NavigateParams,
+    type CodeParams,
+    type GuardParams,
 } from "./router.js";
 import { wrapWithCircuitBreaker } from "./middleware/circuit-breaker.js";
 
@@ -54,7 +62,7 @@ const deps: RouterDependencies = { engine, monitor, sandbox, circuitBreaker };
 
 const server = new McpServer({
     name: "TokenGuard",
-    version: "3.0.0",
+    version: "3.0.1",
 });
 
 if (!enableEmbeddings) {
@@ -79,32 +87,46 @@ server.tool(
                 "outline: list all symbols in a file. " +
                 "map: full repo structure map with pinned rules.",
             ),
-        target: z
+        query: z
             .string()
             .optional()
-            .describe(
-                "For search: the query string. " +
-                "For definition/references: the symbol name. " +
-                "For outline: the file path. " +
-                "For map: optional — leave empty for full map.",
-            ),
-        options: z
-            .record(z.unknown())
+            .describe("For search: the query string."),
+        symbol: z
+            .string()
             .optional()
-            .describe(
-                "Optional parameters. " +
-                "For search: {limit?: number, include_raw?: boolean}. " +
-                "For definition: {kind?: string}. " +
-                "For outline: {signatures?: boolean}. " +
-                "For map: {refresh?: boolean}.",
-            ),
+            .describe("For definition/references: the symbol name."),
+        path: z
+            .string()
+            .optional()
+            .describe("For outline: the file path."),
+        limit: z
+            .number()
+            .optional()
+            .describe("For search: max results to return (1-50, default 10)."),
+        include_raw: z
+            .boolean()
+            .optional()
+            .describe("For search: include full source code in results."),
+        kind: z
+            .string()
+            .optional()
+            .describe("For definition: filter by symbol kind (function, class, interface, etc.)."),
+        signatures: z
+            .boolean()
+            .optional()
+            .describe("For outline: include full signatures."),
+        refresh: z
+            .boolean()
+            .optional()
+            .describe("For map: force regeneration, ignoring cache."),
     },
-    async ({ action, target, options }) => {
+    async ({ action, query, symbol, path: navPath, limit, include_raw, kind, signatures, refresh }) => {
+        const params: NavigateParams = { action, query, symbol, path: navPath, limit, include_raw, kind, signatures, refresh };
         return wrapWithCircuitBreaker(
             circuitBreaker,
             "tg_navigate",
             action,
-            () => handleNavigate(action, target, options as Record<string, unknown> | undefined, deps),
+            () => handleNavigate(action, params, deps),
         );
     },
 );
@@ -116,37 +138,61 @@ server.tool(
     "Read, compress, and surgically edit code files. " +
     "All edits are automatically validated via AST before writing to disk — " +
     "if syntax is invalid, the edit is blocked and you get the exact error. " +
-    "Undo reverts the last edit.",
+    "Undo reverts the last edit. filter_output strips noisy terminal output.",
     {
         action: z
-            .enum(["read", "compress", "edit", "undo", "terminal"])
+            .enum(["read", "compress", "edit", "undo", "filter_output"])
             .describe(
                 "read: read file with optional compression. " +
                 "compress: compress file/directory with full control. " +
                 "edit: surgically edit a function/class by name (auto-validated). " +
                 "undo: revert last edit. " +
-                "terminal: filter noisy terminal output.",
+                "filter_output: filter noisy terminal output (strips ANSI, deduplicates errors). Does NOT execute commands.",
             ),
         path: z
             .string()
             .optional()
-            .describe("File or directory path."),
-        options: z
-            .record(z.unknown())
+            .describe("File or directory path (required for read, compress, edit, undo)."),
+        symbol: z
+            .string()
             .optional()
-            .describe(
-                "For read: {compress?: boolean, level?: 'light'|'medium'|'aggressive'}. " +
-                "For compress: {level?: string, focus?: string, tier?: number}. " +
-                "For edit: {symbol: string, new_code: string}. " +
-                "For terminal: {command: string, output: string, max_lines?: number}.",
-            ),
+            .describe("For edit: the function/class/interface name to replace."),
+        new_code: z
+            .string()
+            .optional()
+            .describe("For edit: the complete replacement source code for the symbol."),
+        compress: z
+            .boolean()
+            .optional()
+            .describe("For read: enable auto-compression (default true)."),
+        level: z
+            .string()
+            .optional()
+            .describe("Compression level: 'light', 'medium', or 'aggressive'."),
+        focus: z
+            .string()
+            .optional()
+            .describe("For compress: focus query to rank chunks by relevance."),
+        tier: z
+            .number()
+            .optional()
+            .describe("For compress: legacy tier (1-3)."),
+        output: z
+            .string()
+            .optional()
+            .describe("For filter_output: the terminal output text to filter."),
+        max_lines: z
+            .number()
+            .optional()
+            .describe("For filter_output: max output lines (1-1000, default 100)."),
     },
-    async ({ action, path: filePath, options }) => {
+    async ({ action, path: filePath, symbol, new_code, compress, level, focus, tier, output, max_lines }) => {
+        const params: CodeParams = { action, path: filePath, symbol, new_code, compress, level, focus, tier, output, max_lines };
         return wrapWithCircuitBreaker(
             circuitBreaker,
             "tg_code",
             action,
-            () => handleCode(action, filePath, options as Record<string, unknown> | undefined, deps),
+            () => handleCode(action, params, deps),
             filePath,
         );
     },
@@ -168,21 +214,26 @@ server.tool(
                 "status: token burn rate and alerts. " +
                 "report: full session savings receipt.",
             ),
-        options: z
-            .record(z.unknown())
+        text: z
+            .string()
             .optional()
-            .describe(
-                "For pin: {text: string}. " +
-                "For unpin: {index: number} or {id: string}. " +
-                "For status/report: no options needed.",
-            ),
+            .describe("For pin: the rule text to pin (max 200 chars)."),
+        index: z
+            .number()
+            .optional()
+            .describe("For unpin: the pin index to remove (0-based)."),
+        id: z
+            .string()
+            .optional()
+            .describe("For unpin: the pin id to remove."),
     },
-    async ({ action, options }) => {
+    async ({ action, text, index, id }) => {
+        const params: GuardParams = { action, text, index, id };
         return wrapWithCircuitBreaker(
             circuitBreaker,
             "tg_guard",
             action,
-            () => handleGuard(action, options as Record<string, unknown> | undefined, deps),
+            () => handleGuard(action, params, deps),
         );
     },
 );

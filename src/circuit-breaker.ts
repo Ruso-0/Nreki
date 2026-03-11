@@ -9,6 +9,7 @@
  *   Pattern 1: Same error hash 3+ times in last 10 calls
  *   Pattern 2: Same file written 5+ times in last 15 calls
  *   Pattern 3: Alternating write→test→fail cycle 3+ times
+ *   Pattern 4: Per-file failure threshold (3+ errors on same file, even across different actions)
  */
 
 import crypto from "crypto";
@@ -27,6 +28,7 @@ export interface CircuitBreakerState {
     tripped: boolean;
     tripReason: string | null;
     consecutiveFailures: number;
+    perFileFailures: Map<string, number>;
 }
 
 export interface LoopCheckResult {
@@ -50,6 +52,7 @@ const SAME_ERROR_WINDOW = 10;
 const SAME_FILE_THRESHOLD = 5;
 const SAME_FILE_WINDOW = 15;
 const WRITE_TEST_FAIL_THRESHOLD = 3;
+const PER_FILE_FAILURE_THRESHOLD = 3;
 
 // Average tokens burned per failed loop iteration (write + test + read error)
 const TOKENS_PER_FAILED_ITERATION = 2000;
@@ -111,6 +114,7 @@ export class CircuitBreaker {
         tripped: false,
         tripReason: null,
         consecutiveFailures: 0,
+        perFileFailures: new Map(),
     };
 
     private stats: CircuitBreakerStats = {
@@ -153,6 +157,17 @@ export class CircuitBreaker {
             this.state.consecutiveFailures++;
         } else {
             this.state.consecutiveFailures = 0;
+        }
+
+        // Track per-file failures (prevents bypass via action alternation)
+        if (filePath) {
+            if (hasError) {
+                const current = this.state.perFileFailures.get(filePath) ?? 0;
+                this.state.perFileFailures.set(filePath, current + 1);
+            } else {
+                // Success on a file resets that file's counter
+                this.state.perFileFailures.delete(filePath);
+            }
         }
 
         // Check for loop patterns
@@ -228,6 +243,16 @@ export class CircuitBreaker {
             );
         }
 
+        // Pattern 4: Per-file failure threshold (prevents bypass via action alternation)
+        for (const [file, count] of this.state.perFileFailures) {
+            if (count >= PER_FILE_FAILURE_THRESHOLD) {
+                return this.trip(
+                    `File ${file} has failed ${count} consecutive times across different tool calls. ` +
+                    `Stop and ask the human for guidance.`
+                );
+            }
+        }
+
         return { tripped: false, reason: "" };
     }
 
@@ -286,13 +311,26 @@ export class CircuitBreaker {
     }
 
     /**
-     * Reset the circuit breaker after human intervention.
+     * Full reset after human intervention or long inactivity.
+     * Clears everything including per-file failure tracking.
      */
     reset(): void {
         this.state.tripped = false;
         this.state.tripReason = null;
         this.state.consecutiveFailures = 0;
         this.state.history = [];
+        this.state.perFileFailures = new Map();
+    }
+
+    /**
+     * Soft reset: clear tripped state but preserve per-file failure tracking.
+     * Used by middleware auto-reset when a different tool/action is called.
+     * Prevents the bypass where Edit(fail) → Read → Edit(fail) circumvents detection.
+     */
+    softReset(): void {
+        this.state.tripped = false;
+        this.state.tripReason = null;
+        // NOTE: Do NOT clear perFileFailures or history
     }
 
     /**
@@ -311,6 +349,7 @@ export class CircuitBreaker {
             tripped: this.state.tripped,
             tripReason: this.state.tripReason,
             consecutiveFailures: this.state.consecutiveFailures,
+            perFileFailures: new Map(this.state.perFileFailures),
         };
     }
 

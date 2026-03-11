@@ -1,13 +1,16 @@
 /**
- * router.ts — Central dispatcher for TokenGuard v3.0 router tools.
+ * router.ts — Central dispatcher for TokenGuard v3.0.1 router tools.
  *
  * Maps {toolName, action} pairs to existing handler functions.
  * All business logic remains in the original modules — this file
  * only wires up the routing and formats MCP responses.
  *
+ * v3.0.1: Flat parameter schemas (no more generic `options` bag),
+ * file-level mutex on edits, terminal renamed to filter_output.
+ *
  * 3 router tools replace 16 individual tools:
  *   tg_navigate → search, definition, references, outline, map
- *   tg_code     → read, compress, edit, undo, terminal
+ *   tg_code     → read, compress, edit, undo, filter_output
  *   tg_guard    → pin, unpin, status, report
  */
 
@@ -35,6 +38,7 @@ import { readSource } from "./utils/read-source.js";
 import { restoreBackup } from "./undo.js";
 import { validateBeforeWrite } from "./middleware/validator.js";
 import { wrapWithCircuitBreaker } from "./middleware/circuit-breaker.js";
+import { acquireFileLock, releaseFileLock } from "./middleware/file-lock.js";
 
 // ─── Types ───────────────────────────────────────────────────────────
 
@@ -51,25 +55,59 @@ export interface RouterDependencies {
     circuitBreaker: CircuitBreaker;
 }
 
+/** Flat params for tg_navigate (replaces target + options bag). */
+export interface NavigateParams {
+    action: string;
+    query?: string;
+    symbol?: string;
+    path?: string;
+    limit?: number;
+    include_raw?: boolean;
+    kind?: string;
+    signatures?: boolean;
+    refresh?: boolean;
+}
+
+/** Flat params for tg_code (replaces path + options bag). */
+export interface CodeParams {
+    action: string;
+    path?: string;
+    symbol?: string;
+    new_code?: string;
+    compress?: boolean;
+    level?: string;
+    focus?: string;
+    tier?: number;
+    output?: string;
+    max_lines?: number;
+}
+
+/** Flat params for tg_guard (replaces options bag). */
+export interface GuardParams {
+    action: string;
+    text?: string;
+    index?: number;
+    id?: string;
+}
+
 // ─── tg_navigate ────────────────────────────────────────────────────
 
 export async function handleNavigate(
     action: string,
-    target: string | undefined,
-    options: Record<string, unknown> | undefined,
+    params: NavigateParams,
     deps: RouterDependencies,
 ): Promise<McpToolResponse> {
     switch (action) {
         case "search":
-            return handleSearch(target ?? "", options, deps);
+            return handleSearch(params, deps);
         case "definition":
-            return handleDefinition(target ?? "", options, deps);
+            return handleDefinition(params, deps);
         case "references":
-            return handleReferences(target ?? "", deps);
+            return handleReferences(params, deps);
         case "outline":
-            return handleOutline(target ?? "", options, deps);
+            return handleOutline(params, deps);
         case "map":
-            return handleMap(options, deps);
+            return handleMap(params, deps);
         default:
             return {
                 content: [{
@@ -85,29 +123,32 @@ export async function handleNavigate(
 
 export async function handleCode(
     action: string,
-    filePath: string | undefined,
-    options: Record<string, unknown> | undefined,
+    params: CodeParams,
     deps: RouterDependencies,
 ): Promise<McpToolResponse> {
     switch (action) {
         case "read":
-            return handleRead(filePath ?? "", options, deps);
+            return handleRead(params, deps);
         case "compress":
-            return handleCompress(filePath ?? "", options, deps);
+            return handleCompress(params, deps);
         case "edit":
-            return handleEdit(filePath ?? "", options, deps);
+            return handleEdit(params, deps);
         case "undo":
-            return handleUndo(filePath ?? "", deps);
-        case "terminal":
-            return handleTerminal(options, deps);
-        default:
+            return handleUndo(params, deps);
+        case "filter_output":
+            return handleFilterOutput(params, deps);
+        default: {
+            const hint = action === "terminal"
+                ? ' (Note: "terminal" was renamed to "filter_output" in v3.0.1)'
+                : "";
             return {
                 content: [{
                     type: "text" as const,
-                    text: `Unknown tg_code action: "${action}". Valid actions: read, compress, edit, undo, terminal.`,
+                    text: `Unknown tg_code action: "${action}"${hint}. Valid actions: read, compress, edit, undo, filter_output.`,
                 }],
                 isError: true,
             };
+        }
     }
 }
 
@@ -115,14 +156,14 @@ export async function handleCode(
 
 export async function handleGuard(
     action: string,
-    options: Record<string, unknown> | undefined,
+    params: GuardParams,
     deps: RouterDependencies,
 ): Promise<McpToolResponse> {
     switch (action) {
         case "pin":
-            return handlePin(options, deps);
+            return handlePin(params, deps);
         case "unpin":
-            return handleUnpin(options, deps);
+            return handleUnpin(params, deps);
         case "status":
             return handleStatus(deps);
         case "report":
@@ -141,20 +182,21 @@ export async function handleGuard(
 // ─── Navigate Handlers ──────────────────────────────────────────────
 
 async function handleSearch(
-    query: string,
-    options: Record<string, unknown> | undefined,
+    params: NavigateParams,
     deps: RouterDependencies,
 ): Promise<McpToolResponse> {
     const { engine } = deps;
     await engine.initialize();
+
+    const query = params.query ?? "";
 
     const stats = engine.getStats();
     if (stats.filesIndexed === 0) {
         await engine.indexDirectory(process.cwd());
     }
 
-    const limit = typeof options?.limit === "number" ? Math.min(50, Math.max(1, options.limit)) : 10;
-    const include_raw = options?.include_raw === true;
+    const limit = typeof params.limit === "number" ? Math.min(50, Math.max(1, params.limit)) : 10;
+    const include_raw = params.include_raw === true;
 
     const results = await engine.search(query, limit);
 
@@ -203,16 +245,16 @@ async function handleSearch(
 }
 
 async function handleDefinition(
-    symbol: string,
-    options: Record<string, unknown> | undefined,
+    params: NavigateParams,
     deps: RouterDependencies,
 ): Promise<McpToolResponse> {
     const { engine } = deps;
     await engine.initialize();
 
+    const symbol = params.symbol ?? "";
     const root = engine.getProjectRoot();
     const parser = engine.getParser();
-    const kind = typeof options?.kind === "string" ? options.kind : "any";
+    const kind = typeof params.kind === "string" ? params.kind : "any";
     const results = await findDefinition(root, parser, symbol, kind as SymbolKind);
 
     if (results.length === 0) {
@@ -255,12 +297,13 @@ async function handleDefinition(
 }
 
 async function handleReferences(
-    symbol: string,
+    params: NavigateParams,
     deps: RouterDependencies,
 ): Promise<McpToolResponse> {
     const { engine } = deps;
     await engine.initialize();
 
+    const symbol = params.symbol ?? "";
     const root = engine.getProjectRoot();
     const parser = engine.getParser();
     const results = await findReferences(root, parser, symbol);
@@ -309,13 +352,13 @@ async function handleReferences(
 }
 
 async function handleOutline(
-    file: string,
-    options: Record<string, unknown> | undefined,
+    params: NavigateParams,
     deps: RouterDependencies,
 ): Promise<McpToolResponse> {
     const { engine } = deps;
     await engine.initialize();
 
+    const file = params.path ?? "";
     const root = engine.getProjectRoot();
     let resolvedPath: string;
     try {
@@ -378,7 +421,7 @@ async function handleOutline(
 }
 
 async function handleMap(
-    options: Record<string, unknown> | undefined,
+    params: NavigateParams,
     deps: RouterDependencies,
 ): Promise<McpToolResponse> {
     const { engine } = deps;
@@ -389,7 +432,7 @@ async function handleMap(
         await engine.indexDirectory(process.cwd());
     }
 
-    const refresh = options?.refresh === true;
+    const refresh = params.refresh === true;
     const { text, fromCache } = await engine.getRepoMap(refresh);
 
     const pinnedText = getPinnedText(process.cwd());
@@ -414,13 +457,13 @@ async function handleMap(
 // ─── Code Handlers ──────────────────────────────────────────────────
 
 async function handleRead(
-    file_path: string,
-    options: Record<string, unknown> | undefined,
+    params: CodeParams,
     deps: RouterDependencies,
 ): Promise<McpToolResponse> {
     const { engine } = deps;
     await engine.initialize();
 
+    const file_path = params.path ?? "";
     let resolvedPath: string;
     try {
         resolvedPath = safePath(process.cwd(), file_path);
@@ -460,10 +503,10 @@ async function handleRead(
             };
         }
 
-        const compress = options?.compress !== false;
-        const level = (typeof options?.level === "string" &&
-            ["light", "medium", "aggressive"].includes(options.level))
-            ? options.level as "light" | "medium" | "aggressive"
+        const compress = params.compress !== false;
+        const level = (typeof params.level === "string" &&
+            ["light", "medium", "aggressive"].includes(params.level))
+            ? params.level as "light" | "medium" | "aggressive"
             : "medium";
 
         if (!compress) {
@@ -520,13 +563,13 @@ async function handleRead(
 }
 
 async function handleCompress(
-    file_path: string,
-    options: Record<string, unknown> | undefined,
+    params: CodeParams,
     deps: RouterDependencies,
 ): Promise<McpToolResponse> {
     const { engine } = deps;
     await engine.initialize();
 
+    const file_path = params.path ?? "";
     let resolvedPath: string;
     try {
         resolvedPath = safePath(process.cwd(), file_path);
@@ -540,12 +583,12 @@ async function handleCompress(
     }
 
     try {
-        const compression_level = typeof options?.level === "string" &&
-            ["light", "medium", "aggressive"].includes(options.level)
-            ? options.level as "light" | "medium" | "aggressive"
+        const compression_level = typeof params.level === "string" &&
+            ["light", "medium", "aggressive"].includes(params.level)
+            ? params.level as "light" | "medium" | "aggressive"
             : undefined;
 
-        const focus = typeof options?.focus === "string" ? options.focus : undefined;
+        const focus = typeof params.focus === "string" ? params.focus : undefined;
 
         // Advanced compression path
         if (compression_level) {
@@ -580,8 +623,8 @@ async function handleCompress(
         }
 
         // Classic tier-based compression path (backward compat)
-        const tier = typeof options?.tier === "number"
-            ? Math.min(3, Math.max(1, options.tier)) as 1 | 2 | 3
+        const tier = typeof params.tier === "number"
+            ? Math.min(3, Math.max(1, params.tier)) as 1 | 2 | 3
             : 1;
 
         const result = await engine.compressFile(resolvedPath, tier, focus);
@@ -617,21 +660,21 @@ async function handleCompress(
 }
 
 async function handleEdit(
-    file: string,
-    options: Record<string, unknown> | undefined,
+    params: CodeParams,
     deps: RouterDependencies,
 ): Promise<McpToolResponse> {
     const { engine, sandbox } = deps;
     await engine.initialize();
 
-    const symbol = typeof options?.symbol === "string" ? options.symbol : "";
-    const new_code = typeof options?.new_code === "string" ? options.new_code : "";
+    const file = params.path ?? "";
+    const symbol = typeof params.symbol === "string" ? params.symbol : "";
+    const new_code = typeof params.new_code === "string" ? params.new_code : "";
 
     if (!symbol || !new_code) {
         return {
             content: [{
                 type: "text" as const,
-                text: `Error: "symbol" and "new_code" are required in options for the edit action.\n\n[TokenGuard saved ~0 tokens]`,
+                text: `Error: "symbol" and "new_code" are required for the edit action.\n\n[TokenGuard saved ~0 tokens]`,
             }],
         };
     }
@@ -648,54 +691,75 @@ async function handleEdit(
         };
     }
 
-    const parser = engine.getParser();
-    const result = await semanticEdit(
-        resolvedPath,
-        symbol,
-        new_code,
-        parser,
-        sandbox,
-    );
-
-    if (!result.success) {
+    // Acquire file-level mutex to prevent concurrent edit corruption
+    const lockResult = acquireFileLock(resolvedPath, "tg_code:edit");
+    if (!lockResult.acquired) {
         return {
             content: [{
                 type: "text" as const,
                 text:
-                    `## Semantic Edit: FAILED\n\n` +
-                    `**Symbol:** ${symbol}\n` +
-                    `**File:** ${file}\n\n` +
-                    `${result.error}\n\n` +
+                    `## Semantic Edit: BLOCKED\n\n` +
+                    `File is currently locked by a concurrent edit (${lockResult.heldBy}, ${lockResult.heldForMs}ms ago).\n` +
+                    `Wait for the current edit to complete and retry.\n\n` +
                     `[TokenGuard saved ~0 tokens]`,
             }],
+            isError: true,
         };
     }
 
-    engine.logUsage(
-        "tg_semantic_edit",
-        Embedder.estimateTokens(new_code),
-        Embedder.estimateTokens(new_code),
-        result.tokensAvoided,
-    );
+    try {
+        const parser = engine.getParser();
+        const result = await semanticEdit(
+            resolvedPath,
+            symbol,
+            new_code,
+            parser,
+            sandbox,
+        );
 
-    return {
-        content: [{
-            type: "text" as const,
-            text:
-                `## Semantic Edit: SUCCESS\n\n` +
-                `**Symbol:** ${symbol}\n` +
-                `**File:** ${file}\n` +
-                `**Lines:** ${result.oldLines} → ${result.newLines}\n` +
-                `**Syntax:** validated ✓\n\n` +
-                `[TokenGuard saved ~${result.tokensAvoided.toLocaleString()} tokens vs full file rewrite]`,
-        }],
-    };
+        if (!result.success) {
+            return {
+                content: [{
+                    type: "text" as const,
+                    text:
+                        `## Semantic Edit: FAILED\n\n` +
+                        `**Symbol:** ${symbol}\n` +
+                        `**File:** ${file}\n\n` +
+                        `${result.error}\n\n` +
+                        `[TokenGuard saved ~0 tokens]`,
+                }],
+            };
+        }
+
+        engine.logUsage(
+            "tg_semantic_edit",
+            Embedder.estimateTokens(new_code),
+            Embedder.estimateTokens(new_code),
+            result.tokensAvoided,
+        );
+
+        return {
+            content: [{
+                type: "text" as const,
+                text:
+                    `## Semantic Edit: SUCCESS\n\n` +
+                    `**Symbol:** ${symbol}\n` +
+                    `**File:** ${file}\n` +
+                    `**Lines:** ${result.oldLines} → ${result.newLines}\n` +
+                    `**Syntax:** validated ✓\n\n` +
+                    `[TokenGuard saved ~${result.tokensAvoided.toLocaleString()} tokens vs full file rewrite]`,
+            }],
+        };
+    } finally {
+        releaseFileLock(resolvedPath);
+    }
 }
 
 async function handleUndo(
-    file: string,
+    params: CodeParams,
     deps: RouterDependencies,
 ): Promise<McpToolResponse> {
+    const file = params.path ?? "";
     let resolvedPath: string;
     try {
         resolvedPath = safePath(process.cwd(), file);
@@ -726,22 +790,22 @@ async function handleUndo(
     }
 }
 
-async function handleTerminal(
-    options: Record<string, unknown> | undefined,
+async function handleFilterOutput(
+    params: CodeParams,
     deps: RouterDependencies,
 ): Promise<McpToolResponse> {
     const { engine, circuitBreaker } = deps;
 
-    const output = typeof options?.command === "string" ? options.command : (typeof options?.output === "string" ? options.output : "");
-    const max_lines = typeof options?.max_lines === "number"
-        ? Math.min(1000, Math.max(1, options.max_lines))
+    const output = typeof params.output === "string" ? params.output : "";
+    const max_lines = typeof params.max_lines === "number"
+        ? Math.min(1000, Math.max(1, params.max_lines))
         : 100;
 
     if (!output) {
         return {
             content: [{
                 type: "text" as const,
-                text: `Error: "command" or "output" is required in options for the terminal action.\n\n[TokenGuard saved ~0 tokens]`,
+                text: `Error: "output" is required for the filter_output action.\n\n[TokenGuard saved ~0 tokens]`,
             }],
         };
     }
@@ -749,7 +813,7 @@ async function handleTerminal(
     const result = filterTerminalOutput(output, max_lines);
 
     engine.logUsage(
-        "tg_terminal",
+        "tg_filter_output",
         result.filtered_tokens,
         result.filtered_tokens,
         Math.max(0, result.original_tokens - result.filtered_tokens),
@@ -759,7 +823,7 @@ async function handleTerminal(
     let circuitWarning = "";
     if (result.error_summary.errorCount > 0) {
         const loopCheck = circuitBreaker.recordToolCall(
-            "tg_terminal",
+            "tg_filter_output",
             output,
             result.error_summary.affectedFiles[0] ?? undefined,
         );
@@ -815,17 +879,17 @@ async function handleTerminal(
 // ─── Guard Handlers ─────────────────────────────────────────────────
 
 async function handlePin(
-    options: Record<string, unknown> | undefined,
+    params: GuardParams,
     deps: RouterDependencies,
 ): Promise<McpToolResponse> {
     const projectRoot = process.cwd();
-    const text = typeof options?.text === "string" ? options.text : "";
+    const text = typeof params.text === "string" ? params.text : "";
 
     if (!text) {
         return {
             content: [{
                 type: "text" as const,
-                text: "Error: `text` is required in options for the pin action.\n\n[TokenGuard saved ~0 tokens]",
+                text: "Error: `text` is required for the pin action.\n\n[TokenGuard saved ~0 tokens]",
             }],
         };
     }
@@ -856,12 +920,12 @@ async function handlePin(
 }
 
 async function handleUnpin(
-    options: Record<string, unknown> | undefined,
+    params: GuardParams,
     deps: RouterDependencies,
 ): Promise<McpToolResponse> {
     const projectRoot = process.cwd();
-    const index = typeof options?.index === "number" ? options.index : undefined;
-    const id = typeof options?.id === "string" ? options.id : undefined;
+    const index = typeof params.index === "number" ? params.index : undefined;
+    const id = typeof params.id === "string" ? params.id : undefined;
 
     const pinId = id ?? (typeof index === "number" ? `pin_${String(index).padStart(3, "0")}` : undefined);
 
@@ -869,7 +933,7 @@ async function handleUnpin(
         return {
             content: [{
                 type: "text" as const,
-                text: "Error: `index` or `id` is required in options for the unpin action.\n\n[TokenGuard saved ~0 tokens]",
+                text: "Error: `index` or `id` is required for the unpin action.\n\n[TokenGuard saved ~0 tokens]",
             }],
         };
     }
