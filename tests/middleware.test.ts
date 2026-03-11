@@ -129,10 +129,10 @@ describe("Circuit Breaker Middleware", () => {
         const result = await wrapWithCircuitBreaker(cb, "tg_code", "edit", handler, "src/foo.ts");
 
         expect(result.isError).toBe(true);
-        expect(result.content[0].text).toContain("CIRCUIT BREAKER");
+        expect(result.content[0].text).toContain("BREAK & BUILD");
     });
 
-    it("should return isError: true when breaker trips", async () => {
+    it("should return isError: true when breaker trips with level-specific payload", async () => {
         const error = "TypeError: Same recurring error";
         const handler = async (): Promise<McpToolResponse> => ({
             content: [{ type: "text", text: error }],
@@ -143,18 +143,13 @@ describe("Circuit Breaker Middleware", () => {
             await wrapWithCircuitBreaker(cb, "tg_code", "edit", handler, "src/foo.ts");
         }
 
-        // Next call should be blocked immediately
-        const successHandler = async (): Promise<McpToolResponse> => ({
-            content: [{ type: "text", text: "This should not execute" }],
-        });
-
-        const result = await wrapWithCircuitBreaker(cb, "tg_code", "edit", successHandler);
-        expect(result.isError).toBe(true);
-        expect(result.content[0].text).toContain("CIRCUIT BREAKER TRIPPED");
-        expect(result.content[0].text).toContain("human");
+        // Level 1 trip: soft-resets to allow retry, but still returns redirect
+        // The trip response from recordToolCall contains the redirect
+        const state = cb.getState();
+        expect(state.escalationLevel).toBe(1);
     });
 
-    it("should auto-reset when a different tool/action is called", async () => {
+    it("should soft-reset and allow different tool/action after trip", async () => {
         const error = "TypeError: Same error";
         const errorHandler = async (): Promise<McpToolResponse> => ({
             content: [{ type: "text", text: error }],
@@ -166,15 +161,14 @@ describe("Circuit Breaker Middleware", () => {
             await wrapWithCircuitBreaker(cb, "tg_code", "edit", errorHandler, "src/foo.ts");
         }
 
-        expect(cb.getState().tripped).toBe(true);
+        expect(cb.getState().escalationLevel).toBe(1);
 
-        // Different tool/action should reset
+        // Different tool/action should soft-reset and pass through
         const successHandler = async (): Promise<McpToolResponse> => ({
             content: [{ type: "text", text: "Search result" }],
         });
 
         const result = await wrapWithCircuitBreaker(cb, "tg_navigate", "search", successHandler);
-        expect(result.isError).toBeUndefined();
         expect(result.content[0].text).toBe("Search result");
     });
 
@@ -198,5 +192,81 @@ describe("Circuit Breaker Middleware", () => {
         // containsError detects error patterns in text
         expect(containsError("Build failed with 5 errors")).toBe(true);
         expect(containsError("All tests passed")).toBe(false);
+    });
+
+    it("Level 1 trip returns BREAK & BUILD LEVEL 1 payload", async () => {
+        const handler = async (): Promise<McpToolResponse> => ({
+            content: [{ type: "text", text: "TypeError: Cannot read property 'x'" }],
+            isError: true,
+        });
+
+        // Trip to level 1
+        let result;
+        for (let i = 0; i < 3; i++) {
+            result = await wrapWithCircuitBreaker(cb, "tg_code", "edit", handler, "src/foo.ts", "myFunc");
+        }
+
+        expect(result!.isError).toBe(true);
+        expect(result!.content[0].text).toContain("LEVEL 1");
+        expect(result!.content[0].text).toContain("BREAK & BUILD");
+        expect(result!.content[0].text).toContain("native Write");
+    });
+
+    it("Level 2 trip returns DECOMPOSE payload", async () => {
+        const handler = async (): Promise<McpToolResponse> => ({
+            content: [{ type: "text", text: "TypeError: Cannot read property 'x'" }],
+            isError: true,
+        });
+
+        // Trip to level 1 (3 errors)
+        for (let i = 0; i < 3; i++) {
+            await wrapWithCircuitBreaker(cb, "tg_code", "edit", handler, "src/foo.ts");
+        }
+        expect(cb.getState().escalationLevel).toBe(1);
+
+        // After level 1 soft-reset, errors continue. Since history accumulates,
+        // the next error re-triggers the pattern and escalates to level 2.
+        const result = await wrapWithCircuitBreaker(cb, "tg_code", "edit", handler, "src/foo.ts");
+        expect(result.isError).toBe(true);
+        expect(result.content[0].text).toContain("LEVEL 2");
+        expect(result.content[0].text).toContain("DECOMPOSE");
+        expect(cb.getState().escalationLevel).toBe(2);
+    });
+
+    it("Level 3 trip returns HARD STOP payload", async () => {
+        const handler = async (): Promise<McpToolResponse> => ({
+            content: [{ type: "text", text: "TypeError: Cannot read property 'x'" }],
+            isError: true,
+        });
+
+        // Trip to level 1 (3 errors)
+        for (let i = 0; i < 3; i++) {
+            await wrapWithCircuitBreaker(cb, "tg_code", "edit", handler, "src/foo.ts");
+        }
+        expect(cb.getState().escalationLevel).toBe(1);
+
+        // Escalate to level 2 (history still has errors, re-trips immediately)
+        await wrapWithCircuitBreaker(cb, "tg_code", "edit", handler, "src/foo.ts");
+        expect(cb.getState().escalationLevel).toBe(2);
+
+        // Escalate to level 3
+        await wrapWithCircuitBreaker(cb, "tg_code", "edit", handler, "src/foo.ts");
+        expect(cb.getState().escalationLevel).toBe(3);
+
+        // Level 3 does NOT soft-reset, so next call returns hard stop from pre-check
+        const result = await wrapWithCircuitBreaker(cb, "tg_code", "edit", handler, "src/foo.ts");
+        expect(result.isError).toBe(true);
+        expect(result.content[0].text).toContain("HARD STOP");
+        expect(result.content[0].text).toContain("Ask the human");
+    });
+
+    it("symbolName is passed through to recordToolCall", async () => {
+        const handler = async (): Promise<McpToolResponse> => ({
+            content: [{ type: "text", text: "Success" }],
+        });
+
+        await wrapWithCircuitBreaker(cb, "tg_code", "edit", handler, "src/foo.ts", "validateToken");
+        const state = cb.getState();
+        expect(state.history[0].symbolName).toBe("validateToken");
     });
 });

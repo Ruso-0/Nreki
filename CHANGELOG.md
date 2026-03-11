@@ -2,6 +2,29 @@
 
 All notable changes to TokenGuard will be documented in this file.
 
+## [3.1.0] - 2026-03-11
+
+### Added
+- **Creative Circuit Breaker ("Break & Build")**: 3-level escalation system that redirects Claude with increasingly specific strategies instead of just blocking. Level 1: rewrite from scratch. Level 2: decompose into helpers. Level 3: hard stop, ask the human.
+- **`tg_guard action:"reset"`**: Escape hatch for humans to clear the circuit breaker and let Claude retry with a new approach.
+- **`npx tokenguard init`**: CLI subcommand that generates a `CLAUDE.md` file with collaborative-tone instructions for Claude Code to prefer TokenGuard tools.
+- **Redirect statistics**: Session report now tracks `redirectsIssued` and `redirectsSuccessful` to measure creative breaker effectiveness.
+
+### Performance
+- **Batch SQL queries**: `searchHybrid`, `searchKeywordOnly`, and `searchVector` now use `WHERE id IN (...)` batch queries instead of N+1 individual queries per chunk ID.
+- **BM25 TF precompute**: Term frequencies are precomputed at index time for O(1) lookup during search, replacing O(n) `filter()` scans.
+
+### Changed
+- Circuit breaker `ToolCallRecord` now includes `symbolName` for contextual redirect payloads.
+- Circuit breaker `trip()` now escalates `escalationLevel` (0→3) instead of just setting a boolean.
+- `softReset()` preserves escalation level across retries, enabling progressive escalation.
+- All version strings aligned to 3.1.0.
+
+### Tests
+- 438 tests (was 423). Added 15 new tests for escalation levels, redirect payloads, symbolName tracking, and soft/hard reset behavior.
+
+---
+
 ## [3.0.3] - 2026-03-11
 
 ### Fixed

@@ -1,12 +1,14 @@
 /**
- * middleware/circuit-breaker.ts — Passive circuit breaker middleware for TokenGuard v3.0.
+ * middleware/circuit-breaker.ts — Creative circuit breaker middleware for TokenGuard.
  *
  * Wraps all router tool handlers with automatic loop detection.
  * Records every tool call result and trips the breaker when it detects
  * destructive patterns (repeated errors, excessive edits, doom loops).
  *
- * This is the former tg_circuit_breaker tool, now running automatically
- * as invisible middleware monitoring all tool calls.
+ * v3.1.0: 3-level escalation system ("Break & Build"):
+ *   Level 1 — Rewrite: stop patching, rewrite the symbol from scratch
+ *   Level 2 — Decompose: break into smaller helper functions
+ *   Level 3 — Hard Stop: ask the human for guidance
  */
 
 import { CircuitBreaker, containsError } from "../circuit-breaker.js";
@@ -21,13 +23,107 @@ let lastToolAction = "";
 /** Inactivity timeout for auto-reset (60 seconds). */
 const INACTIVITY_TIMEOUT_MS = 60_000;
 
+// ─── Level-Specific Payloads ─────────────────────────────────────────
+
+function generateLevel1Redirect(
+    symbol: string | null,
+    file: string | null,
+    error: string,
+): string {
+    const sym = symbol ?? "the failing symbol";
+    const fil = file ?? "the current file";
+    return (
+        `🔄 **[TOKENGUARD: BREAK & BUILD — LEVEL 1]**\n\n` +
+        `You are stuck in a syntax/error loop attempting to patch \`${sym}\` in \`${fil}\`.\n` +
+        `Repeated fixes to the same code are failing with the same pattern:\n` +
+        `> ${error}\n\n` +
+        `**STRATEGY SHIFT: Stop patching. Rewrite from scratch.**\n\n` +
+        `1. Use \`tg_code action:"read"\` to read the current file and understand the context.\n` +
+        `2. Use your native Write tool to add a NEW function \`${sym}_v2\` below the original, with the same signature.\n` +
+        `   (tg_code edit replaces symbols — use native Write to ADD new code.)\n` +
+        `3. Implement the intended behavior cleanly from zero in \`${sym}_v2\`.\n` +
+        `4. Once it compiles (test with Bash), update callers to use \`${sym}_v2\`.\n` +
+        `5. Then remove the old \`${sym}\` with \`tg_code action:"edit"\`.\n\n` +
+        `Acknowledge this and start building \`${sym}_v2\`.`
+    );
+}
+
+function generateLevel2Redirect(
+    symbol: string | null,
+    file: string | null,
+    error: string,
+): string {
+    const sym = symbol ?? "the failing symbol";
+    const fil = file ?? "the current file";
+    return (
+        `🔄 **[TOKENGUARD: BREAK & BUILD — LEVEL 2: DECOMPOSE]**\n\n` +
+        `Rewriting \`${sym}\` in \`${fil}\` as a single function also failed.\n` +
+        `The complexity is too high for monolithic code. Time to divide and conquer.\n` +
+        `> ${error}\n\n` +
+        `**MANDATORY STRATEGY: Break the logic into smaller pieces.**\n\n` +
+        `1. Identify 2-3 distinct responsibilities inside \`${sym}\`.\n` +
+        `2. Use native Write to add small, pure helper functions above \`${sym}\` (data in → data out).\n` +
+        `3. Test each helper individually with Bash before moving on.\n` +
+        `4. Only after all helpers compile, use \`tg_code action:"edit"\` to rewrite \`${sym}\` as a thin orchestrator.\n\n` +
+        `Acknowledge this and start with the first helper function.`
+    );
+}
+
+function generateLevel3HardStop(
+    symbol: string | null,
+    file: string | null,
+    error: string,
+): string {
+    const sym = symbol ?? "the failing symbol";
+    const fil = file ?? "the current file";
+    return (
+        `🛑 **[TOKENGUARD: CIRCUIT BREAKER — HARD STOP]**\n\n` +
+        `TokenGuard has tried redirecting you twice and you are still stuck on \`${sym}\` in \`${fil}\`.\n` +
+        `> ${error}\n\n` +
+        `**STOP. Ask the human how to proceed.**\n\n` +
+        `Tell them:\n` +
+        `- What you were trying to do\n` +
+        `- The error pattern you cannot resolve\n` +
+        `- The two strategies TokenGuard suggested (rewrite + decompose) and why they failed\n\n` +
+        `Do not attempt another edit until the human responds.\n\n` +
+        `Use \`tg_guard action:"reset"\` after the human provides guidance to clear this breaker.`
+    );
+}
+
+function generateBreakerResponse(
+    level: number,
+    symbol: string | null,
+    file: string | null,
+    error: string,
+): McpToolResponse {
+    let text: string;
+    switch (level) {
+        case 1:
+            text = generateLevel1Redirect(symbol, file, error);
+            break;
+        case 2:
+            text = generateLevel2Redirect(symbol, file, error);
+            break;
+        case 3:
+        default:
+            text = generateLevel3HardStop(symbol, file, error);
+            break;
+    }
+    return {
+        content: [{ type: "text" as const, text }],
+        isError: true,
+    };
+}
+
+// ─── Middleware ───────────────────────────────────────────────────────
+
 /**
  * Wrap a router handler with passive circuit breaker monitoring.
  *
  * Before executing the handler, checks:
  *   1. If the breaker was tripped but 60s have elapsed → auto-reset
- *   2. If the breaker was tripped but a different tool/action is requested → auto-reset
- *   3. If the breaker is currently tripped → return isError: true immediately
+ *   2. If the breaker was tripped but a different tool/action is requested → soft-reset
+ *   3. If the breaker is currently tripped → return level-specific redirect
  *
  * After execution, records the result for pattern detection.
  */
@@ -37,6 +133,7 @@ export function wrapWithCircuitBreaker(
     action: string,
     handler: () => Promise<McpToolResponse>,
     filePath?: string,
+    symbolName?: string,
 ): Promise<McpToolResponse> {
     return (async () => {
         const toolAction = `${toolName}:${action}`;
@@ -51,8 +148,7 @@ export function wrapWithCircuitBreaker(
         }
 
         // Soft reset on different request type: clears tripped state but
-        // preserves per-file failure counters. This prevents the bypass where
-        // alternating Edit(fail) → Read → Edit(fail) circumvents detection.
+        // preserves per-file failure counters and escalation level.
         if (toolAction !== lastToolAction && lastToolAction !== "") {
             const state = cb.getState();
             if (state.tripped) {
@@ -63,20 +159,19 @@ export function wrapWithCircuitBreaker(
         lastActivityTimestamp = now;
         lastToolAction = toolAction;
 
-        // If breaker is still tripped after potential resets, block
+        // If breaker is still tripped after potential resets, return level-specific redirect
         const preState = cb.getState();
         if (preState.tripped) {
-            return {
-                content: [{
-                    type: "text" as const,
-                    text:
-                        `⚠️ CIRCUIT BREAKER TRIPPED: ${preState.tripReason}. ` +
-                        `TokenGuard detected a destructive loop pattern. ` +
-                        `STOP and ask the human for guidance before proceeding. ` +
-                        `Pattern detected: ${preState.tripReason}`,
-                }],
-                isError: true,
-            };
+            // For levels 1-2, soft-reset to allow the retry after redirect
+            if (preState.escalationLevel < 3) {
+                cb.softReset();
+            }
+            return generateBreakerResponse(
+                preState.escalationLevel,
+                preState.lastTrippedSymbol,
+                preState.lastTrippedFile,
+                preState.tripReason ?? "Unknown pattern",
+            );
         }
 
         // Execute the actual handler
@@ -91,20 +186,20 @@ export function wrapWithCircuitBreaker(
                 toolAction,
                 responseText,
                 filePath,
+                symbolName,
             );
 
             if (loopCheck.tripped) {
-                return {
-                    content: [{
-                        type: "text" as const,
-                        text:
-                            `⚠️ CIRCUIT BREAKER TRIPPED: ${loopCheck.reason}. ` +
-                            `TokenGuard detected a destructive loop pattern. ` +
-                            `STOP and ask the human for guidance before proceeding. ` +
-                            `Pattern detected: ${loopCheck.reason}`,
-                    }],
-                    isError: true,
-                };
+                // For levels 1-2, soft-reset to allow retry after redirect
+                if (loopCheck.level < 3) {
+                    cb.softReset();
+                }
+                return generateBreakerResponse(
+                    loopCheck.level,
+                    symbolName ?? null,
+                    filePath ?? null,
+                    loopCheck.reason,
+                );
             }
         } else {
             // Record non-error calls too (for same-file tracking)
@@ -112,6 +207,7 @@ export function wrapWithCircuitBreaker(
                 toolAction,
                 "",
                 filePath,
+                symbolName,
             );
         }
 

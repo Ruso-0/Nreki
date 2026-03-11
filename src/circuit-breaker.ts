@@ -21,6 +21,7 @@ export interface ToolCallRecord {
     timestamp: number;
     errorHash: string | null;
     filePath: string | null;
+    symbolName: string | null;
 }
 
 export interface CircuitBreakerState {
@@ -29,11 +30,16 @@ export interface CircuitBreakerState {
     tripReason: string | null;
     consecutiveFailures: number;
     perFileFailures: Map<string, number>;
+    escalationLevel: number;
+    lastTrippedFile: string | null;
+    lastTrippedSymbol: string | null;
+    lastErrorPattern: string | null;
 }
 
 export interface LoopCheckResult {
     tripped: boolean;
     reason: string;
+    level: number;
 }
 
 export interface CircuitBreakerStats {
@@ -42,6 +48,8 @@ export interface CircuitBreakerStats {
     loopsPrevented: number;
     estimatedTokensSaved: number;
     sessionStartTime: number;
+    redirectsIssued: number;
+    redirectsSuccessful: number;
 }
 
 // ─── Constants ───────────────────────────────────────────────────────
@@ -53,6 +61,7 @@ const SAME_FILE_THRESHOLD = 5;
 const SAME_FILE_WINDOW = 15;
 const WRITE_TEST_FAIL_THRESHOLD = 3;
 const PER_FILE_FAILURE_THRESHOLD = 3;
+const MAX_ESCALATION_LEVEL = 3;
 
 // Average tokens burned per failed loop iteration (write + test + read error)
 const TOKENS_PER_FAILED_ITERATION = 2000;
@@ -115,6 +124,10 @@ export class CircuitBreaker {
         tripReason: null,
         consecutiveFailures: 0,
         perFileFailures: new Map(),
+        escalationLevel: 0,
+        lastTrippedFile: null,
+        lastTrippedSymbol: null,
+        lastErrorPattern: null,
     };
 
     private stats: CircuitBreakerStats = {
@@ -123,6 +136,8 @@ export class CircuitBreaker {
         loopsPrevented: 0,
         estimatedTokensSaved: 0,
         sessionStartTime: Date.now(),
+        redirectsIssued: 0,
+        redirectsSuccessful: 0,
     };
 
     /**
@@ -132,7 +147,8 @@ export class CircuitBreaker {
     recordToolCall(
         toolName: string,
         result: string,
-        filePath?: string
+        filePath?: string,
+        symbolName?: string,
     ): LoopCheckResult {
         const hasError = containsError(result);
         const errorHash = hasError ? hashError(result) : null;
@@ -142,6 +158,7 @@ export class CircuitBreaker {
             timestamp: Date.now(),
             errorHash,
             filePath: filePath ?? null,
+            symbolName: symbolName ?? null,
         };
 
         // Ring buffer: keep last MAX_HISTORY entries
@@ -157,6 +174,10 @@ export class CircuitBreaker {
             this.state.consecutiveFailures++;
         } else {
             this.state.consecutiveFailures = 0;
+            // Success after a redirect means the redirect worked
+            if (this.state.escalationLevel > 0) {
+                this.stats.redirectsSuccessful++;
+            }
         }
 
         // Track per-file failures (prevents bypass via action alternation)
@@ -183,6 +204,7 @@ export class CircuitBreaker {
             return {
                 tripped: true,
                 reason: this.state.tripReason!,
+                level: this.state.escalationLevel,
             };
         }
 
@@ -253,7 +275,7 @@ export class CircuitBreaker {
             }
         }
 
-        return { tripped: false, reason: "" };
+        return { tripped: false, reason: "", level: 0 };
     }
 
     /**
@@ -298,16 +320,26 @@ export class CircuitBreaker {
      * Trip the circuit breaker.
      */
     private trip(reason: string): LoopCheckResult {
+        const newLevel = Math.min(
+            this.state.escalationLevel + 1,
+            MAX_ESCALATION_LEVEL,
+        );
+        this.state.escalationLevel = newLevel;
         this.state.tripped = true;
         this.state.tripReason = reason;
+        this.state.lastErrorPattern = reason;
+
+        // Capture context from the most recent history entry
+        const lastEntry = this.state.history[this.state.history.length - 1];
+        this.state.lastTrippedFile = lastEntry?.filePath ?? null;
+        this.state.lastTrippedSymbol = lastEntry?.symbolName ?? null;
+
         this.stats.loopsDetected++;
         this.stats.loopsPrevented++;
-
-        // Estimate tokens saved: remaining iterations that would have happened
-        // Conservative estimate: would have looped at least 5 more times
+        this.stats.redirectsIssued++;
         this.stats.estimatedTokensSaved += 5 * TOKENS_PER_FAILED_ITERATION;
 
-        return { tripped: true, reason };
+        return { tripped: true, reason, level: newLevel };
     }
 
     /**
@@ -320,6 +352,10 @@ export class CircuitBreaker {
         this.state.consecutiveFailures = 0;
         this.state.history = [];
         this.state.perFileFailures = new Map();
+        this.state.escalationLevel = 0;
+        this.state.lastTrippedFile = null;
+        this.state.lastTrippedSymbol = null;
+        this.state.lastErrorPattern = null;
     }
 
     /**
@@ -350,6 +386,10 @@ export class CircuitBreaker {
             tripReason: this.state.tripReason,
             consecutiveFailures: this.state.consecutiveFailures,
             perFileFailures: new Map(this.state.perFileFailures),
+            escalationLevel: this.state.escalationLevel,
+            lastTrippedFile: this.state.lastTrippedFile,
+            lastTrippedSymbol: this.state.lastTrippedSymbol,
+            lastErrorPattern: this.state.lastErrorPattern,
         };
     }
 

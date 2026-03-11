@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * index.ts — TokenGuard v3.0.3 MCP Server entry point.
+ * index.ts — TokenGuard v3.1.0 MCP Server entry point.
  *
  * Exposes 3 router tools to Claude Code (replaces 16 individual tools):
  *
@@ -25,6 +25,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import path from "path";
+import fs from "fs";
 
 import { TokenGuardEngine } from "./engine.js";
 import { TokenMonitor } from "./monitor.js";
@@ -46,6 +47,47 @@ import { wrapWithCircuitBreaker } from "./middleware/circuit-breaker.js";
 const args = process.argv.slice(2);
 const enableEmbeddings = args.includes("--enable-embeddings");
 
+// ─── Init Subcommand ────────────────────────────────────────────────
+
+if (args[0] === "init") {
+    const claudePath = path.join(process.cwd(), "CLAUDE.md");
+    const marker = "# TokenGuard Active";
+
+    if (fs.existsSync(claudePath)) {
+        const existing = fs.readFileSync(claudePath, "utf-8");
+        if (existing.includes(marker)) {
+            console.error("[TokenGuard] CLAUDE.md already contains TokenGuard instructions. Skipping.");
+            process.exit(0);
+        }
+        // Append to existing CLAUDE.md
+        fs.appendFileSync(claudePath, "\n\n" + getClaudeMdContent(), "utf-8");
+        console.error("[TokenGuard] Appended TokenGuard instructions to existing CLAUDE.md");
+    } else {
+        fs.writeFileSync(claudePath, getClaudeMdContent(), "utf-8");
+        console.error("[TokenGuard] Created CLAUDE.md in " + process.cwd());
+    }
+    process.exit(0);
+}
+
+function getClaudeMdContent(): string {
+    return `# TokenGuard Active
+
+This workspace has the TokenGuard MCP plugin installed. It extends your capabilities with AST-aware tools that protect your context window and prevent syntax errors before they reach disk.
+
+## Optimal Workflow
+
+1. **Run tests & commands freely.** Use Bash for npm test, builds, git — TokenGuard doesn't interfere with your terminal.
+2. **Navigate with AST precision.** Prefer \`tg_navigate\` over grep/glob. It returns exact structural matches (functions, classes, references) without flooding your context with noise.
+3. **Read files efficiently.** Prefer \`tg_code action:"read"\` over native Read. It auto-compresses cold code blocks so you can read large files without losing earlier context.
+4. **Edit surgically.** Prefer \`tg_code action:"edit"\` for modifying existing functions/classes. It validates the AST before writing to disk — if your code has a syntax error, the file stays untouched and you get the exact line/column to fix.
+5. **Create new files normally.** Use native Write for brand new files that don't exist yet.
+6. **Pin rules that matter.** Use \`tg_guard action:"pin"\` to persist instructions across messages (e.g., "always use fetch, not axios").
+7. **If the circuit breaker triggers, follow its instructions.** It detected a doom loop and is protecting your session from burning tokens on repeated failures.
+
+TokenGuard handles the context heavy-lifting so you can focus on writing correct code on the first try.
+`;
+}
+
 // ─── Initialization ─────────────────────────────────────────────────
 
 const engine = new TokenGuardEngine({
@@ -62,7 +104,7 @@ const deps: RouterDependencies = { engine, monitor, sandbox, circuitBreaker };
 
 const server = new McpServer({
     name: "TokenGuard",
-    version: "3.0.3",
+    version: "3.1.0",
 });
 
 if (!enableEmbeddings) {
@@ -194,6 +236,7 @@ server.tool(
             action,
             () => handleCode(action, params, deps),
             filePath,
+            symbol,
         );
     },
 );
@@ -207,12 +250,13 @@ server.tool(
     "and get session reports.",
     {
         action: z
-            .enum(["pin", "unpin", "status", "report"])
+            .enum(["pin", "unpin", "status", "report", "reset"])
             .describe(
                 "pin: add a persistent rule (injected into every map response). " +
                 "unpin: remove a pinned rule. " +
                 "status: token burn rate and alerts. " +
-                "report: full session savings receipt.",
+                "report: full session savings receipt. " +
+                "reset: clear circuit breaker state to resume editing.",
             ),
         text: z
             .string()

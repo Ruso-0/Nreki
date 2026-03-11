@@ -274,7 +274,7 @@ describe("CircuitBreaker Middleware — Bypass Prevention", () => {
 
         // Per-file tracking should catch this even though the global pattern alternates
         expect(result.isError).toBe(true);
-        expect(result.content[0].text).toContain("CIRCUIT BREAKER");
+        expect(result.content[0].text).toContain("BREAK & BUILD");
     });
 
     it("soft reset on tool change preserves per-file failure count", async () => {

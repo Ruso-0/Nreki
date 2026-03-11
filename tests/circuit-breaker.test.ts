@@ -363,4 +363,122 @@ describe("CircuitBreaker", () => {
             expect(r.tripped).toBe(true); // 3 within window still trips
         });
     });
+
+    describe("Escalation Levels", () => {
+        it("first trip should set escalation level to 1", () => {
+            const cb = new CircuitBreaker();
+            for (let i = 0; i < 3; i++) {
+                cb.recordToolCall("tg_code:edit", "TypeError: x is not defined", "src/foo.ts", "myFunction");
+            }
+            const state = cb.getState();
+            expect(state.escalationLevel).toBe(1);
+            expect(state.lastTrippedFile).toBe("src/foo.ts");
+            expect(state.lastTrippedSymbol).toBe("myFunction");
+        });
+
+        it("second trip after soft reset escalates to level 2", () => {
+            const cb = new CircuitBreaker();
+            for (let i = 0; i < 3; i++) {
+                cb.recordToolCall("tg_code:edit", "TypeError: x is not defined", "src/foo.ts");
+            }
+            expect(cb.getState().escalationLevel).toBe(1);
+            cb.softReset();
+
+            for (let i = 0; i < 3; i++) {
+                cb.recordToolCall("tg_code:edit", "SyntaxError: unexpected token", "src/foo.ts");
+            }
+            expect(cb.getState().escalationLevel).toBe(2);
+        });
+
+        it("third trip caps at level 3 (MAX_ESCALATION_LEVEL)", () => {
+            const cb = new CircuitBreaker();
+            for (let round = 0; round < 4; round++) {
+                for (let i = 0; i < 3; i++) {
+                    cb.recordToolCall("tg_code:edit", `Error round ${round}`, "src/foo.ts");
+                }
+                if (round < 3) cb.softReset();
+            }
+            expect(cb.getState().escalationLevel).toBe(3);
+        });
+
+        it("full reset clears escalation level to 0", () => {
+            const cb = new CircuitBreaker();
+            for (let i = 0; i < 3; i++) {
+                cb.recordToolCall("tg_code:edit", "TypeError: fail", "src/foo.ts");
+            }
+            expect(cb.getState().escalationLevel).toBe(1);
+            cb.reset();
+            expect(cb.getState().escalationLevel).toBe(0);
+            expect(cb.getState().lastTrippedFile).toBeNull();
+            expect(cb.getState().lastTrippedSymbol).toBeNull();
+            expect(cb.getState().lastErrorPattern).toBeNull();
+        });
+
+        it("soft reset preserves escalation level", () => {
+            const cb = new CircuitBreaker();
+            for (let i = 0; i < 3; i++) {
+                cb.recordToolCall("tg_code:edit", "TypeError: fail", "src/foo.ts");
+            }
+            cb.softReset();
+            expect(cb.getState().escalationLevel).toBe(1);
+            expect(cb.getState().tripped).toBe(false);
+        });
+
+        it("symbolName is stored in ToolCallRecord", () => {
+            const cb = new CircuitBreaker();
+            cb.recordToolCall("tg_code:edit", "", "src/foo.ts", "validateToken");
+            const state = cb.getState();
+            expect(state.history[0].symbolName).toBe("validateToken");
+        });
+
+        it("LoopCheckResult includes correct level on trip", () => {
+            const cb = new CircuitBreaker();
+            let result;
+            for (let i = 0; i < 3; i++) {
+                result = cb.recordToolCall("tg_code:edit", "TypeError: fail", "src/foo.ts");
+            }
+            expect(result!.tripped).toBe(true);
+            expect(result!.level).toBe(1);
+        });
+
+        it("LoopCheckResult level is 0 when not tripped", () => {
+            const cb = new CircuitBreaker();
+            const result = cb.recordToolCall("tg_code:edit", "", "src/foo.ts");
+            expect(result.tripped).toBe(false);
+            expect(result.level).toBe(0);
+        });
+
+        it("lastErrorPattern captures the trip reason", () => {
+            const cb = new CircuitBreaker();
+            for (let i = 0; i < 3; i++) {
+                cb.recordToolCall("tg_code:edit", "TypeError: x is not defined", "src/foo.ts");
+            }
+            const state = cb.getState();
+            expect(state.lastErrorPattern).toContain("Same error repeated");
+        });
+
+        it("redirectsIssued increments on each trip", () => {
+            const cb = new CircuitBreaker();
+            for (let i = 0; i < 3; i++) {
+                cb.recordToolCall("tg_code:edit", "TypeError: fail", "src/foo.ts");
+            }
+            expect(cb.getStats().redirectsIssued).toBe(1);
+            cb.softReset();
+            for (let i = 0; i < 3; i++) {
+                cb.recordToolCall("tg_code:edit", "SyntaxError: fail", "src/foo.ts");
+            }
+            expect(cb.getStats().redirectsIssued).toBe(2);
+        });
+
+        it("redirectsSuccessful increments on success after escalation", () => {
+            const cb = new CircuitBreaker();
+            for (let i = 0; i < 3; i++) {
+                cb.recordToolCall("tg_code:edit", "TypeError: fail", "src/foo.ts");
+            }
+            cb.softReset();
+            // Success on next call while escalationLevel > 0
+            cb.recordToolCall("tg_code:edit", "", "src/foo.ts");
+            expect(cb.getStats().redirectsSuccessful).toBe(1);
+        });
+    });
 });

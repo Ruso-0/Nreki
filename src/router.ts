@@ -1,5 +1,5 @@
 /**
- * router.ts — Central dispatcher for TokenGuard v3.0.1 router tools.
+ * router.ts — Central dispatcher for TokenGuard v3.1.0 router tools.
  *
  * Maps {toolName, action} pairs to existing handler functions.
  * All business logic remains in the original modules — this file
@@ -168,15 +168,48 @@ export async function handleGuard(
             return handleStatus(deps);
         case "report":
             return handleReport(deps);
+        case "reset":
+            return handleReset(deps);
         default:
             return {
                 content: [{
                     type: "text" as const,
-                    text: `Unknown tg_guard action: "${action}". Valid actions: pin, unpin, status, report.`,
+                    text: `Unknown tg_guard action: "${action}". Valid actions: pin, unpin, status, report, reset.`,
                 }],
                 isError: true,
             };
     }
+}
+
+async function handleReset(
+    deps: RouterDependencies,
+): Promise<McpToolResponse> {
+    const { circuitBreaker } = deps;
+    const state = circuitBreaker.getState();
+
+    if (state.escalationLevel === 0 && !state.tripped) {
+        return {
+            content: [{
+                type: "text" as const,
+                text: "## Circuit Breaker: ALREADY CLEAR\n\nNo active trip to reset.",
+            }],
+        };
+    }
+
+    const prevLevel = state.escalationLevel;
+    circuitBreaker.reset();
+
+    return {
+        content: [{
+            type: "text" as const,
+            text:
+                `## Circuit Breaker: RESET\n\n` +
+                `**Previous level:** ${prevLevel}\n` +
+                `**Status:** All clear. You may retry the edit. ` +
+                `If you get stuck again, the breaker starts fresh from Level 1.\n\n` +
+                `[TokenGuard: circuit breaker reset by human]`,
+        }],
+    };
 }
 
 // ─── Navigate Handlers ──────────────────────────────────────────────
@@ -1068,6 +1101,8 @@ async function handleReport(
         `|  Surgical Edits:          ${pad(cbStats.totalToolCalls, 16)}    |`,
         `|  Syntax Errors Blocked:   ${pad(cbStats.loopsPrevented, 16)}    |`,
         `|  Doom Loops Prevented:    ${pad(cbStats.loopsDetected, 16)}    |`,
+        `|  Breaker Redirects:      ${pad(cbStats.redirectsIssued, 16)}    |`,
+        `|  Redirects Recovered:    ${pad(cbStats.redirectsSuccessful, 16)}    |`,
         `|  Pinned Rules Active:     ${pad(pins.length, 16)}    |`,
         "+--------------------------------------------------+",
         `|  ESTIMATED SAVINGS:       ${pad("$" + usdStr, 16)}    |`,

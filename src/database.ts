@@ -336,6 +336,8 @@ class KeywordIndex {
     private bigramIndex = new Map<string, Set<number>>();
     /** Map from rowid → tokenized terms (for TF computation) */
     private docTerms = new Map<number, string[]>();
+    /** Map from rowid → precomputed term frequencies: O(1) TF lookup */
+    private docTF = new Map<number, Map<string, number>>();
     /** Total number of documents */
     private docCount = 0;
     /** Average document length in terms */
@@ -393,6 +395,13 @@ class KeywordIndex {
         const terms = this.tokenize(text);
         this.docTerms.set(rowid, terms);
 
+        // Precompute term frequencies for O(1) BM25 TF lookup
+        const tfMap = new Map<string, number>();
+        for (const term of terms) {
+            tfMap.set(term, (tfMap.get(term) || 0) + 1);
+        }
+        this.docTF.set(rowid, tfMap);
+
         for (const term of terms) {
             if (!this.invertedIndex.has(term)) {
                 this.invertedIndex.set(term, new Set());
@@ -441,6 +450,7 @@ class KeywordIndex {
         }
 
         this.docTerms.delete(rowid);
+        this.docTF.delete(rowid);
         this.docCount = Math.max(0, this.docCount - 1);
         this.updateAvgDocLen();
     }
@@ -490,11 +500,10 @@ class KeywordIndex {
             );
 
             for (const rowid of docs) {
-                const docTerms = this.docTerms.get(rowid)!;
-                const docLen = docTerms.length;
+                const docLen = this.docTerms.get(rowid)!.length;
 
-                // TF = count of term in document
-                const tf = docTerms.filter((t) => t === term).length;
+                // TF = precomputed count of term in document (O(1) lookup)
+                const tf = this.docTF.get(rowid)?.get(term) || 0;
 
                 // BM25 formula
                 const tfNorm =
@@ -821,6 +830,57 @@ export class TokenGuardDB {
         return 1.0;
     }
 
+    // ─── Batch Helpers ─────────────────────────────────────────────
+
+    /**
+     * Batch-fetch paths for an array of chunk IDs. Single SQL query.
+     * Used by RRF fusion to apply path boosting without N+1 queries.
+     */
+    private fetchPathsBatch(ids: number[]): Map<number, string> {
+        const result = new Map<number, string>();
+        if (ids.length === 0) return result;
+        const placeholders = ids.map(() => "?").join(",");
+        const stmt = this.db.prepare(
+            `SELECT id, path FROM chunks WHERE id IN (${placeholders})`,
+        );
+        stmt.bind(ids);
+        while (stmt.step()) {
+            const row = stmt.getAsObject() as { id: number; path: string };
+            result.set(row.id, row.path);
+        }
+        stmt.free();
+        return result;
+    }
+
+    /**
+     * Batch-fetch full chunk data for an array of chunk IDs. Single SQL query.
+     * Used by all search methods to hydrate final results without N+1 queries.
+     */
+    private fetchChunksBatch(ids: number[]): Map<number, ChunkRecord> {
+        const result = new Map<number, ChunkRecord>();
+        if (ids.length === 0) return result;
+        const placeholders = ids.map(() => "?").join(",");
+        const stmt = this.db.prepare(
+            `SELECT id, path, shorthand, raw_code, node_type, start_line, end_line
+             FROM chunks WHERE id IN (${placeholders})`,
+        );
+        stmt.bind(ids);
+        while (stmt.step()) {
+            const row = stmt.getAsObject() as Record<string, number | string>;
+            result.set(row.id as number, {
+                id: row.id as number,
+                path: row.path as string,
+                shorthand: row.shorthand as string,
+                raw_code: row.raw_code as string,
+                node_type: row.node_type as string,
+                start_line: row.start_line as number,
+                end_line: row.end_line as number,
+            });
+        }
+        stmt.free();
+        return result;
+    }
+
     // ─── Search Operations ───────────────────────────────────────
 
     /**
@@ -846,8 +906,9 @@ export class TokenGuardDB {
         const kwRanks = new Map<number, number>();
         kwResults.forEach((r, i) => kwRanks.set(r.rowid, i + 1));
 
-        // 3. RRF fusion with path boosting
+        // 3. RRF fusion with path boosting (batch query)
         const allIds = new Set([...vecRanks.keys(), ...kwRanks.keys()]);
+        const pathMap = this.fetchPathsBatch([...allIds]);
         const scored: Array<{ id: number; rrf: number }> = [];
 
         for (const id of allIds) {
@@ -857,14 +918,10 @@ export class TokenGuardDB {
                 (vecRank ? 1.0 / (10 + vecRank) : 0) +
                 (kwRank ? 1.0 / (10 + kwRank) : 0);
 
-            // Apply path boost — look up the file path for this chunk
-            const pathStmt = this.db.prepare("SELECT path FROM chunks WHERE id = ?");
-            pathStmt.bind([id]);
-            if (pathStmt.step()) {
-                const row = pathStmt.getAsObject() as { path: string };
-                rrf *= this.getPathBoost(row.path);
+            const filePath = pathMap.get(id);
+            if (filePath) {
+                rrf *= this.getPathBoost(filePath);
             }
-            pathStmt.free();
 
             scored.push({ id, rrf });
         }
@@ -872,28 +929,19 @@ export class TokenGuardDB {
         scored.sort((a, b) => b.rrf - a.rrf);
         const topIds = scored.slice(0, limit);
 
-        // 4. Fetch full chunk data
+        // 4. Fetch full chunk data (batch query)
+        const chunkMap = this.fetchChunksBatch(topIds.map(t => t.id));
         const results: HybridSearchResult[] = [];
         for (const { id, rrf } of topIds) {
-            const stmt = this.db.prepare(
-                `SELECT id, path, shorthand, raw_code, node_type, start_line, end_line
-         FROM chunks WHERE id = ?`
-            );
-            stmt.bind([id]);
-            if (stmt.step()) {
-                const row = stmt.getAsObject() as Record<string, number | string>;
+            const row = chunkMap.get(id);
+            if (row) {
                 results.push({
-                    id: row.id as number,
-                    path: row.path as string,
-                    shorthand: row.shorthand as string,
-                    raw_code: row.raw_code as string,
-                    node_type: row.node_type as string,
-                    start_line: row.start_line as number,
-                    end_line: row.end_line as number,
+                    id: row.id, path: row.path, shorthand: row.shorthand,
+                    raw_code: row.raw_code, node_type: row.node_type,
+                    start_line: row.start_line, end_line: row.end_line,
                     rrf_score: rrf,
                 });
             }
-            stmt.free();
         }
 
         return results;
@@ -908,29 +956,22 @@ export class TokenGuardDB {
         limit: number = 10,
     ): HybridSearchResult[] {
         const kwResults = this.kwIndex.search(queryText, limit * 2);
+        if (kwResults.length === 0) return [];
+
+        const chunkMap = this.fetchChunksBatch(kwResults.map(r => r.rowid));
         const results: HybridSearchResult[] = [];
 
         for (const { rowid, score } of kwResults) {
-            const stmt = this.db.prepare(
-                `SELECT id, path, shorthand, raw_code, node_type, start_line, end_line
-         FROM chunks WHERE id = ?`,
-            );
-            stmt.bind([rowid]);
-            if (stmt.step()) {
-                const row = stmt.getAsObject() as Record<string, number | string>;
-                const boostedScore = score * this.getPathBoost(row.path as string);
+            const row = chunkMap.get(rowid);
+            if (row) {
+                const boostedScore = score * this.getPathBoost(row.path);
                 results.push({
-                    id: row.id as number,
-                    path: row.path as string,
-                    shorthand: row.shorthand as string,
-                    raw_code: row.raw_code as string,
-                    node_type: row.node_type as string,
-                    start_line: row.start_line as number,
-                    end_line: row.end_line as number,
+                    id: row.id, path: row.path, shorthand: row.shorthand,
+                    raw_code: row.raw_code, node_type: row.node_type,
+                    start_line: row.start_line, end_line: row.end_line,
                     rrf_score: boostedScore,
                 });
             }
-            stmt.free();
         }
 
         results.sort((a, b) => b.rrf_score - a.rrf_score);
@@ -942,28 +983,21 @@ export class TokenGuardDB {
         limit: number = 10
     ): HybridSearchResult[] {
         const vecResults = this.vecIndex.search(queryEmbedding, limit);
+        if (vecResults.length === 0) return [];
+
+        const chunkMap = this.fetchChunksBatch(vecResults.map(r => r.rowid));
         const results: HybridSearchResult[] = [];
 
         for (const { rowid, distance } of vecResults) {
-            const stmt = this.db.prepare(
-                `SELECT id, path, shorthand, raw_code, node_type, start_line, end_line
-         FROM chunks WHERE id = ?`
-            );
-            stmt.bind([rowid]);
-            if (stmt.step()) {
-                const row = stmt.getAsObject() as Record<string, number | string>;
+            const row = chunkMap.get(rowid);
+            if (row) {
                 results.push({
-                    id: row.id as number,
-                    path: row.path as string,
-                    shorthand: row.shorthand as string,
-                    raw_code: row.raw_code as string,
-                    node_type: row.node_type as string,
-                    start_line: row.start_line as number,
-                    end_line: row.end_line as number,
+                    id: row.id, path: row.path, shorthand: row.shorthand,
+                    raw_code: row.raw_code, node_type: row.node_type,
+                    start_line: row.start_line, end_line: row.end_line,
                     rrf_score: 1 - distance,
                 });
             }
-            stmt.free();
         }
 
         return results;
