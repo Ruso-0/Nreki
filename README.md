@@ -240,6 +240,10 @@ Tested against a 57-file production Next.js + Supabase app (SICAEP):
 - Circuit breaker correctly detected repeated error patterns
 - Path traversal attack (`../../../../etc/passwd`) → **BLOCKED**
 
+> **Methodology note:** Token savings are estimated using a chars/4 heuristic
+> (±30% vs actual tokenizer). Comparisons are against raw file reads, not against
+> other AI coding tools. These numbers represent the upper bound of savings.
+
 > **Note:** TokenGuard is most effective on projects with 50+ files. For very small projects (<20 files), the overhead may not justify the savings.
 
 ## Security

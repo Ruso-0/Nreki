@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * index.ts — TokenGuard v3.0.1 MCP Server entry point.
+ * index.ts — TokenGuard v3.0.3 MCP Server entry point.
  *
  * Exposes 3 router tools to Claude Code (replaces 16 individual tools):
  *
@@ -62,7 +62,7 @@ const deps: RouterDependencies = { engine, monitor, sandbox, circuitBreaker };
 
 const server = new McpServer({
     name: "TokenGuard",
-    version: "3.0.2",
+    version: "3.0.3",
 });
 
 if (!enableEmbeddings) {
