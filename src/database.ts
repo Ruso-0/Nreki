@@ -330,14 +330,12 @@ class PorterStemmer {
  * filters stopwords, applies basic stemming (suffix removal).
  */
 class KeywordIndex {
-    /** Map from term → Set of document rowids containing that term */
-    private invertedIndex = new Map<string, Set<number>>();
+    /** Map from term → Map<rowid, TF> — unified inverted index + term frequency */
+    private invertedIndex = new Map<string, Map<number, number>>();
     /** Map from bigram → Set of document rowids (for phrase search) */
     private bigramIndex = new Map<string, Set<number>>();
-    /** Map from rowid → tokenized terms (for TF computation) */
+    /** Map from rowid → tokenized terms (for delete and avgDocLen) */
     private docTerms = new Map<number, string[]>();
-    /** Map from rowid → precomputed term frequencies: O(1) TF lookup */
-    private docTF = new Map<number, Map<string, number>>();
     /** Total number of documents */
     private docCount = 0;
     /** Average document length in terms */
@@ -395,18 +393,20 @@ class KeywordIndex {
         const terms = this.tokenize(text);
         this.docTerms.set(rowid, terms);
 
-        // Precompute term frequencies for O(1) BM25 TF lookup
+        // Compute local TF
         const tfMap = new Map<string, number>();
         for (const term of terms) {
             tfMap.set(term, (tfMap.get(term) || 0) + 1);
         }
-        this.docTF.set(rowid, tfMap);
 
-        for (const term of terms) {
-            if (!this.invertedIndex.has(term)) {
-                this.invertedIndex.set(term, new Set());
+        // Store TF directly in inverted index for O(1) lookup
+        for (const [term, tf] of tfMap) {
+            let docMap = this.invertedIndex.get(term);
+            if (!docMap) {
+                docMap = new Map<number, number>();
+                this.invertedIndex.set(term, docMap);
             }
-            this.invertedIndex.get(term)!.add(rowid);
+            docMap.set(rowid, tf);
         }
 
         // Generate bigrams for phrase search
@@ -428,10 +428,10 @@ class KeywordIndex {
         if (!terms) return;
 
         for (const term of terms) {
-            const docs = this.invertedIndex.get(term);
-            if (docs) {
-                docs.delete(rowid);
-                if (docs.size === 0) {
+            const docMap = this.invertedIndex.get(term);
+            if (docMap) {
+                docMap.delete(rowid);
+                if (docMap.size === 0) {
                     this.invertedIndex.delete(term);
                 }
             }
@@ -450,7 +450,6 @@ class KeywordIndex {
         }
 
         this.docTerms.delete(rowid);
-        this.docTF.delete(rowid);
         this.docCount = Math.max(0, this.docCount - 1);
         this.updateAvgDocLen();
     }
@@ -490,20 +489,18 @@ class KeywordIndex {
         const scores = new Map<number, number>();
 
         for (const term of queryTerms) {
-            const docs = this.invertedIndex.get(term);
-            if (!docs) continue;
+            const docMap = this.invertedIndex.get(term);
+            if (!docMap) continue;
 
             // IDF = log((N - df + 0.5) / (df + 0.5) + 1)
-            const df = docs.size;
+            const df = docMap.size;
             const idf = Math.log(
                 (this.docCount - df + 0.5) / (df + 0.5) + 1
             );
 
-            for (const rowid of docs) {
+            // TF read directly from inverted index — O(1)
+            for (const [rowid, tf] of docMap) {
                 const docLen = this.docTerms.get(rowid)!.length;
-
-                // TF = precomputed count of term in document (O(1) lookup)
-                const tf = this.docTF.get(rowid)?.get(term) || 0;
 
                 // BM25 formula
                 const tfNorm =
@@ -1050,6 +1047,33 @@ export class TokenGuardDB {
         }
         stmt.free();
         return result;
+    }
+
+    /**
+     * Find the heaviest files by total raw code size.
+     * Zero disk I/O — queries indexed data in SQLite.
+     */
+    getTopHeavyFiles(limit: number = 5): Array<{ path: string; estimated_tokens: number }> {
+        if (!this._ready) return [];
+        const stmt = this.db.prepare(`
+            SELECT path, SUM(LENGTH(raw_code)) as total_chars
+            FROM chunks
+            GROUP BY path
+            ORDER BY total_chars DESC
+            LIMIT ?
+        `);
+        stmt.bind([limit]);
+
+        const results: Array<{ path: string; estimated_tokens: number }> = [];
+        while (stmt.step()) {
+            const row = stmt.getAsObject() as { path: string; total_chars: number };
+            results.push({
+                path: row.path,
+                estimated_tokens: Math.ceil(row.total_chars / 3.5),
+            });
+        }
+        stmt.free();
+        return results;
     }
 
     // ─── Statistics ──────────────────────────────────────────────

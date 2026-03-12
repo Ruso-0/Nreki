@@ -222,7 +222,7 @@ describe("CircuitBreaker — Per-File Failure Tracking", () => {
         expect(result.tripped).toBe(false);
     });
 
-    it("softReset clears tripped state but preserves per-file counters", () => {
+    it("softReset clears tripped state and purges file history (amnesia total)", () => {
         cb.recordToolCall("tg_code:edit", "TypeError: fail", "src/broken.ts");
         cb.recordToolCall("tg_code:edit", "TypeError: fail", "src/broken.ts");
         cb.recordToolCall("tg_code:edit", "TypeError: fail", "src/broken.ts");
@@ -232,7 +232,10 @@ describe("CircuitBreaker — Per-File Failure Tracking", () => {
         cb.softReset();
 
         expect(cb.getState().tripped).toBe(false);
-        expect(cb.getState().perFileFailures.get("src/broken.ts")).toBe(3);
+        // Amnesia total: perFileFailures for the tripped file are cleared
+        expect(cb.getState().perFileFailures.has("src/broken.ts")).toBe(false);
+        // But escalation level is preserved
+        expect(cb.getState().escalationLevel).toBe(1);
     });
 
     it("full reset clears everything including per-file counters", () => {

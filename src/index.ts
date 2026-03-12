@@ -41,10 +41,34 @@ import {
     type GuardParams,
 } from "./router.js";
 import { wrapWithCircuitBreaker } from "./middleware/circuit-breaker.js";
+import { PreToolUseHook } from "./hooks/preToolUse.js";
 
 // ─── CLI Flag Parsing ───────────────────────────────────────────────
 
 const args = process.argv.slice(2);
+const VERSION = "3.1.1";
+
+if (args.includes("--version") || args.includes("-v")) {
+    console.log(VERSION);
+    process.exit(0);
+}
+
+if (args.includes("--help") || args.includes("-h")) {
+    console.log(`
+🛡️ TokenGuard v${VERSION} — AST-Aware Context Firewall for Claude Code
+
+Usage:
+  npx @ruso-0/tokenguard [options]
+  npx @ruso-0/tokenguard init      # Creates optimal CLAUDE.md instructions
+
+Options:
+  --enable-embeddings   Enable local ONNX semantic search (Pro mode)
+  --help, -h            Show this help message
+  --version, -v         Show version
+    `);
+    process.exit(0);
+}
+
 const enableEmbeddings = args.includes("--enable-embeddings");
 
 // ─── Init Subcommand ────────────────────────────────────────────────
@@ -78,7 +102,7 @@ This workspace has the TokenGuard MCP plugin installed. It extends your capabili
 
 1. **Run tests & commands freely.** Use Bash for npm test, builds, git — TokenGuard doesn't interfere with your terminal.
 2. **Navigate with AST precision.** Prefer \`tg_navigate\` over grep/glob. It returns exact structural matches (functions, classes, references) without flooding your context with noise.
-3. **Read files efficiently.** Prefer \`tg_code action:"read"\` over native Read. It auto-compresses cold code blocks so you can read large files without losing earlier context.
+3. **Read files efficiently.** ALWAYS prefer \`tg_code action:"read"\` over native Read. Native Read dumps the entire file into your context — a 2,000-line file burns ~5,000 tokens in one call. \`tg_code read\` auto-compresses to ~1,200 tokens while keeping all structural context. This is the single biggest token saver available to you.
 4. **Edit surgically.** Prefer \`tg_code action:"edit"\` for modifying existing functions/classes. It validates the AST before writing to disk — if your code has a syntax error, the file stays untouched and you get the exact line/column to fix.
 5. **Create new files normally.** Use native Write for brand new files that don't exist yet.
 6. **Pin rules that matter.** Use \`tg_guard action:"pin"\` to persist instructions across messages (e.g., "always use fetch, not axios").
@@ -100,11 +124,12 @@ const monitor = new TokenMonitor();
 const sandbox = new AstSandbox();
 const circuitBreaker = new CircuitBreaker();
 
-const deps: RouterDependencies = { engine, monitor, sandbox, circuitBreaker };
+const hook = new PreToolUseHook({ tokenThreshold: 1000 });
+const deps: RouterDependencies = { engine, monitor, sandbox, circuitBreaker, hook };
 
 const server = new McpServer({
     name: "TokenGuard",
-    version: "3.1.0",
+    version: VERSION,
 });
 
 if (!enableEmbeddings) {
@@ -227,9 +252,13 @@ server.tool(
             .number()
             .optional()
             .describe("For filter_output: max output lines (1-1000, default 100)."),
+        mode: z
+            .enum(["replace", "insert_before", "insert_after"])
+            .optional()
+            .describe("For edit: how to apply new_code relative to the symbol. 'replace' (default) replaces the symbol. 'insert_before'/'insert_after' adds new_code adjacent to the symbol without removing it."),
     },
-    async ({ action, path: filePath, symbol, new_code, compress, level, focus, tier, output, max_lines }) => {
-        const params: CodeParams = { action, path: filePath, symbol, new_code, compress, level, focus, tier, output, max_lines };
+    async ({ action, path: filePath, symbol, new_code, compress, level, focus, tier, output, max_lines, mode }) => {
+        const params: CodeParams = { action, path: filePath, symbol, new_code, compress, level, focus, tier, output, max_lines, mode };
         return wrapWithCircuitBreaker(
             circuitBreaker,
             "tg_code",

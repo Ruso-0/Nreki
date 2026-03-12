@@ -76,56 +76,37 @@ export class PreToolUseHook {
      * - A suggestion message for the LLM
      * - Token savings estimate
      */
-    evaluateFileRead(filePath: string): InterceptResult {
-        if (!this.config.interceptRead) {
-            return this.passThrough();
-        }
+    evaluateFileRead(filePath: string, preloadedContent?: string): InterceptResult {
+        if (!this.config.interceptRead) return this.passThrough();
 
-        // Check if file exists and get size
         let stats: fs.Stats;
-        try {
-            stats = fs.statSync(filePath);
-        } catch {
-            return this.passThrough();
-        }
+        try { stats = fs.statSync(filePath); } catch { return this.passThrough(); }
+        if (stats.size <= this.config.fileSizeThreshold) return this.passThrough();
 
-        // Check if file exceeds threshold
-        if (stats.size <= this.config.fileSizeThreshold) {
-            return this.passThrough();
-        }
-
-        // Check supported extension
         const ext = path.extname(filePath).toLowerCase();
         const supported = [".ts", ".tsx", ".js", ".jsx", ".py", ".go"];
-        if (!supported.includes(ext)) {
-            return this.passThrough();
-        }
+        if (!supported.includes(ext)) return this.passThrough();
 
-        // Estimate token waste using advanced compression ratios
-        const content = readSource(filePath);
+        // Use preloaded content to avoid double I/O
+        const content = preloadedContent ?? readSource(filePath);
         const fullTokens = Embedder.estimateTokens(content);
 
-        // Advanced compression ratios by level
         const ratioByLevel: Record<string, number> = {
-            light: 0.50,
-            medium: 0.75,
-            aggressive: 0.92,
+            light: 0.50, medium: 0.75, aggressive: 0.92,
         };
         const level = this.config.compressionLevel;
         const estimatedRatio = ratioByLevel[level] ?? 0.75;
         const compressedTokens = Math.round(fullTokens * (1 - estimatedRatio));
 
-        if (fullTokens <= this.config.tokenThreshold) {
-            return this.passThrough();
-        }
+        if (fullTokens <= this.config.tokenThreshold) return this.passThrough();
 
         return {
             shouldIntercept: true,
             suggestion: [
-                `⚡ TokenGuard Intercept: File "${path.basename(filePath)}" has ~${fullTokens.toLocaleString()} tokens.`,
-                `→ Use \`tg_compress --level ${level}\` to read a compressed version (~${compressedTokens.toLocaleString()} tokens).`,
-                `→ Or use \`tg_search\` with a specific query to find only the relevant chunks.`,
-                `→ Estimated savings: ~${(fullTokens - compressedTokens).toLocaleString()} tokens (${Math.round(estimatedRatio * 100)}% reduction).`,
+                `⚡ **TokenGuard Advice**: You just read "${path.basename(filePath)}" raw (~${fullTokens.toLocaleString()} tokens).`,
+                `→ Reading massive files raw burns your context window unnecessarily.`,
+                `→ Next time, omit 'compress: false' (it defaults to true) or use \`tg_code action:"compress" path:"${filePath}" level:"${level}"\`.`,
+                `→ You would have saved ~${(fullTokens - compressedTokens).toLocaleString()} tokens (${Math.round(estimatedRatio * 100)}% reduction) while keeping all structural context.`,
             ].join("\n"),
             wastedTokens: fullTokens,
             optimizedTokens: compressedTokens,
@@ -133,47 +114,6 @@ export class PreToolUseHook {
             compressionLevel: level,
             originalTokens: fullTokens,
             compressedTokens,
-        };
-    }
-
-    /**
-     * Evaluate a grep/glob operation and suggest tg_search instead.
-     */
-    evaluateGrepOperation(
-        pattern: string,
-        targetPath: string
-    ): InterceptResult {
-        if (!this.config.interceptGrep) {
-            return this.passThrough();
-        }
-
-        // Estimate how many files would be read
-        let fileCount = 0;
-        try {
-            fileCount = this.countFiles(targetPath);
-        } catch {
-            return this.passThrough();
-        }
-
-        if (fileCount <= 5) {
-            return this.passThrough();
-        }
-
-        // Rough estimate: grep reads entire files
-        const avgTokensPerFile = 500;
-        const grepTokens = fileCount * avgTokensPerFile;
-        const searchTokens = 200; // tg_search returns only relevant chunks
-
-        return {
-            shouldIntercept: true,
-            suggestion: [
-                `⚡ TokenGuard Intercept: Grep over "${targetPath}" would scan ~${fileCount} files (~${grepTokens.toLocaleString()} tokens).`,
-                `→ Use \`tg_search("${pattern}")\` instead — returns the top relevant chunks (~${searchTokens} tokens).`,
-                `→ Estimated savings: ~${(grepTokens - searchTokens).toLocaleString()} tokens (${Math.round((1 - searchTokens / grepTokens) * 100)}% reduction).`,
-            ].join("\n"),
-            wastedTokens: grepTokens,
-            optimizedTokens: searchTokens,
-            savingsPercent: Math.round((1 - searchTokens / grepTokens) * 100),
         };
     }
 
@@ -202,20 +142,4 @@ export class PreToolUseHook {
         };
     }
 
-    /** Count files in a directory (non-recursive, fast). */
-    private countFiles(dirPath: string): number {
-        try {
-            const entries = fs.readdirSync(dirPath, { withFileTypes: true });
-            let count = 0;
-            for (const entry of entries) {
-                if (entry.isFile()) count++;
-                if (entry.isDirectory() && !entry.name.startsWith(".")) {
-                    count += this.countFiles(path.join(dirPath, entry.name));
-                }
-            }
-            return count;
-        } catch {
-            return 0;
-        }
-    }
 }

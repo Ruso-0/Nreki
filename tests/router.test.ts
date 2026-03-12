@@ -86,6 +86,8 @@ function createMockDeps(): RouterDependencies {
             tool_calls: 15,
         }),
         shutdown: vi.fn(),
+        getTopHeavyFiles: vi.fn().mockReturnValue([]),
+        markFileRead: vi.fn(),
     } as any;
 
     const monitor = new TokenMonitor();

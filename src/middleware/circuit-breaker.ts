@@ -38,12 +38,12 @@ function generateLevel1Redirect(
         `Repeated fixes to the same code are failing with the same pattern:\n` +
         `> ${error}\n\n` +
         `**STRATEGY SHIFT: Stop patching. Rewrite from scratch.**\n\n` +
-        `1. Use \`tg_code action:"read"\` to read the current file and understand the context.\n` +
-        `2. Use your native Write tool to add a NEW function \`${sym}_v2\` below the original, with the same signature.\n` +
-        `   (tg_code edit replaces symbols — use native Write to ADD new code.)\n` +
-        `3. Implement the intended behavior cleanly from zero in \`${sym}_v2\`.\n` +
-        `4. Once it compiles (test with Bash), update callers to use \`${sym}_v2\`.\n` +
-        `5. Then remove the old \`${sym}\` with \`tg_code action:"edit"\`.\n\n` +
+        `1. Use \`tg_code action:"read" compress:false path:"${fil}"\` to read the UNCOMPRESSED code. You CANNOT rewrite the logic if you read it compressed.\n` +
+        `2. DO NOT use the native Write tool (it bypasses AST validation).\n` +
+        `3. Use \`tg_code action:"edit" mode:"insert_after" symbol:"${sym}"\` to safely append a NEW function \`${sym}_v2\` below the original. TokenGuard will validate it.\n` +
+        `4. Implement the intended behavior cleanly from zero in \`${sym}_v2\`.\n` +
+        `5. Once it compiles (test with Bash), update callers to use \`${sym}_v2\`.\n` +
+        `6. Then remove the old \`${sym}\` with \`tg_code action:"edit"\`.\n\n` +
         `Acknowledge this and start building \`${sym}_v2\`.`
     );
 }
@@ -61,10 +61,12 @@ function generateLevel2Redirect(
         `The complexity is too high for monolithic code. Time to divide and conquer.\n` +
         `> ${error}\n\n` +
         `**MANDATORY STRATEGY: Break the logic into smaller pieces.**\n\n` +
-        `1. Identify 2-3 distinct responsibilities inside \`${sym}\`.\n` +
-        `2. Use native Write to add small, pure helper functions above \`${sym}\` (data in → data out).\n` +
-        `3. Test each helper individually with Bash before moving on.\n` +
-        `4. Only after all helpers compile, use \`tg_code action:"edit"\` to rewrite \`${sym}\` as a thin orchestrator.\n\n` +
+        `1. Use \`tg_code action:"read" compress:false path:"${fil}"\` to read the full uncompressed code of \`${sym}\` and understand its responsibilities.\n` +
+        `2. Identify 2-3 distinct responsibilities inside \`${sym}\`.\n` +
+        `3. DO NOT use the native Write tool (it bypasses AST validation).\n` +
+        `4. Use \`tg_code action:"edit" mode:"insert_before" symbol:"${sym}"\` to add small, pure helper functions above \`${sym}\` (data in → data out). TokenGuard will validate them.\n` +
+        `5. Test each helper individually with Bash before moving on.\n` +
+        `6. Only after all helpers compile, use \`tg_code action:"edit"\` to rewrite \`${sym}\` as a thin orchestrator.\n\n` +
         `Acknowledge this and start with the first helper function.`
     );
 }
@@ -187,6 +189,7 @@ export function wrapWithCircuitBreaker(
                 responseText,
                 filePath,
                 symbolName,
+                true,
             );
 
             if (loopCheck.tripped) {

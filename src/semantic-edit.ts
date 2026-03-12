@@ -6,6 +6,10 @@
  * splices only those bytes, and validates syntax before saving.
  *
  * Saves 98% of tokens vs full file rewrite.
+ *
+ * v3.2.0: Byte-index splicing (no more indexOf), auto-indentation,
+ * insert_before/insert_after modes, arrow function support,
+ * and fuzzy anchor heuristic.
  */
 
 import fs from "fs";
@@ -17,6 +21,8 @@ import { readSource } from "./utils/read-source.js";
 import { saveBackup } from "./undo.js";
 
 // ─── Types ───────────────────────────────────────────────────────────
+
+export type EditMode = "replace" | "insert_before" | "insert_after";
 
 export interface EditResult {
     success: boolean;
@@ -35,6 +41,10 @@ export interface EditResult {
 function extractName(chunk: ParsedChunk): string {
     const raw = chunk.rawCode.trim();
     let m: RegExpExecArray | null;
+
+    // TS/JS: Arrow functions (export const foo = async () => ...)
+    m = /(?:export\s+)?(?:default\s+)?(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s+)?(?:(?:<[^>]*>\s*)?\([^)]*\)|[a-zA-Z0-9_]+)\s*=>/.exec(raw);
+    if (m) return m[1];
 
     // export [default] [async] function NAME
     m = /(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s+(\w+)/.exec(raw);
@@ -91,29 +101,17 @@ function detectLanguage(filePath: string): string | null {
     return map[ext] ?? null;
 }
 
-/**
- * Compute the byte offset for a 1-indexed line number in a string.
- * Returns the index of the first character on that line.
- */
-function lineToByteOffset(content: string, lineNumber: number): number {
-    let line = 1;
-    for (let i = 0; i < content.length; i++) {
-        if (line === lineNumber) return i;
-        if (content[i] === "\n") line++;
-    }
-    return content.length;
-}
-
 // ─── Core ───────────────────────────────────────────────────────────
 
 /**
  * Surgically edit a single symbol in a file by name.
  *
  * 1. Parse file to find the target AST node
- * 2. Locate its exact byte position in the file content
- * 3. Splice: before + newCode + after
- * 4. Validate the result with tree-sitter
- * 5. Write only if syntax is valid
+ * 2. Use exact byte indices from tree-sitter (no indexOf)
+ * 3. Auto-indent the replacement to match original context
+ * 4. Splice: before + newCode + after (supports replace/insert_before/insert_after)
+ * 5. Validate the result with tree-sitter
+ * 6. Write only if syntax is valid
  */
 export async function semanticEdit(
     filePath: string,
@@ -121,6 +119,7 @@ export async function semanticEdit(
     newCode: string,
     parser: ASTParser,
     sandbox: AstSandbox,
+    mode: EditMode = "replace",
 ): Promise<EditResult> {
     // Read file
     let content: string;
@@ -189,6 +188,39 @@ export async function semanticEdit(
             };
         }
 
+        // BONUS: JIT Heuristic — guess the intended symbol by comparing tokens
+        const codeTokens = new Set(newCode.match(/[a-zA-Z_]\w*/g) || []);
+        let bestChunk: ParsedChunk | null = null;
+        let bestScore = 0;
+
+        for (const chunk of parseResult.chunks) {
+            const chunkTokens = new Set(chunk.rawCode.match(/[a-zA-Z_]\w*/g) || []);
+            let score = 0;
+            for (const term of codeTokens) {
+                if (chunkTokens.has(term)) score++;
+            }
+            if (score > bestScore) {
+                bestScore = score;
+                bestChunk = chunk;
+            }
+        }
+
+        if (bestChunk && bestScore >= 5) {
+            const guessedName = extractName(bestChunk);
+            return {
+                success: false,
+                filePath,
+                symbolName,
+                oldLines: 0,
+                newLines: 0,
+                tokensAvoided: 0,
+                syntaxValid: false,
+                error:
+                    `Symbol "${symbolName}" not found. TokenGuard detected you likely meant to edit \`${guessedName}\`.\n` +
+                    `Please retry using: symbol:"${guessedName}"`,
+            };
+        }
+
         return {
             success: false,
             filePath,
@@ -225,32 +257,53 @@ export async function semanticEdit(
     const { chunk } = matches[0];
     const rawCode = chunk.rawCode;
 
-    // Find exact byte position of rawCode in content.
-    // Start searching near the chunk's startLine for efficiency.
-    const searchStart = lineToByteOffset(content, chunk.startLine);
-    let pos = content.indexOf(rawCode, Math.max(0, searchStart - 1));
+    // Use exact byte indices from tree-sitter for O(1) splice
+    const startIdx = chunk.startIndex;
+    const endIdx = chunk.endIndex;
 
-    if (pos < 0) {
-        // Fallback: search from beginning
-        pos = content.indexOf(rawCode);
+    // 1. Extract the EXACT original indentation (respects tabs and spaces)
+    let lineStart = startIdx;
+    while (lineStart > 0 && content[lineStart - 1] !== "\n") lineStart--;
+    // Skip \r for CRLF line endings (Windows files)
+    if (content[lineStart] === "\r") lineStart++;
+    const indentMatch = content.slice(lineStart, startIdx).match(/^[ \t]*/);
+    const baseIndent = indentMatch ? indentMatch[0] : "";
+
+    // 2. Calculate the minimum indentation Claude included in the new code
+    const newLines = newCode.split("\n");
+    const nonBlank = newLines.filter(l => l.trim().length > 0);
+    let minClaudeIndent = Infinity;
+    for (const line of nonBlank) {
+        const match = line.match(/^[ \t]*/);
+        if (match && match[0].length < minClaudeIndent) minClaudeIndent = match[0].length;
     }
+    if (minClaudeIndent === Infinity) minClaudeIndent = 0;
 
-    if (pos < 0) {
-        return {
-            success: false,
-            filePath,
-            symbolName,
-            oldLines: rawCode.split("\n").length,
-            newLines: newCode.split("\n").length,
-            tokensAvoided: 0,
-            syntaxValid: false,
-            error: "Internal error: could not locate symbol text in file.",
-        };
+    // 3. Relative rebase: strip Claude's indent, apply baseIndent
+    const formattedNewCode = newLines.map((line, i) => {
+        if (line.trim() === "") return "";
+        const strippedLine = line.slice(minClaudeIndent);
+
+        if (mode === "replace" && i === 0) return strippedLine;
+        return baseIndent + strippedLine;
+    }).join("\n");
+
+    // 4. Splice using exact byte indices
+    let newContent: string;
+    let oldLines = chunk.rawCode.split("\n").length;
+
+    if (mode === "insert_before") {
+        newContent = content.slice(0, lineStart) + formattedNewCode + "\n\n" + content.slice(lineStart);
+        oldLines = 0;
+    } else if (mode === "insert_after") {
+        let endOfLine = endIdx;
+        while (endOfLine < content.length && content[endOfLine] !== "\n") endOfLine++;
+        newContent = content.slice(0, endOfLine) + "\n\n" + formattedNewCode + content.slice(endOfLine);
+        oldLines = 0;
+    } else {
+        // replace (default)
+        newContent = content.slice(0, startIdx) + formattedNewCode + content.slice(endIdx);
     }
-
-    // Splice: before + newCode + after
-    const newContent =
-        content.slice(0, pos) + newCode + content.slice(pos + rawCode.length);
 
     // Validate syntax of the edited file
     const language = detectLanguage(filePath);
@@ -313,7 +366,7 @@ export async function semanticEdit(
         success: true,
         filePath,
         symbolName,
-        oldLines: rawCode.split("\n").length,
+        oldLines,
         newLines: newCode.split("\n").length,
         tokensAvoided,
         syntaxValid: true,

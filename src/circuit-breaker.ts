@@ -149,8 +149,9 @@ export class CircuitBreaker {
         result: string,
         filePath?: string,
         symbolName?: string,
+        isError?: boolean,
     ): LoopCheckResult {
-        const hasError = containsError(result);
+        const hasError = isError ?? containsError(result);
         const errorHash = hasError ? hashError(result) : null;
 
         const record: ToolCallRecord = {
@@ -336,7 +337,9 @@ export class CircuitBreaker {
 
         this.stats.loopsDetected++;
         this.stats.loopsPrevented++;
-        this.stats.redirectsIssued++;
+        if (newLevel < MAX_ESCALATION_LEVEL) {
+            this.stats.redirectsIssued++;
+        }
         this.stats.estimatedTokensSaved += 5 * TOKENS_PER_FAILED_ITERATION;
 
         return { tripped: true, reason, level: newLevel };
@@ -363,10 +366,27 @@ export class CircuitBreaker {
      * Used by middleware auto-reset when a different tool/action is called.
      * Prevents the bypass where Edit(fail) → Read → Edit(fail) circumvents detection.
      */
+    /**
+     * Soft reset: clear tripped state and purge history of the problematic file.
+     * This gives Claude a clean slate (3 real attempts) with the new strategy,
+     * while preserving escalationLevel so it escalates if the retry also fails.
+     */
     softReset(): void {
         this.state.tripped = false;
         this.state.tripReason = null;
-        // NOTE: Do NOT clear perFileFailures or history
+
+        if (this.state.lastTrippedFile) {
+            // AMNESIA TOTAL: Remove all history entries for the tripped file.
+            // This resets Patterns 1, 2, 3, and 4 for that file,
+            // giving Claude 3 clean attempts with the new strategy.
+            this.state.history = this.state.history.filter(
+                (r) => r.filePath !== this.state.lastTrippedFile
+            );
+            this.state.perFileFailures.delete(this.state.lastTrippedFile);
+            this.state.consecutiveFailures = 0;
+        }
+        // NOTE: Do NOT clear escalationLevel — it must persist so the next
+        // failure escalates to the next level instead of restarting from 1.
     }
 
     /**

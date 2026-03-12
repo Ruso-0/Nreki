@@ -423,6 +423,103 @@ describe("edge cases", () => {
     });
 });
 
+// ─── Topological Edits (insert_before / insert_after) ───────────────
+
+describe("topological edits (insert_before / insert_after)", () => {
+    it("should insert_after placing code after the symbol without removing it", async () => {
+        const file = writeTmp("insert-after.ts", [
+            "function process() {",
+            "    return 1;",
+            "}",
+            "",
+            "function end() {}"
+        ].join("\n"));
+
+        const result = await semanticEdit(
+            file, "process", "function process_v2() {\n    return 2;\n}",
+            parser, sandbox, "insert_after"
+        );
+
+        expect(result.success).toBe(true);
+        const content = fs.readFileSync(file, "utf-8");
+        expect(content).toContain("function process()");
+        expect(content).toContain("function process_v2()");
+        expect(content.indexOf("process()")).toBeLessThan(content.indexOf("process_v2()"));
+        expect(content.indexOf("process_v2()")).toBeLessThan(content.indexOf("end()"));
+    });
+
+    it("should insert_before placing code before the symbol without removing it", async () => {
+        const file = writeTmp("insert-before.ts", [
+            "function first() {}",
+            "",
+            "function end() {",
+            "    return 1;",
+            "}"
+        ].join("\n"));
+
+        const result = await semanticEdit(
+            file, "end", "function start() {\n    return 0;\n}",
+            parser, sandbox, "insert_before"
+        );
+
+        expect(result.success).toBe(true);
+        const content = fs.readFileSync(file, "utf-8");
+        expect(content).toContain("function start()");
+        expect(content).toContain("function end()");
+        expect(content.indexOf("first()")).toBeLessThan(content.indexOf("start()"));
+        expect(content.indexOf("start()")).toBeLessThan(content.indexOf("end()"));
+    });
+
+    it("should auto-indent inserted code for nested blocks", async () => {
+        const file = writeTmp("auto-indent.ts", [
+            "class Controller {",
+            "    async getData() {",
+            "        return true;",
+            "    }",
+            "}"
+        ].join("\n"));
+
+        const rawNewCode = "async validateData() {\n    return false;\n}";
+
+        const result = await semanticEdit(
+            file, "getData", rawNewCode, parser, sandbox, "insert_before"
+        );
+
+        expect(result.success).toBe(true);
+        const content = fs.readFileSync(file, "utf-8");
+        expect(content).toMatch(/\n    async validateData\(\) \{\n        return false;\n    \}\n/);
+    });
+
+    it("should reject inserted code with syntax errors without modifying file", async () => {
+        const file = writeTmp("insert-invalid.ts", "function valid() { return 1; }");
+        const contentBefore = fs.readFileSync(file, "utf-8");
+
+        const result = await semanticEdit(
+            file, "valid", "function broken() { return 1",
+            parser, sandbox, "insert_after"
+        );
+
+        expect(result.success).toBe(false);
+        expect(result.syntaxValid).toBe(false);
+        const contentAfter = fs.readFileSync(file, "utf-8");
+        expect(contentAfter).toBe(contentBefore);
+    });
+
+    it("should handle insert_after on the last symbol of the file", async () => {
+        const file = writeTmp("insert-last.ts", "function foo() { return 1; }");
+
+        const result = await semanticEdit(
+            file, "foo", "function bar() { return 2; }", parser, sandbox, "insert_after"
+        );
+
+        expect(result.success).toBe(true);
+        const content = fs.readFileSync(file, "utf-8");
+        expect(content).toContain("function foo()");
+        expect(content).toContain("function bar()");
+        expect(content.indexOf("foo()")).toBeLessThan(content.indexOf("bar()"));
+    });
+});
+
 // ─── Performance ────────────────────────────────────────────────────
 
 describe("performance", () => {

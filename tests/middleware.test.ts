@@ -224,12 +224,15 @@ describe("Circuit Breaker Middleware", () => {
         }
         expect(cb.getState().escalationLevel).toBe(1);
 
-        // After level 1 soft-reset, errors continue. Since history accumulates,
-        // the next error re-triggers the pattern and escalates to level 2.
-        const result = await wrapWithCircuitBreaker(cb, "tg_code", "edit", handler, "src/foo.ts");
-        expect(result.isError).toBe(true);
-        expect(result.content[0].text).toContain("LEVEL 2");
-        expect(result.content[0].text).toContain("DECOMPOSE");
+        // After level 1 soft-reset (amnesia total clears file history),
+        // need 3 more errors to re-trip and escalate to level 2.
+        let result;
+        for (let i = 0; i < 3; i++) {
+            result = await wrapWithCircuitBreaker(cb, "tg_code", "edit", handler, "src/foo.ts");
+        }
+        expect(result!.isError).toBe(true);
+        expect(result!.content[0].text).toContain("LEVEL 2");
+        expect(result!.content[0].text).toContain("DECOMPOSE");
         expect(cb.getState().escalationLevel).toBe(2);
     });
 
@@ -245,12 +248,16 @@ describe("Circuit Breaker Middleware", () => {
         }
         expect(cb.getState().escalationLevel).toBe(1);
 
-        // Escalate to level 2 (history still has errors, re-trips immediately)
-        await wrapWithCircuitBreaker(cb, "tg_code", "edit", handler, "src/foo.ts");
+        // Escalate to level 2 (amnesia total: need 3 more errors)
+        for (let i = 0; i < 3; i++) {
+            await wrapWithCircuitBreaker(cb, "tg_code", "edit", handler, "src/foo.ts");
+        }
         expect(cb.getState().escalationLevel).toBe(2);
 
-        // Escalate to level 3
-        await wrapWithCircuitBreaker(cb, "tg_code", "edit", handler, "src/foo.ts");
+        // Escalate to level 3 (amnesia total: need 3 more errors)
+        for (let i = 0; i < 3; i++) {
+            await wrapWithCircuitBreaker(cb, "tg_code", "edit", handler, "src/foo.ts");
+        }
         expect(cb.getState().escalationLevel).toBe(3);
 
         // Level 3 does NOT soft-reset, so next call returns hard stop from pre-check

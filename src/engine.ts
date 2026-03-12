@@ -128,6 +128,9 @@ export class TokenGuardEngine {
     private initialized = false;
     private embedderReady = false;
 
+    /** Files that have been read (raw or compressed) in this session. */
+    private safelyReadFiles = new Set<string>();
+
     /** Session-level savings tracker. */
     private sessionSavings = {
         totalTokensSaved: 0,
@@ -470,6 +473,25 @@ export class TokenGuardEngine {
         return result;
     }
 
+    /**
+     * Mark a file as safely read (raw or compressed) in this session.
+     * Used by Danger Zones to filter out files that are no longer a risk.
+     */
+    markFileRead(filePath: string): void {
+        this.safelyReadFiles.add(path.resolve(filePath));
+    }
+
+    /**
+     * Get the heaviest files that haven't been safely read yet.
+     * Filters out files already compressed/read in this session.
+     */
+    getTopHeavyFiles(limit: number = 5): Array<{ path: string; estimated_tokens: number }> {
+        const allHeavy = this.db.getTopHeavyFiles(limit + 20);
+        return allHeavy
+            .filter(f => !this.safelyReadFiles.has(path.resolve(f.path)))
+            .slice(0, limit);
+    }
+
     /** Get a comprehensive session savings report. */
     getSessionReport(): SessionReport {
         const durationMs = Date.now() - this.sessionSavings.startTime;
@@ -558,21 +580,28 @@ export class TokenGuardEngine {
     private async processQueue(): Promise<void> {
         if (this.isIndexing) return;
         this.isIndexing = true;
+        let madeChanges = false;
 
-        while (this.indexingQueue.size > 0) {
-            const [filePath] = this.indexingQueue;
-            this.indexingQueue.delete(filePath);
+        try {
+            while (this.indexingQueue.size > 0) {
+                const [filePath] = this.indexingQueue;
+                this.indexingQueue.delete(filePath);
 
-            try {
-                await this.indexFile(filePath);
-            } catch (err) {
-                console.error(
-                    `[TokenGuard] Queue error for ${filePath}: ${(err as Error).message}`
-                );
+                try {
+                    const res = await this.indexFile(filePath);
+                    if (res) madeChanges = true;
+                } catch (err) {
+                    console.error(
+                        `[TokenGuard] Queue error for ${filePath}: ${(err as Error).message}`
+                    );
+                }
             }
+        } finally {
+            if (madeChanges) {
+                this.db.save(); // Persist SQLite to disk after watcher changes
+            }
+            this.isIndexing = false; // Always reset to prevent deadlocks
         }
-
-        this.isIndexing = false;
     }
 
     /** Stop the file watcher. */

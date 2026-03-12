@@ -340,27 +340,9 @@ describe("PreToolUseHook", () => {
         expect(result.shouldIntercept).toBe(true);
         expect(result.wastedTokens).toBeGreaterThan(0);
         expect(result.savingsPercent).toBeGreaterThan(0);
-        expect(result.suggestion).toContain("TokenGuard Intercept");
+        expect(result.suggestion).toContain("TokenGuard Advice");
 
         fs.unlinkSync(tempFile);
-    });
-
-    it("should suggest tg_search for grep operations", () => {
-        const tempDir = path.join(os.tmpdir(), `tg-test-dir-${Date.now()}`);
-        fs.mkdirSync(tempDir, { recursive: true });
-        for (let i = 0; i < 10; i++) {
-            fs.writeFileSync(path.join(tempDir, `file${i}.ts`), `const x${i} = ${i};`);
-        }
-
-        const result = hook.evaluateGrepOperation("authentication", tempDir);
-        expect(result.shouldIntercept).toBe(true);
-        expect(result.suggestion).toContain("tg_search");
-
-        // Cleanup
-        for (let i = 0; i < 10; i++) {
-            fs.unlinkSync(path.join(tempDir, `file${i}.ts`));
-        }
-        fs.rmdirSync(tempDir);
     });
 });
 

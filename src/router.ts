@@ -32,13 +32,14 @@ import {
 } from "./ast-navigator.js";
 import { AstSandbox } from "./ast-sandbox.js";
 import { CircuitBreaker } from "./circuit-breaker.js";
-import { semanticEdit } from "./semantic-edit.js";
+import { semanticEdit, type EditMode } from "./semantic-edit.js";
 import { addPin, removePin, listPins, getPinnedText } from "./pin-memory.js";
 import { readSource } from "./utils/read-source.js";
 import { restoreBackup } from "./undo.js";
 import { validateBeforeWrite } from "./middleware/validator.js";
 import { wrapWithCircuitBreaker } from "./middleware/circuit-breaker.js";
 import { acquireFileLock, releaseFileLock } from "./middleware/file-lock.js";
+import { PreToolUseHook } from "./hooks/preToolUse.js";
 
 // ─── Types ───────────────────────────────────────────────────────────
 
@@ -53,6 +54,7 @@ export interface RouterDependencies {
     monitor: TokenMonitor;
     sandbox: AstSandbox;
     circuitBreaker: CircuitBreaker;
+    hook?: PreToolUseHook;
 }
 
 /** Flat params for tg_navigate (replaces target + options bag). */
@@ -80,6 +82,7 @@ export interface CodeParams {
     tier?: number;
     output?: string;
     max_lines?: number;
+    mode?: string;
 }
 
 /** Flat params for tg_guard (replaces options bag). */
@@ -543,20 +546,33 @@ async function handleRead(
             : "medium";
 
         if (!compress) {
-            // Raw read without compression
             const content = readSource(resolvedPath);
+
+            // Mark as safely read (removes from Danger Zones)
+            engine.markFileRead(resolvedPath);
+
+            // Behavioral advisor: teach Claude to use compression next time
+            let advice = "";
+            if (deps.hook) {
+                const intercept = deps.hook.evaluateFileRead(resolvedPath, content);
+                if (intercept.shouldIntercept) {
+                    advice = `\n\n${intercept.suggestion}`;
+                }
+            }
+
             return {
                 content: [{
                     type: "text" as const,
                     text:
                         `## ${path.basename(resolvedPath)} (raw)\n\n` +
                         `\`\`\`\n${content}\n\`\`\`\n\n` +
-                        `[TokenGuard: raw read, no compression applied]`,
+                        `[TokenGuard: raw read, no compression applied]${advice}`,
                 }],
             };
         }
 
         const result = await engine.compressFileAdvanced(resolvedPath, level);
+        engine.markFileRead(resolvedPath);
         const saved = result.tokensSaved;
 
         engine.logUsage(
@@ -721,6 +737,7 @@ async function handleEdit(
                 type: "text" as const,
                 text: `Security error: ${(err as Error).message}\n\n[TokenGuard saved ~0 tokens]`,
             }],
+            isError: true,
         };
     }
 
@@ -742,12 +759,16 @@ async function handleEdit(
 
     try {
         const parser = engine.getParser();
+        const mode = (typeof params.mode === "string" && ["replace", "insert_before", "insert_after"].includes(params.mode))
+            ? params.mode as EditMode
+            : "replace";
         const result = await semanticEdit(
             resolvedPath,
             symbol,
             new_code,
             parser,
             sandbox,
+            mode,
         );
 
         if (!result.success) {
@@ -761,6 +782,7 @@ async function handleEdit(
                         `${result.error}\n\n` +
                         `[TokenGuard saved ~0 tokens]`,
                 }],
+                isError: true,
             };
         }
 
@@ -1009,6 +1031,22 @@ async function handleStatus(
         "═══════════════════════════════════════════",
     ].join("\n");
 
+    // Danger Zones: heaviest unread files
+    const heavyFiles = engine.getTopHeavyFiles(5);
+    let dangerZones = "";
+    if (heavyFiles.length > 0) {
+        dangerZones = [
+            "",
+            "───────────────────────────────────────────",
+            "  ☢️ DANGER ZONES (Heaviest unread files):",
+            "  Do NOT read these raw. Use tg_code action:\"compress\".",
+            ...heavyFiles.map(f =>
+                `     - ${path.relative(process.cwd(), f.path)} (~${f.estimated_tokens.toLocaleString()} tokens)`
+            ),
+            "───────────────────────────────────────────",
+        ].join("\n");
+    }
+
     let recommendations = "";
     if (prediction.alertLevel === "critical") {
         recommendations =
@@ -1025,7 +1063,7 @@ async function handleStatus(
             "  3. Keep responses concise";
     }
 
-    const saved = Embedder.estimateTokens(report + indexSection);
+    const saved = Embedder.estimateTokens(report + indexSection + dangerZones);
 
     return {
         content: [{
@@ -1033,6 +1071,7 @@ async function handleStatus(
             text:
                 report +
                 indexSection +
+                dangerZones +
                 recommendations +
                 `\n\n[TokenGuard saved ~${saved.toLocaleString()} tokens on this query]`,
         }],
@@ -1109,6 +1148,9 @@ async function handleReport(
         `|  MODEL:                   ${pad(modelName, 16)}    |`,
         `|  TOOLS USED:              ${pad(usageStats.tool_calls + " calls", 16)}    |`,
         "+--------------------------------------------------+",
+        "",
+        "💡 Did TokenGuard save your session?",
+        "   Share this receipt → https://github.com/Ruso-0/TokenGuard/discussions",
     ].join("\n");
 
     const report = [

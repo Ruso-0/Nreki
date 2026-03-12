@@ -392,9 +392,10 @@ describe("CircuitBreaker", () => {
 
         it("third trip caps at level 3 (MAX_ESCALATION_LEVEL)", () => {
             const cb = new CircuitBreaker();
+            const errors = ["TypeError: fail A", "TypeError: fail B", "TypeError: fail C", "TypeError: fail D"];
             for (let round = 0; round < 4; round++) {
                 for (let i = 0; i < 3; i++) {
-                    cb.recordToolCall("tg_code:edit", `Error round ${round}`, "src/foo.ts");
+                    cb.recordToolCall("tg_code:edit", errors[round], "src/foo.ts");
                 }
                 if (round < 3) cb.softReset();
             }
