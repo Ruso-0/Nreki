@@ -49,21 +49,36 @@ npm run lint
 
 ```
 src/
-├── index.ts                 # MCP server entry point
+├── index.ts                 # MCP server entry point (3 router registrations)
+├── router.ts                # Central dispatcher for {tool, action} pairs
 ├── engine.ts                # Core search engine orchestrator
 ├── database.ts              # SQLite + in-memory vector/keyword indexes
 ├── parser.ts                # Tree-sitter AST parsing
 ├── embedder.ts              # Local embedding generation
 ├── compressor.ts            # Classic tier-based compression
 ├── compressor-advanced.ts   # LLMLingua-2-inspired compression
+├── semantic-edit.ts         # Surgical AST patching by symbol name
+├── circuit-breaker.ts       # Loop detection + 3-level creative escalation
+├── pin-memory.ts            # Persistent pinned rules
+├── repo-map.ts              # Static deterministic repo map
+├── terminal-filter.ts       # Terminal output entropy filter
+├── ast-navigator.ts         # AST navigation (def, refs, outline)
+├── ast-sandbox.ts           # AST sandbox validator
 ├── monitor.ts               # Token consumption monitoring
+├── undo.ts                  # Backup/restore for semantic edits
 ├── hooks/
-│   └── preToolUse.ts        # Pre-tool-use interception hook
+│   └── preToolUse.ts        # Behavioral advisor hook
+├── middleware/
+│   ├── circuit-breaker.ts   # Circuit breaker middleware wrapper
+│   ├── validator.ts         # AST validation middleware
+│   └── file-lock.ts         # File-level mutex for edits
 └── utils/
     ├── path-jail.ts         # Path traversal protection
     ├── safe-parse.ts        # WASM memory-safe parsing
     ├── file-filter.ts       # File size/extension filtering
-    └── code-tokenizer.ts    # Code-aware identifier tokenizer
+    ├── read-source.ts       # BOM-safe file reader
+    ├── code-tokenizer.ts    # Code-aware identifier tokenizer
+    └── imports.ts           # Dependency extraction + security filters for Auto-Context
 ```
 
 ## Pull Request Guidelines

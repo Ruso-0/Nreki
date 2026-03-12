@@ -2,6 +2,42 @@
 
 All notable changes to TokenGuard will be documented in this file.
 
+## [3.2.0] - 2026-03-13
+
+### Added
+- **Auto-Context Inlining**: When Claude requests a definition or reads a file, TokenGuard
+  automatically resolves signatures of imported dependencies and injects them in the response.
+  Reduces follow-up tool calls by providing "X-ray vision" in a single turn.
+  - Import extraction supports ESM (named + default), CommonJS require, Python from-import,
+    and Go namespace inference.
+  - "Gold Filter": only injects dependencies actually used in the function body, using the
+    local alias name (not the original export name) for accurate matching.
+  - Security filter: signatures containing passwords, API keys, auth tokens, or encryption
+    keys are automatically excluded from injection.
+  - Anti-prompt-injection: JSDoc comments and TokenGuard stubs are stripped from signatures
+    before injection, preventing malicious content from entering Claude's context.
+  - Homonym disambiguation: BM25 searches combine symbol name + import path hint to find
+    the correct signature even when multiple files export the same name.
+  - 150ms hard timeout prevents event loop blocking on large codebases.
+  - `auto_context: false` parameter available on both `tg_navigate` and `tg_code` to disable.
+  - Session report tracks `autoContextInjections` count.
+- **Go import support**: Auto-Context infers exported symbols from Go namespace usage patterns
+  (e.g., `utils.HashPassword()` resolves to `HashPassword` in the `utils` package).
+- **Preloaded content in compressFileAdvanced**: Eliminates double file I/O when both
+  auto-context and compression are active on the same read.
+
+### Changed
+- `CompressionLevel` type is now used explicitly instead of `as any` for level casting.
+- `handleRead` reads the file exactly once and reuses the content for both auto-context
+  extraction and compression.
+
+## [3.1.3] - 2026-03-12
+
+### Fixed
+- **Path normalization in Circuit Breaker**: All file paths are now resolved to absolute + forward slashes before recording. Prevents split counters where `"src/app.ts"` and `"/abs/path/src/app.ts"` were tracked as different files, causing Pattern 4 to never trigger.
+- **Ghost data after file deletion**: `db.save()` is now called after the watcher's `unlink` event, ensuring deleted files don't reappear from disk on next session.
+- **Plaintext fallback for unsupported languages**: Files with unsupported extensions (.rs, .java, .cpp, etc.) are now indexed as single plaintext chunks. BM25 keyword search works on all file types as documented in the README. AST features (validation, structural compression, semantic edit) still require TS/JS/Python/Go.
+
 ## [3.1.2] - 2026-03-12
 
 ### Fixed

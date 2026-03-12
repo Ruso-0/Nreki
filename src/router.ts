@@ -1,5 +1,5 @@
 /**
- * router.ts — Central dispatcher for TokenGuard v3.1.2 router tools.
+ * router.ts — Central dispatcher for TokenGuard v3.2.0 router tools.
  *
  * Maps {toolName, action} pairs to existing handler functions.
  * All business logic remains in the original modules — this file
@@ -40,6 +40,8 @@ import { validateBeforeWrite } from "./middleware/validator.js";
 import { wrapWithCircuitBreaker } from "./middleware/circuit-breaker.js";
 import { acquireFileLock, releaseFileLock } from "./middleware/file-lock.js";
 import { PreToolUseHook } from "./hooks/preToolUse.js";
+import { extractDependencies, cleanSignature, isSensitiveSignature, escapeRegExp } from "./utils/imports.js";
+import type { CompressionLevel } from "./compressor-advanced.js";
 
 // ─── Types ───────────────────────────────────────────────────────────
 
@@ -68,6 +70,7 @@ export interface NavigateParams {
     kind?: string;
     signatures?: boolean;
     refresh?: boolean;
+    auto_context?: boolean;
 }
 
 /** Flat params for tg_code (replaces path + options bag). */
@@ -83,6 +86,7 @@ export interface CodeParams {
     output?: string;
     max_lines?: number;
     mode?: string;
+    auto_context?: boolean;
 }
 
 /** Flat params for tg_guard (replaces options bag). */
@@ -327,7 +331,48 @@ async function handleDefinition(
         (sum, r) => sum + Embedder.estimateTokens(r.body), 0,
     );
 
-    engine.logUsage("tg_def", bodyTokens, bodyTokens, 0);
+    // Auto-Context: resolve signatures of imported dependencies used in the body
+    const autoContext = params.auto_context !== false;
+    let autoContextBlock = "";
+    let extraTokens = 0;
+
+    if (autoContext && results.length > 0) {
+        try {
+            const targetResult = results[0];
+            const ext = path.extname(targetResult.filePath).toLowerCase();
+            const fileContent = readSource(safePath(root, targetResult.filePath));
+
+            const allImports = extractDependencies(fileContent, ext);
+
+            // THE GOLD FILTER: Only inject deps that are actually USED in the body.
+            // Uses localName (alias) for matching, symbol (original) for search.
+            const usedDeps = allImports.filter(d => {
+                const safeName = escapeRegExp(d.localName);
+                const regex = new RegExp(`(^|[^a-zA-Z0-9_$])${safeName}(?=[^a-zA-Z0-9_$]|$)`);
+                return results.some(r => regex.test(r.body));
+            });
+
+            if (usedDeps.length > 0) {
+                const rawSignatures = engine.resolveImportSignatures(usedDeps.slice(0, 10));
+                const safeSigs = rawSignatures
+                    .map(s => `- \`${cleanSignature(s.raw)}\` (from ${path.basename(s.path)})`)
+                    .filter(s => !isSensitiveSignature(s));
+
+                if (safeSigs.length > 0) {
+                    autoContextBlock =
+                        `\n\n### Related Signatures (auto-detected, may be incomplete)\n` +
+                        `TokenGuard resolved these external dependencies used in the definition:\n` +
+                        safeSigs.join("\n");
+                    extraTokens = Embedder.estimateTokens(autoContextBlock);
+                    engine.incrementAutoContext();
+                }
+            }
+        } catch {
+            // Never crash the tool on auto-context failure
+        }
+    }
+
+    engine.logUsage("tg_def", bodyTokens + extraTokens, bodyTokens + extraTokens, 0);
 
     return {
         content: [{
@@ -336,7 +381,8 @@ async function handleDefinition(
                 `## Definition: ${symbol}\n` +
                 `Found ${results.length} definition(s).\n\n` +
                 formatted.join("\n\n") +
-                `\n\n[TokenGuard: ${bodyTokens.toLocaleString()} tokens — exact AST lookup, no search overhead]`,
+                autoContextBlock +
+                `\n\n[TokenGuard: ${(bodyTokens + extraTokens).toLocaleString()} tokens — exact AST lookup, no search overhead]`,
         }],
     };
 }
@@ -534,36 +580,67 @@ async function handleRead(
             };
         }
 
+        // Read file ONCE — reused for auto-context extraction and compression
+        const rawContent = readSource(resolvedPath);
+
+        // Auto-Context extraction (runs before compress/raw branch)
+        const autoContext = params.auto_context !== false;
+        let autoContextBlock = "";
+        let extraTokens = 0;
+
+        if (autoContext) {
+            try {
+                const ext = path.extname(resolvedPath).toLowerCase();
+                const depsList = extractDependencies(rawContent, ext);
+
+                if (depsList.length > 0) {
+                    const rawSignatures = engine.resolveImportSignatures(depsList.slice(0, 15));
+                    const safeSigs = rawSignatures
+                        .map(s => `- \`${cleanSignature(s.raw)}\` (from ${path.basename(s.path)})`)
+                        .filter(s => !isSensitiveSignature(s));
+
+                    if (safeSigs.length > 0) {
+                        autoContextBlock =
+                            `\n\n### Related Signatures (auto-detected, may be incomplete)\n` +
+                            `TokenGuard resolved these external dependencies imported in this file:\n` +
+                            safeSigs.join("\n");
+                        extraTokens = Embedder.estimateTokens(autoContextBlock);
+                        engine.incrementAutoContext();
+                    }
+                }
+            } catch {
+                // Never crash on auto-context failure
+            }
+        }
+
         // Skip compression for small files (< 1KB)
         if (stat.size < 1024) {
-            const content = readSource(resolvedPath);
             return {
                 content: [{
                     type: "text" as const,
                     text:
                         `## ${path.basename(resolvedPath)} (raw — ${stat.size} bytes, below 1KB threshold)\n\n` +
-                        `\`\`\`\n${content}\n\`\`\`\n\n` +
+                        `\`\`\`\n${rawContent}\n\`\`\`\n\n` +
+                        autoContextBlock +
                         `[TokenGuard: file too small to compress]`,
                 }],
             };
         }
 
         const compress = params.compress !== false;
-        const level = (typeof params.level === "string" &&
+        const level: CompressionLevel = (typeof params.level === "string" &&
             ["light", "medium", "aggressive"].includes(params.level))
-            ? params.level as "light" | "medium" | "aggressive"
+            ? params.level as CompressionLevel
             : "medium";
 
         if (!compress) {
-            const content = readSource(resolvedPath);
-
             // Mark as safely read (removes from Danger Zones)
             engine.markFileRead(resolvedPath);
 
             // Behavioral advisor: teach Claude to use compression next time
             let advice = "";
             if (deps.hook) {
-                const intercept = deps.hook.evaluateFileRead(resolvedPath, content);
+                const intercept = deps.hook.evaluateFileRead(resolvedPath, rawContent);
                 if (intercept.shouldIntercept) {
                     advice = `\n\n${intercept.suggestion}`;
                 }
@@ -574,20 +651,21 @@ async function handleRead(
                     type: "text" as const,
                     text:
                         `## ${path.basename(resolvedPath)} (raw)\n\n` +
-                        `\`\`\`\n${content}\n\`\`\`\n\n` +
+                        `\`\`\`\n${rawContent}\n\`\`\`\n\n` +
+                        autoContextBlock +
                         `[TokenGuard: raw read, no compression applied]${advice}`,
                 }],
             };
         }
 
-        const result = await engine.compressFileAdvanced(resolvedPath, level);
+        const result = await engine.compressFileAdvanced(resolvedPath, level, rawContent);
         engine.markFileRead(resolvedPath);
         const saved = result.tokensSaved;
 
         engine.logUsage(
             "tg_read",
-            Embedder.estimateTokens(result.compressed),
-            Embedder.estimateTokens(result.compressed),
+            Embedder.estimateTokens(result.compressed) + extraTokens,
+            Embedder.estimateTokens(result.compressed) + extraTokens,
             saved,
         );
 
@@ -606,6 +684,7 @@ async function handleRead(
                     `(${(result.ratio * 100).toFixed(1)}% reduction)\n\n` +
                     mapHint +
                     `\`\`\`\n${result.compressed}\n\`\`\`\n\n` +
+                    autoContextBlock +
                     `[TokenGuard saved ~${saved.toLocaleString()} tokens | ` +
                     `Session: ~${sessionReport.totalTokensSaved.toLocaleString()} tokens saved]`,
             }],
@@ -643,7 +722,7 @@ async function handleCompress(
     try {
         const compression_level = typeof params.level === "string" &&
             ["light", "medium", "aggressive"].includes(params.level)
-            ? params.level as "light" | "medium" | "aggressive"
+            ? params.level as CompressionLevel
             : undefined;
 
         const focus = typeof params.focus === "string" ? params.focus : undefined;
@@ -1152,6 +1231,7 @@ async function handleReport(
         `|  Breaker Redirects:      ${pad(cbStats.redirectsIssued, 16)}    |`,
         `|  Redirects Recovered:    ${pad(cbStats.redirectsSuccessful, 16)}    |`,
         `|  Pinned Rules Active:     ${pad(pins.length, 16)}    |`,
+        `|  Context Injections:      ${pad(sessionReport.autoContextInjections, 16)}    |`,
         "+--------------------------------------------------+",
         `|  ESTIMATED SAVINGS:       ${pad("$" + usdStr, 16)}    |`,
         `|  MODEL:                   ${pad(modelName, 16)}    |`,

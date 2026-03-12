@@ -181,17 +181,19 @@ describe("CircuitBreaker — Per-File Failure Tracking", () => {
     it("increments per-file counter on error", () => {
         cb.recordToolCall("tg_code:edit", "TypeError: something", "src/foo.ts");
         const state = cb.getState();
-        expect(state.perFileFailures.get("src/foo.ts")).toBe(1);
+        const normalized = path.resolve(process.cwd(), "src/foo.ts").replace(/\\/g, "/");
+        expect(state.perFileFailures.get(normalized)).toBe(1);
     });
 
     it("resets per-file counter on success for that file", () => {
+        const normalized = path.resolve(process.cwd(), "src/foo.ts").replace(/\\/g, "/");
         cb.recordToolCall("tg_code:edit", "TypeError: something", "src/foo.ts");
         cb.recordToolCall("tg_code:edit", "TypeError: something", "src/foo.ts");
-        expect(cb.getState().perFileFailures.get("src/foo.ts")).toBe(2);
+        expect(cb.getState().perFileFailures.get(normalized)).toBe(2);
 
         // Success resets
         cb.recordToolCall("tg_code:edit", "Edit successful", "src/foo.ts");
-        expect(cb.getState().perFileFailures.get("src/foo.ts")).toBeUndefined();
+        expect(cb.getState().perFileFailures.get(normalized)).toBeUndefined();
     });
 
     it("tracks errors independently per file", () => {
@@ -199,8 +201,10 @@ describe("CircuitBreaker — Per-File Failure Tracking", () => {
         cb.recordToolCall("tg_code:edit", "TypeError: fail", "src/b.ts");
 
         const state = cb.getState();
-        expect(state.perFileFailures.get("src/a.ts")).toBe(1);
-        expect(state.perFileFailures.get("src/b.ts")).toBe(1);
+        const normA = path.resolve(process.cwd(), "src/a.ts").replace(/\\/g, "/");
+        const normB = path.resolve(process.cwd(), "src/b.ts").replace(/\\/g, "/");
+        expect(state.perFileFailures.get(normA)).toBe(1);
+        expect(state.perFileFailures.get(normB)).toBe(1);
     });
 
     it("trips after 3 per-file failures (Pattern 4)", () => {
@@ -233,7 +237,8 @@ describe("CircuitBreaker — Per-File Failure Tracking", () => {
 
         expect(cb.getState().tripped).toBe(false);
         // Amnesia total: perFileFailures for the tripped file are cleared
-        expect(cb.getState().perFileFailures.has("src/broken.ts")).toBe(false);
+        const normBroken = path.resolve(process.cwd(), "src/broken.ts").replace(/\\/g, "/");
+        expect(cb.getState().perFileFailures.has(normBroken)).toBe(false);
         // But escalation level is preserved
         expect(cb.getState().escalationLevel).toBe(1);
     });
@@ -291,7 +296,8 @@ describe("CircuitBreaker Middleware — Bypass Prevention", () => {
         await wrapWithCircuitBreaker(cb, "tg_code", "edit", editErrorHandler, "src/target.ts");
 
         // Per-file counter should be 2
-        expect(cb.getState().perFileFailures.get("src/target.ts")).toBe(2);
+        const normTarget = path.resolve(process.cwd(), "src/target.ts").replace(/\\/g, "/");
+        expect(cb.getState().perFileFailures.get(normTarget)).toBe(2);
 
         // Switch to a different tool (triggers soft reset if tripped)
         const searchHandler = async (): Promise<McpToolResponse> => ({
@@ -300,7 +306,7 @@ describe("CircuitBreaker Middleware — Bypass Prevention", () => {
         await wrapWithCircuitBreaker(cb, "tg_navigate", "search", searchHandler);
 
         // Per-file counter should be preserved (soft reset doesn't clear it)
-        expect(cb.getState().perFileFailures.get("src/target.ts")).toBe(2);
+        expect(cb.getState().perFileFailures.get(normTarget)).toBe(2);
     });
 });
 

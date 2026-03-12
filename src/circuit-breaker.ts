@@ -13,6 +13,7 @@
  */
 
 import crypto from "crypto";
+import path from "path";
 
 // ─── Types ───────────────────────────────────────────────────────────
 
@@ -154,11 +155,17 @@ export class CircuitBreaker {
         const hasError = isError ?? containsError(result);
         const errorHash = hasError ? hashError(result) : null;
 
+        // Normalize path to absolute + forward slashes — prevents split counters
+        // when the same file arrives as "src/app.ts" vs "/Users/.../src/app.ts"
+        const normalizedPath = filePath
+            ? path.resolve(process.cwd(), filePath).replace(/\\/g, "/")
+            : null;
+
         const record: ToolCallRecord = {
             toolName,
             timestamp: Date.now(),
             errorHash,
-            filePath: filePath ?? null,
+            filePath: normalizedPath,
             symbolName: symbolName ?? null,
         };
 
@@ -182,13 +189,13 @@ export class CircuitBreaker {
         }
 
         // Track per-file failures (prevents bypass via action alternation)
-        if (filePath) {
+        if (normalizedPath) {
             if (hasError) {
-                const current = this.state.perFileFailures.get(filePath) ?? 0;
-                this.state.perFileFailures.set(filePath, current + 1);
+                const current = this.state.perFileFailures.get(normalizedPath) ?? 0;
+                this.state.perFileFailures.set(normalizedPath, current + 1);
             } else {
                 // Success on a file resets that file's counter
-                this.state.perFileFailures.delete(filePath);
+                this.state.perFileFailures.delete(normalizedPath);
             }
         }
 

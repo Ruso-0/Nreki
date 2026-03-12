@@ -13,6 +13,7 @@
  */
 
 import { describe, it, expect, beforeEach } from "vitest";
+import path from "path";
 import {
     CircuitBreaker,
     hashError,
@@ -372,7 +373,7 @@ describe("CircuitBreaker", () => {
             }
             const state = cb.getState();
             expect(state.escalationLevel).toBe(1);
-            expect(state.lastTrippedFile).toBe("src/foo.ts");
+            expect(state.lastTrippedFile).toBe(path.resolve(process.cwd(), "src/foo.ts").replace(/\\/g, "/"));
             expect(state.lastTrippedSymbol).toBe("myFunction");
         });
 

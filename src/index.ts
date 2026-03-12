@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * index.ts — TokenGuard v3.1.2 MCP Server entry point.
+ * index.ts — TokenGuard v3.2.0 MCP Server entry point.
  *
  * Exposes 3 router tools to Claude Code (replaces 16 individual tools):
  *
@@ -46,7 +46,7 @@ import { PreToolUseHook } from "./hooks/preToolUse.js";
 // ─── CLI Flag Parsing ───────────────────────────────────────────────
 
 const args = process.argv.slice(2);
-const VERSION = "3.1.2";
+const VERSION = "3.2.0";
 
 if (args.includes("--version") || args.includes("-v")) {
     console.log(VERSION);
@@ -187,9 +187,13 @@ server.tool(
             .boolean()
             .optional()
             .describe("For map: force regeneration, ignoring cache."),
+        auto_context: z
+            .boolean()
+            .optional()
+            .describe("Auto-inject signatures of imported dependencies. Set to false for pure output without context."),
     },
-    async ({ action, query, symbol, path: navPath, limit, include_raw, kind, signatures, refresh }) => {
-        const params: NavigateParams = { action, query, symbol, path: navPath, limit, include_raw, kind, signatures, refresh };
+    async ({ action, query, symbol, path: navPath, limit, include_raw, kind, signatures, refresh, auto_context }) => {
+        const params: NavigateParams = { action, query, symbol, path: navPath, limit, include_raw, kind, signatures, refresh, auto_context };
         return wrapWithCircuitBreaker(
             circuitBreaker,
             "tg_navigate",
@@ -257,9 +261,13 @@ server.tool(
             .enum(["replace", "insert_before", "insert_after"])
             .optional()
             .describe("For edit: how to apply new_code relative to the symbol. 'replace' (default) replaces the symbol. 'insert_before'/'insert_after' adds new_code adjacent to the symbol without removing it."),
+        auto_context: z
+            .boolean()
+            .optional()
+            .describe("Auto-inject signatures of imported dependencies. Set to false for pure output without context."),
     },
-    async ({ action, path: filePath, symbol, new_code, compress, level, focus, tier, output, max_lines, mode }) => {
-        const params: CodeParams = { action, path: filePath, symbol, new_code, compress, level, focus, tier, output, max_lines, mode };
+    async ({ action, path: filePath, symbol, new_code, compress, level, focus, tier, output, max_lines, mode, auto_context }) => {
+        const params: CodeParams = { action, path: filePath, symbol, new_code, compress, level, focus, tier, output, max_lines, mode, auto_context };
         return wrapWithCircuitBreaker(
             circuitBreaker,
             "tg_code",

@@ -975,6 +975,57 @@ export class TokenGuardDB {
         return results.slice(0, limit);
     }
 
+    /**
+     * BM25-powered fast resolution for import-anchored auto-context.
+     * Searches "symbol pathHint" together to defeat homonyms.
+     * Enforces a 150ms hard timeout to prevent event loop blocking.
+     */
+    resolveImportSignatures(
+        deps: Array<{ symbol: string; pathHint: string }>,
+        maxTimeMs: number = 150,
+    ): Array<{ raw: string; path: string }> {
+        if (!this._ready || deps.length === 0) return [];
+
+        const start = performance.now();
+        const results: Array<{ raw: string; path: string }> = [];
+        const seenSymbols = new Set<string>();
+
+        const escapeRegex = (s: string) =>
+            s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+        for (const dep of deps) {
+            if (seenSymbols.has(dep.symbol)) continue;
+            seenSymbols.add(dep.symbol);
+            if (performance.now() - start > maxTimeMs) break;
+
+            // BM25 with two terms: symbol + path hint defeats homonyms
+            const cleanHint = dep.pathHint.replace(/['"%_]/g, " ").trim();
+            const queryText = cleanHint
+                ? `${dep.symbol} ${cleanHint}`
+                : dep.symbol;
+
+            const hits = this.searchKeywordOnly(queryText, 3);
+
+            if (hits.length > 0) {
+                // Final validation: symbol must appear textually in the shorthand
+                // Uses safe boundaries (not \b) to handle $store etc.
+                const safeSym = escapeRegex(dep.symbol);
+                const exactRegex = new RegExp(
+                    `(^|[^a-zA-Z0-9_$])${safeSym}(?=[^a-zA-Z0-9_$]|$)`,
+                );
+
+                for (const hit of hits) {
+                    if (exactRegex.test(hit.shorthand)) {
+                        results.push({ raw: hit.shorthand, path: hit.path });
+                        break;
+                    }
+                }
+            }
+        }
+
+        return results;
+    }
+
     searchVector(
         queryEmbedding: Float32Array,
         limit: number = 10

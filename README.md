@@ -1,10 +1,10 @@
-# TokenGuard v3.1.1 - 3 Tools. 443 Tests. Zero Cloud. Instant Startup.
+# TokenGuard v3.2.0 - 3 Tools. 458 Tests. Zero Cloud. Instant Startup.
 
 <p align="center">
   <img src="https://img.shields.io/badge/MCP-Plugin-blue?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyQzYuNDggMiAyIDYuNDggMiAxMnM0LjQ4IDEwIDEwIDEwIDEwLTQuNDggMTAtMTBTMTcuNTIgMiAxMiAyem0wIDE4Yy00LjQyIDAtOC0zLjU4LTgtOHMzLjU4LTggOC04IDggMy41OCA4IDgtMy41OCA0LTggOHoiLz48L3N2Zz4=" alt="MCP Plugin">
   <img src="https://img.shields.io/badge/Tools-3-blue?style=for-the-badge" alt="3 Tools">
   <img src="https://img.shields.io/badge/Token%20Savings-~80%25-green?style=for-the-badge" alt="~80% Savings">
-  <img src="https://img.shields.io/badge/Tests-443%20passed-brightgreen?style=for-the-badge" alt="443 Tests">
+  <img src="https://img.shields.io/badge/Tests-458%20passed-brightgreen?style=for-the-badge" alt="458 Tests">
   <img src="https://img.shields.io/badge/Cloud-Zero-red?style=for-the-badge" alt="Zero Cloud">
   <img src="https://img.shields.io/badge/License-MIT-yellow?style=for-the-badge" alt="MIT License">
   <img src="https://img.shields.io/badge/TypeScript-5.7-blue?style=for-the-badge&logo=typescript" alt="TypeScript">
@@ -126,6 +126,7 @@ TokenGuard sits between you and token waste with 3 smart tools:
 | `unpin` | Remove a pinned rule. |
 | `status` | Token burn rate, exhaustion prediction, danger zones (heaviest unread files), and alert levels. |
 | `report` | Full session savings receipt with per-file-type breakdown and USD estimates. |
+| `reset` | Clear circuit breaker state to let Claude retry with a fresh approach. |
 
 ## Supported Languages
 
@@ -151,6 +152,27 @@ These run automatically — you never call them directly:
 - **Creative Circuit Breaker**: Monitors all tool calls for destructive patterns (same error 3x, same file 5x). Instead of just blocking, it escalates through 3 creative strategies: Rewrite → Decompose → Hard Stop. Each level includes `compress:false` file reads and concrete step-by-step instructions. Auto-resets with amnesia total on strategy change.
 - **Behavioral Advisor**: When Claude reads a large file raw (without compression), advises using `tg_code action:"compress"` next time. Teaches efficient patterns without blocking.
 
+## Auto-Context Inlining (X-Ray Vision)
+
+When Claude asks for a function definition, it often needs to understand the dependencies
+that function calls. Without Auto-Context, Claude makes N additional tool calls to look up
+each dependency — burning tokens and time.
+
+TokenGuard solves this by automatically resolving imported dependencies and injecting their
+signatures in the same response:
+
+| Without Auto-Context | With Auto-Context |
+|---------------------|-------------------|
+| 1. `tg_navigate definition "validateToken"` | 1. `tg_navigate definition "validateToken"` |
+| 2. `tg_navigate definition "HashUtils"` | *(signatures auto-injected)* |
+| 3. `tg_navigate definition "TokenStore"` | |
+| **3 tool calls, ~1,800 tokens** | **1 tool call, ~700 tokens** |
+
+**Security**: Signatures containing passwords, API keys, or auth tokens are automatically
+excluded. JSDoc comments are stripped to prevent prompt injection.
+
+**Disable**: Pass `auto_context: false` if you want pure output without injected signatures.
+
 ## Installation
 
 ```bash
@@ -168,7 +190,7 @@ npm install -g @ruso-0/tokenguard
 
 ```bash
 tokenguard --help       # Show usage and options
-tokenguard --version    # Show version (3.1.1)
+tokenguard --version    # Show version (3.2.0)
 tokenguard init         # Generate optimal CLAUDE.md instructions
 tokenguard --audit      # Run security audit (CLI only)
 ```
@@ -291,7 +313,7 @@ tg_guard action:"report"
 
 ## Stress Tested
 
-**443 tests. 0 failures. 17 test suites.** Cross-platform CI on Ubuntu, Windows, and macOS.
+**458 tests. 0 failures. 19 test suites.** Cross-platform CI on Ubuntu, Windows, and macOS.
 
 | Scenario | What We Tested | Result |
 |---|---|---|
@@ -315,7 +337,7 @@ tg_guard action:"report"
 Tested against a 57-file production Next.js + Supabase app (SICAEP):
 - **~94% token reduction (estimated)** (tier 1 compression)
 - **10,532 tokens saved** on a single search query
-- **443/443 tests passed** across 3 operating systems
+- **458/458 tests passed** across 3 operating systems
 - Surgically fixed a real `.single()` → `.maybeSingle()` bug via `tg_code action:"edit"`
 - Creative circuit breaker correctly detected and redirected repeated error patterns
 - Path traversal attack (`../../../../etc/passwd`) → **BLOCKED**

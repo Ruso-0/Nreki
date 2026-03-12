@@ -113,6 +113,8 @@ export interface SessionReport {
         originalTokens: number;
         ratio: number;
     }>;
+    /** Number of auto-context injections in this session */
+    autoContextInjections: number;
 }
 
 export class TokenGuardEngine {
@@ -137,6 +139,7 @@ export class TokenGuardEngine {
         totalOriginalTokens: 0,
         compressionsByType: new Map<string, { count: number; saved: number; original: number }>(),
         startTime: Date.now(),
+        autoContextInjections: 0,
     };
 
     constructor(config: EngineConfig = {}) {
@@ -228,9 +231,38 @@ export class TokenGuardEngine {
             return null; // File may have been deleted
         }
 
-        // Check extension support
+        // Check extension support — unsupported files get plaintext fallback
         const ext = path.extname(filePath).toLowerCase();
-        if (!this.parser.isSupported(ext)) return null;
+        if (!this.parser.isSupported(ext)) {
+            // Plaintext fallback: index entire file as one chunk for BM25 keyword search.
+            // No AST features (no validation, no structural compression, no semantic edit)
+            // but search WILL find content in this file.
+            if (!this.db.fileNeedsUpdate(filePath, content)) return null;
+
+            const lineCount = content.split("\n").length;
+            // Use content as shorthand so BM25 keyword index can search it
+            const shorthand = `[file] ${path.basename(filePath)} (${lineCount} lines)\n${content}`;
+
+            this.db.clearChunks(filePath);
+
+            if (this.config.enableEmbeddings) {
+                await this.initializeEmbedder();
+                const { embedding } = await this.embedder.embed(content.slice(0, 1000));
+                this.db.insertChunk(filePath, shorthand, content, "file", 1, lineCount, embedding);
+            } else {
+                this.db.insertChunk(filePath, shorthand, content, "file", 1, lineCount, new Float32Array(0));
+            }
+
+            const hash = this.db.hashContent(content);
+            this.db.upsertFile(filePath, hash);
+
+            return {
+                filePath,
+                chunks: [{ shorthand, rawCode: content, nodeType: "file", startLine: 1, endLine: lineCount, startIndex: 0, endIndex: content.length }],
+                totalLines: lineCount,
+                language: ext.slice(1),
+            };
+        }
 
         // Merkle diffing: skip unchanged files
         if (!this.db.fileNeedsUpdate(filePath, content)) return null;
@@ -446,17 +478,27 @@ export class TokenGuardEngine {
     async compressFileAdvanced(
         filePath: string,
         level: CompressionLevel = "medium",
+        preloadedContent?: string,
     ): Promise<AdvancedCompressionResult> {
         await this.initialize();
 
-        // FIX 7: Check file size/extension
-        const stat = fs.statSync(filePath);
-        const filterResult = shouldProcess(filePath, stat.size);
+        // Validate size ALWAYS — even with preloaded content (prevents bypass)
+        let sizeInBytes: number;
+        if (preloadedContent !== undefined) {
+            sizeInBytes = Buffer.byteLength(preloadedContent, "utf8");
+        } else {
+            try {
+                sizeInBytes = fs.statSync(filePath).size;
+            } catch {
+                throw new Error(`Cannot access file: ${filePath}`);
+            }
+        }
+        const filterResult = shouldProcess(filePath, sizeInBytes);
         if (!filterResult.process) {
             throw new Error(`File skipped: ${filterResult.reason}`);
         }
 
-        const content = readSource(filePath);
+        const content = preloadedContent ?? readSource(filePath);
         const result = await this.advancedCompressor.compress(filePath, content, level);
 
         // Track session savings
@@ -479,6 +521,16 @@ export class TokenGuardEngine {
      */
     markFileRead(filePath: string): void {
         this.safelyReadFiles.add(path.resolve(filePath));
+    }
+
+    /** Resolve import signatures via BM25 for Auto-Context injection */
+    resolveImportSignatures(deps: Array<{ symbol: string; pathHint: string }>): Array<{ raw: string; path: string }> {
+        return this.db.resolveImportSignatures(deps);
+    }
+
+    /** Increment the auto-context injection counter */
+    incrementAutoContext(): void {
+        this.sessionSavings.autoContextInjections++;
     }
 
     /**
@@ -519,6 +571,7 @@ export class TokenGuardEngine {
             savedUsdSonnet: (totalSaved / 1_000_000) * 3,
             savedUsdOpus: (totalSaved / 1_000_000) * 15,
             byFileType,
+            autoContextInjections: this.sessionSavings.autoContextInjections,
         };
     }
 
@@ -567,7 +620,10 @@ export class TokenGuardEngine {
         this.watcher
             .on("add", (fp: string) => this.queueIndexing(fp))
             .on("change", (fp: string) => this.queueIndexing(fp))
-            .on("unlink", (fp: string) => this.db.clearChunks(fp));
+            .on("unlink", (fp: string) => {
+                this.db.clearChunks(fp);
+                this.db.save();
+            });
     }
 
     /** Queue a file for indexing (debounced). */
