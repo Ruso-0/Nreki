@@ -1,10 +1,10 @@
-# TokenGuard v3.0 - 3 Tools. 423 Tests. Zero Cloud. Instant Startup.
+# TokenGuard v3.1 - 3 Tools. 443 Tests. Zero Cloud. Instant Startup.
 
 <p align="center">
   <img src="https://img.shields.io/badge/MCP-Plugin-blue?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyQzYuNDggMiAyIDYuNDggMiAxMnM0LjQ4IDEwIDEwIDEwIDEwLTQuNDggMTAtMTBTMTcuNTIgMiAxMiAyem0wIDE4Yy00LjQyIDAtOC0zLjU4LTgtOHMzLjU4LTggOC04IDggMy41OCA4IDgtMy41OCA0LTggOHoiLz48L3N2Zz4=" alt="MCP Plugin">
   <img src="https://img.shields.io/badge/Tools-3-blue?style=for-the-badge" alt="3 Tools">
   <img src="https://img.shields.io/badge/Token%20Savings-91%25-green?style=for-the-badge" alt="91% Savings">
-  <img src="https://img.shields.io/badge/Tests-423%20passed-brightgreen?style=for-the-badge" alt="423 Tests">
+  <img src="https://img.shields.io/badge/Tests-443%20passed-brightgreen?style=for-the-badge" alt="443 Tests">
   <img src="https://img.shields.io/badge/Cloud-Zero-red?style=for-the-badge" alt="Zero Cloud">
   <img src="https://img.shields.io/badge/License-MIT-yellow?style=for-the-badge" alt="MIT License">
   <img src="https://img.shields.io/badge/TypeScript-5.7-blue?style=for-the-badge&logo=typescript" alt="TypeScript">
@@ -14,6 +14,30 @@
 <p align="center">
   <b>3 router tools. Invisible middleware. Lite mode (instant) or Pro mode (semantic). All local.</b>
 </p>
+
+---
+
+### What Changed in v3.1
+
+**Creative Circuit Breaker** — 3-level escalation that teaches Claude new strategies instead of just blocking:
+
+| Level | Strategy | What Claude Does |
+|---|---|---|
+| **Level 1** — Rewrite | Stop patching, start fresh | Reads uncompressed code, writes `symbol_v2` via `insert_after`, tests, then swaps |
+| **Level 2** — Decompose | Break into smaller pieces | Extracts 2-3 pure helpers, tests each, rewrites original as thin orchestrator |
+| **Level 3** — Hard Stop | Ask the human | Explains what failed, the error pattern, why strategies 1-2 didn't work |
+
+Each redirect includes `compress:false` so Claude sees actual code, not compressed placeholders.
+
+**Other v3.1 additions:**
+
+- **Amnesia total** — `softReset()` purges ALL history for the tripped file, giving Claude 3 clean attempts with the new strategy
+- **Topological edits** — `insert_before` / `insert_after` modes for `tg_code edit` (add code without replacing)
+- **Smart auto-indent** — Relative rebase: strips Claude's indent, applies the target symbol's indent (works with tabs, spaces, Python, Go)
+- **Behavioral advisor** — Suggests compression when Claude reads large files raw
+- **Danger zones** — `tg_guard status` shows the 5 heaviest unread files so Claude avoids raw-reading them
+- **CLI hygiene** — `--help` / `--version` flags
+- **Cross-platform splice** — Verified byte indices with indexOf fallback for Linux/macOS/Windows consistency
 
 ---
 
@@ -29,7 +53,7 @@ v3.0 fixes this by collapsing 16 tools into 3 routers and moving validation/safe
 | `tg_read`, `tg_compress`, `tg_semantic_edit`, `tg_undo`, `tg_terminal` | **`tg_code`** | Edits auto-validated via AST before disk write |
 | `tg_pin`, `tg_status`, `tg_session_report` | **`tg_guard`** | Safety + monitoring unified |
 | `tg_validate` | *invisible middleware* | Runs automatically inside `tg_code edit` |
-| `tg_circuit_breaker` | *invisible middleware* | Monitors all calls, auto-resets on diversity |
+| `tg_circuit_breaker` | *invisible middleware* | Monitors all calls, 3-level creative escalation |
 | `tg_audit` | *CLI only* | Removed from MCP, available via `npx @ruso-0/tokenguard --audit` |
 
 **Result:** ~660 tokens of tool definitions instead of ~3,520. **81% reduction in fixed overhead.**
@@ -65,7 +89,7 @@ TokenGuard sits between you and token waste with 3 smart tools:
 | Copy-paste 500 lines of npm errors | `tg_code action:"filter_output"` extracts the 3 actual errors | **89%** |
 | Rewrite entire file to change one function | `tg_code action:"edit"` patches only the AST node | **98% output saved** |
 | Write broken code → see error → retry loop | Automatic AST validation blocks bad writes before disk | **Prevents loop** |
-| Claude gets stuck in write-test-fail loops | Circuit breaker auto-detects and stops doom loops | **Saves session** |
+| Claude gets stuck in write-test-fail loops | Creative circuit breaker teaches new strategies | **Saves session** |
 | Claude forgets "always use fetch, not axios" | `tg_guard action:"pin"` keeps rules in every response | **Never forgotten** |
 
 ## The 3 Tools
@@ -84,9 +108,9 @@ TokenGuard sits between you and token waste with 3 smart tools:
 
 | Action | Description |
 |---|---|
-| `read` | Smart file reader with optional auto-compression for large files. |
+| `read` | Smart file reader with behavioral advisor (suggests compression for large files). |
 | `compress` | Full-control compression. 3 levels (light/medium/aggressive) or 6 tiers. |
-| `edit` | Surgically edit a function/class by name. **Auto-validated via AST before write.** |
+| `edit` | Surgically edit a function/class by name. Supports `replace`, `insert_before`, `insert_after`. **Auto-validated via AST.** |
 | `undo` | Revert the last edit. One-shot backup restore. |
 | `filter_output` | Filter noisy terminal output. Strips ANSI, deduplicates, extracts errors. |
 
@@ -96,15 +120,16 @@ TokenGuard sits between you and token waste with 3 smart tools:
 |---|---|
 | `pin` | Pin a rule Claude should never forget. Injected into every map response. |
 | `unpin` | Remove a pinned rule. |
-| `status` | Token burn rate, exhaustion prediction, and alert levels. |
-| `report` | Full session savings receipt with USD estimates. |
+| `status` | Token burn rate, exhaustion prediction, danger zones (heaviest unread files), and alert levels. |
+| `report` | Full session savings receipt with per-file-type breakdown and USD estimates. |
 
 ## Invisible Middleware
 
 These run automatically — you never call them directly:
 
 - **AST Validation**: Every `tg_code action:"edit"` validates syntax via tree-sitter before writing to disk. Invalid code is blocked with exact line/column error details and fix suggestions.
-- **Circuit Breaker**: Monitors all tool calls for destructive patterns (same error 3x, same file 5x, write-test-fail cycles). Auto-resets when you switch actions or after 60s idle.
+- **Creative Circuit Breaker**: Monitors all tool calls for destructive patterns (same error 3x, same file 5x). Instead of just blocking, it escalates through 3 creative strategies: Rewrite → Decompose → Hard Stop. Each level includes `compress:false` file reads and concrete step-by-step instructions. Auto-resets with amnesia total on strategy change.
+- **Behavioral Advisor**: When Claude reads a large file raw (without compression), advises using `tg_code action:"compress"` next time. Teaches efficient patterns without blocking.
 
 ## Installation
 
@@ -117,6 +142,15 @@ Or install globally:
 
 ```bash
 npm install -g @ruso-0/tokenguard
+```
+
+### CLI
+
+```bash
+tokenguard --help       # Show usage and options
+tokenguard --version    # Show version (3.1.1)
+tokenguard init         # Generate optimal CLAUDE.md instructions
+tokenguard --audit      # Run security audit (CLI only)
 ```
 
 ### Claude Code Configuration
@@ -167,10 +201,16 @@ tg_navigate action:"definition" symbol:"AuthService"
 # 5. Surgically edit a function (auto-validated, no file rewrite needed)
 tg_code action:"edit" path:"src/auth.ts" symbol:"validateToken" new_code:"..."
 
-# 6. Filter noisy terminal output
+# 6. Add a new function after an existing one (topological edit)
+tg_code action:"edit" path:"src/auth.ts" symbol:"validateToken" mode:"insert_after" new_code:"..."
+
+# 7. Filter noisy terminal output
 tg_code action:"filter_output" output:"<paste error output>"
 
-# 7. Full session report with receipt
+# 8. Check danger zones + burn rate
+tg_guard action:"status"
+
+# 9. Full session report with receipt
 tg_guard action:"report"
 ```
 
@@ -187,9 +227,13 @@ tg_guard action:"report"
 |  +--------------------------------------------------------+  |
 |  |  Middleware Layer (invisible)                            |  |
 |  |  +------------------+ +---------------------+          |  |
-|  |  | AST Validator    | | Circuit Breaker     |          |  |
-|  |  | (pre-edit check) | | (loop detection)    |          |  |
+|  |  | AST Validator    | | Creative Circuit    |          |  |
+|  |  | (pre-edit check) | | Breaker (3 levels)  |          |  |
 |  |  +------------------+ +---------------------+          |  |
+|  |  +------------------+                                   |  |
+|  |  | Behavioral       |                                   |  |
+|  |  | Advisor (reads)  |                                   |  |
+|  |  +------------------+                                   |  |
 |  +--------------------------------------------------------+  |
 |                                                              |
 |  +------------------+------------------+------------------+  |
@@ -213,12 +257,12 @@ tg_guard action:"report"
 
 ## Stress Tested
 
-**423 tests. 0 failures. 16 test suites.**
+**443 tests. 0 failures. 17 test suites.** Cross-platform CI on Ubuntu, Windows, and macOS.
 
 | Scenario | What We Tested | Result |
 |---|---|---|
 | Router dispatch | All 14 {tool, action} combinations | Pass |
-| Middleware wrap | Circuit breaker auto-trip and auto-reset | Pass |
+| Middleware wrap | Creative circuit breaker 3-level escalation, amnesia total | Pass |
 | AST validation | Valid/invalid code, error formatting | Pass |
 | Backward compat | All 16 original tool behaviors preserved | Pass |
 | Empty files | 0-byte input through every pipeline stage | Pass |
@@ -228,16 +272,18 @@ tg_guard action:"report"
 | Minified 50KB JS | Single-line, no whitespace, 2000 functions | Pass |
 | 20-level nesting | Deeply nested function chains | Pass |
 | 50-file concurrent batch | Batch insert + hybrid search | Pass |
-| Surgical edits | Symbol replacement with syntax validation | Pass |
+| Surgical edits | Replace, insert_before, insert_after with auto-indent | Pass |
 | Pin memory | Add/remove/persist/limits/deterministic output | Pass |
+| E2E circuit breaker | 3 failures → Level 1 redirect → amnesia → recovery | Pass |
+| Cross-platform splice | Verified byte indices on Linux, Windows, macOS | Pass |
 
 ### Real-World Validation
 Tested against a 57-file production Next.js + Supabase app (SICAEP):
 - **94.1% token reduction** (tier 1 compression)
 - **10,532 tokens saved** on a single search query
-- **423/423 tests passed** (305 unit + 118 new for v3)
+- **443/443 tests passed** across 3 operating systems
 - Surgically fixed a real `.single()` → `.maybeSingle()` bug via `tg_code action:"edit"`
-- Circuit breaker correctly detected repeated error patterns
+- Creative circuit breaker correctly detected and redirected repeated error patterns
 - Path traversal attack (`../../../../etc/passwd`) → **BLOCKED**
 
 > **Methodology note:** Token savings are estimated using a chars/4 heuristic
@@ -280,5 +326,5 @@ MIT
 
 <p align="center">
   <b>Stop burning tokens. Start guarding them.</b><br>
-  <sub>Built with frustration, shipped with hope. Now 81% leaner.</sub>
+  <sub>Built with frustration, shipped with hope. Now with creative circuit breakers.</sub>
 </p>
