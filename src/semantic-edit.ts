@@ -257,9 +257,26 @@ export async function semanticEdit(
     const { chunk } = matches[0];
     const rawCode = chunk.rawCode;
 
-    // Use exact byte indices from tree-sitter for O(1) splice
-    const startIdx = chunk.startIndex;
-    const endIdx = chunk.endIndex;
+    // Verify tree-sitter byte position against actual content.
+    // WASM parsers may report different byte offsets across platforms;
+    // fallback to indexOf for cross-platform reliability.
+    let startIdx = chunk.startIndex;
+    if (content.substring(startIdx, startIdx + rawCode.length) !== rawCode) {
+        startIdx = content.indexOf(rawCode);
+        if (startIdx < 0) {
+            return {
+                success: false,
+                filePath,
+                symbolName,
+                oldLines: rawCode.split("\n").length,
+                newLines: newCode.split("\n").length,
+                tokensAvoided: 0,
+                syntaxValid: false,
+                error: "Internal error: could not locate symbol text in file.",
+            };
+        }
+    }
+    const endIdx = startIdx + rawCode.length;
 
     // 1. Extract the EXACT original indentation (respects tabs and spaces)
     let lineStart = startIdx;
