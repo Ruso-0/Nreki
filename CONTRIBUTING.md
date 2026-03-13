@@ -10,8 +10,8 @@ Thank you for your interest in contributing to TokenGuard! This guide will help 
 
 ### Setup
 ```bash
-git clone https://github.com/YOUR_USERNAME/tokenguard.git
-cd tokenguard
+git clone https://github.com/YOUR_USERNAME/TokenGuard.git
+cd TokenGuard
 npm ci
 ```
 
@@ -83,7 +83,7 @@ src/
 
 ## Pull Request Guidelines
 
-1. **Fork** the repository and create a feature branch from `main`
+1. **Fork** the repository and create a feature branch from `master`
 2. **Write tests** for any new functionality
 3. **Run the full test suite** before submitting: `npm test`
 4. **Keep commits focused**: one fix/feature per commit

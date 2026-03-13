@@ -1,10 +1,10 @@
-# TokenGuard v4.0.0 - 3 Tools. 473 Tests. Zero Cloud. Instant Startup.
+# TokenGuard v4.0.2 - 3 Tools. 480 Tests. Zero Cloud. Instant Startup.
 
 <p align="center">
   <img src="https://img.shields.io/badge/MCP-Plugin-blue?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyQzYuNDggMiAyIDYuNDggMiAxMnM0LjQ4IDEwIDEwIDEwIDEwLTQuNDggMTAtMTBTMTcuNTIgMiAxMiAyem0wIDE4Yy00LjQyIDAtOC0zLjU4LTgtOHMzLjU4LTggOC04IDggMy41OCA4IDgtMy41OCA0LTggOHoiLz48L3N2Zz4=" alt="MCP Plugin">
   <img src="https://img.shields.io/badge/Tools-3-blue?style=for-the-badge" alt="3 Tools">
   <img src="https://img.shields.io/badge/Token%20Savings-~80%25-green?style=for-the-badge" alt="~80% Savings">
-  <img src="https://img.shields.io/badge/Tests-473%20passed-brightgreen?style=for-the-badge" alt="473 Tests">
+  <img src="https://img.shields.io/badge/Tests-480%20passed-brightgreen?style=for-the-badge" alt="480 Tests">
   <img src="https://img.shields.io/badge/Cloud-Zero-red?style=for-the-badge" alt="Zero Cloud">
   <img src="https://img.shields.io/badge/License-MIT-yellow?style=for-the-badge" alt="MIT License">
   <img src="https://img.shields.io/badge/TypeScript-5.7-blue?style=for-the-badge&logo=typescript" alt="TypeScript">
@@ -29,7 +29,11 @@
 | **`prepare_refactor`** | AST-based confidence classification for safe renaming. Classifies each occurrence as "high" or "review" (strings, comments, keys). |
 | **AST Symbol Names** | Parser uses tree-sitter `@_name` captures instead of ~10 fragile regexes. |
 
-**Bugfixes:** multi-line `console.log` stripping, Python `#` in strings, proper glob matching via picomatch, stale docstring.
+**v4.0.0 Bugfixes:** multi-line `console.log` stripping, Python `#` in strings, proper glob matching via picomatch, stale docstring.
+
+**v4.0.1 Fix:** Corrected inflated `tokensAvoided` metric that double-counted file reads.
+
+**v4.0.2 Fixes (5 logic + 7 doc):** Blind Sniper (exhaustive SQL scan for `prepare_refactor`), batch edit race condition (two-phase file locking), indexOf wrong function (local window search), extractSignature string confusion (string-state tracking), silent plan amnesia (visible warning for oversized plans).
 
 ---
 
@@ -170,6 +174,7 @@ These run automatically — you never call them directly:
 
 - **AST Validation**: Every `tg_code action:"edit"` validates syntax via tree-sitter before writing to disk. Invalid code is blocked with exact line/column error details and fix suggestions.
 - **Creative Circuit Breaker**: Monitors all tool calls for destructive patterns (same error 3x, same file 5x). Instead of just blocking, it escalates through 3 creative strategies: Rewrite → Decompose → Hard Stop. Each level includes `compress:false` file reads and concrete step-by-step instructions. Auto-resets with amnesia total on strategy change.
+- **File Lock**: File-level mutex prevents concurrent edit corruption. When `tg_code action:"edit"` or `batch_edit` targets a file, it acquires an exclusive lock. Stale locks auto-expire after 30 seconds.
 - **Behavioral Advisor**: When Claude reads a large file raw (without compression), advises using `tg_code action:"compress"` next time. Teaches efficient patterns without blocking.
 
 ## Auto-Context Inlining (X-Ray Vision)
@@ -239,7 +244,7 @@ npm install -g @ruso-0/tokenguard
 
 ```bash
 tokenguard --help       # Show usage and options
-tokenguard --version    # Show version (4.0.0)
+tokenguard --version    # Show version (4.0.2)
 tokenguard init         # Generate optimal CLAUDE.md instructions
 tokenguard --audit      # Run security audit (CLI only)
 ```
@@ -335,10 +340,10 @@ tg_guard action:"report"
 |  |  | AST Validator    | | Creative Circuit    |          |  |
 |  |  | (pre-edit check) | | Breaker (3 levels)  |          |  |
 |  |  +------------------+ +---------------------+          |  |
-|  |  +------------------+                                   |  |
-|  |  | Behavioral       |                                   |  |
-|  |  | Advisor (reads)  |                                   |  |
-|  |  +------------------+                                   |  |
+|  |  +------------------+ +---------------------+          |  |
+|  |  | File Lock        | | Behavioral          |          |  |
+|  |  | (edit mutex)     | | Advisor (reads)     |          |  |
+|  |  +------------------+ +---------------------+          |  |
 |  +--------------------------------------------------------+  |
 |                                                              |
 |  +------------------+------------------+------------------+  |
@@ -363,11 +368,11 @@ tg_guard action:"report"
 
 ## Stress Tested
 
-**473 tests. 0 failures. 21 test suites.** Cross-platform CI on Ubuntu, Windows, and macOS.
+**480 tests. 0 failures. 22 test suites.** Cross-platform CI on Ubuntu, Windows, and macOS.
 
 | Scenario | What We Tested | Result |
 |---|---|---|
-| Router dispatch | All 14 {tool, action} combinations | Pass |
+| Router dispatch | All 19 {tool, action} combinations | Pass |
 | Middleware wrap | Creative circuit breaker 3-level escalation, amnesia total | Pass |
 | AST validation | Valid/invalid code, error formatting | Pass |
 | Backward compat | All 16 original tool behaviors preserved | Pass |
@@ -386,12 +391,16 @@ tg_guard action:"report"
 | Blast radius | Signature change detection, dependent file warnings | Pass |
 | Prepare refactor | AST confidence classification (high/review) | Pass |
 | Cross-platform splice | Verified byte indices on Linux, Windows, macOS | Pass |
+| Auto-Context Inlining | Import extraction, security filters, Go namespace inference | Pass |
+| Context Heartbeat | Anti-amnesia re-injection, restart detection, bankruptcy shield | Pass |
+| v4.0.2 bugfix regression | Exhaustive symbol search, duplicate functions, signature strings | Pass |
+| Plaintext fallback | BM25 search for unsupported languages (.rs, .java, .cpp) | Pass |
 
 ### Real-World Validation
 Tested against a 57-file production Next.js + Supabase app (SICAEP):
 - **~94% token reduction (estimated)** (tier 1 compression)
 - **10,532 tokens saved** on a single search query
-- **473/473 tests passed** across 3 operating systems
+- **480/480 tests passed** across 3 operating systems
 - Surgically fixed a real `.single()` → `.maybeSingle()` bug via `tg_code action:"edit"`
 - Creative circuit breaker correctly detected and redirected repeated error patterns
 - Path traversal attack (`../../../../etc/passwd`) → **BLOCKED**

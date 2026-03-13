@@ -217,7 +217,7 @@ TokenGuard v3.0 — Architecture overhaul. 16 tools collapsed to 3 routers. Invi
 
 ### Added — Router Pattern
 - **`tg_navigate`** — Unified navigation tool replacing `tg_search`, `tg_def`, `tg_refs`, `tg_outline`, `tg_map`. Actions: `search`, `definition`, `references`, `outline`, `map`.
-- **`tg_code`** — Unified code tool replacing `tg_read`, `tg_compress`, `tg_semantic_edit`, `tg_undo`, `tg_terminal`. Actions: `read`, `compress`, `edit`, `undo`, `terminal`.
+- **`tg_code`** — Unified code tool replacing `tg_read`, `tg_compress`, `tg_semantic_edit`, `tg_undo`, `tg_terminal`. Actions: `read`, `compress`, `edit`, `undo`, `terminal` (renamed to `filter_output` in v3.0.2).
 - **`tg_guard`** — Unified safety tool replacing `tg_pin`, `tg_status`, `tg_session_report`. Actions: `pin`, `unpin`, `status`, `report`.
 - `src/router.ts` — Central dispatcher mapping `{tool, action}` to handler functions (~700 lines).
 

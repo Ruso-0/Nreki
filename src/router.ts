@@ -1,5 +1,5 @@
 /**
- * router.ts — Central dispatcher for TokenGuard v4.0.0 router tools.
+ * router.ts — Central dispatcher for TokenGuard v4.0.2 router tools.
  *
  * Maps {toolName, action} pairs to existing handler functions.
  * All business logic remains in the original modules — this file
