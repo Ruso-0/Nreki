@@ -1243,6 +1243,7 @@ export class NrekiDB {
     }
 
     close(): void {
+        if (!this.db) return;
         this.save();
         this.db.close();
     }
