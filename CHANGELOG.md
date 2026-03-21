@@ -1,6 +1,249 @@
 # Changelog
 
-All notable changes to TokenGuard will be documented in this file.
+All notable changes to NREKI will be documented in this file.
+
+## [6.0.0] - 2026-03-19
+
+### Added
+- **Holographic Pruning**: New performance mode for large projects (>1000 files).
+  Replaces full `.ts` source files with lightweight `.d.ts` shadow stubs in the
+  TypeScript compiler's VFS, dramatically reducing boot time and memory usage.
+  - Shadow Generator (`src/hologram/shadow-generator.ts`): Tree-sitter based file
+    classifier and `.d.ts` generator. Classifies exports as prunable (explicit types)
+    or unprunable (inferred types). Uses AST walking, not regex.
+  - Shadow Cache (`src/hologram/shadow-cache.ts`): Disk persistence for shadows
+    with mtime/hash staleness detection and version guard invalidation.
+  - Symbiotic Harvester (`src/hologram/harvester.ts`): Extracts real `.d.ts` from
+    the TypeScript compiler during idle time, replacing heuristic shadows with
+    compiler-grade ones. Cooperative scheduler with epoch-aware abort.
+  - Lazy Subgraph Loading: Kernel boots with only ambient files in rootNames.
+    Target files are added dynamically during `interceptAtomicBatch()`.
+  - Pre-warming: Background shadow scan starts after MCP handshake, before first edit.
+  - Domain Separation: `predictBlastRadius` disabled in hologram mode (use Layer 1
+    AST navigator for reference queries).
+- **JIT Holography**: Eliminates upfront `scanProject()`. Shadows generated
+  on-demand when TypeScript's module resolver requests files. Cold boot
+  drops from 22.96s to 1.94s on VSCode (5,584 files). Only 642 of 5,584
+  files are ever classified — the rest are never touched.
+- `NrekiKernel.setShadows()` - receive shadow scan results before boot
+- `NrekiKernel.hasShadows()` - check if shadows are loaded
+- `NrekiKernel.setJitParser()` - inject Tree-sitter parser for on-demand use
+- `NrekiKernel.setJitClassifier()` - inject classification function
+- `NrekiKernel.hasJitHologram()` - check if JIT mode is available
+- `NrekiKernel.getJitCacheSize()` - report on-demand classification count
+- `NrekiKernel.getLogicalTime()` - monotonic clock for harvester epoch detection
+- `NrekiKernel.getProgram()` - access TypeScript Program for harvester .d.ts emission
+- `NrekiMode` type extended with `"hologram"`
+- `detectMode()` returns `"hologram"` for projects with >1000 source files
+
+### Changed
+- VFS hooks in `NrekiKernel.boot()` now include hologram intercepts (BEFORE existing
+  VFS checks) for `fileExists`, `readFile`, and `getScriptSnapshot`
+- `getFatalErrors()` semantic cascade evaluation now runs for both `project` and
+  `hologram` modes
+- `RouterDependencies.nrekiMode` type includes `"hologram"`
+- Deferred boot in router handles hologram mode (scan before boot if pre-warm incomplete)
+
+### Tests
+- 60 new tests across 7 test files:
+  - `tests/hologram-shadow-generator.test.ts` (19 tests)
+  - `tests/hologram-vfs.test.ts` (8 tests)
+  - `tests/hologram-lazy-subgraph.test.ts` (5 tests)
+  - `tests/hologram-domain-separation.test.ts` (3 tests)
+  - `tests/hologram-harvester.test.ts` (6 tests)
+  - `tests/hologram-integration.test.ts` (4 tests)
+  - `tests/jit-holography.test.ts` (15 tests)
+
+## [5.3.0] - 2026-03-18
+
+### Added
+- **Temporal Type Regression Detection (TTRD)**: Detects when an AI agent weakens
+  type contracts to bypass the TypeScript compiler.
+  - Uses TypeChecker API to read compiler-resolved types, not AST text. Catches
+    inferred type escape (`as any` in expressions) and alias weakening
+    (`type X = any` where function signatures stay identical).
+  - Pre/Post comparison within the same ACID transaction. No global baseline needed.
+  - Barrel file guard: skips re-exported symbols, processes local declarations only.
+  - Type string safety: default truncation (no NoTruncation flag), 500-char hard limit.
+  - Submodular penalty: log2 scaling prevents cascading errors from blocking files.
+  - Debt ledger: stores original strict types for future restoration guidance.
+  - Debt payment: restoring strict types clears debt records and reduces friction.
+  - Ghost debt cleanup: deleted symbols cancel their debt automatically.
+  - Per-file regression tracking in batch edits (no friendly fire).
+- `NrekiKernel.extractCanonicalTypes()` - TypeChecker-based export type extraction
+- `NrekiKernel.computeTypeRegressions()` - Pre/Post contract comparison
+- `NrekiKernel.resolvePosixPath()` - public path normalization
+- `ChronosMemory.recordRegressions()` - submodular penalty with debt ledger
+- `ChronosMemory.assessDebtPayments()` - debt forgiveness on type restoration or deletion
+- `NrekiInterceptResult.regressions` - regression evidence per intercept
+- `NrekiInterceptResult.postContracts` - post-edit type contracts for debt assessment
+- `TypeRegression.filePath` - per-file attribution for batch edit accuracy
+
+### Tests
+- 19 new tests in `tests/ttrd.test.ts`
+- extractCanonicalTypes, regression detection, false positive guards, barrel file guard,
+  type string limits, submodular penalty, debt ledger persistence, debt payment,
+  ghost debt, JIT warnings, happy path detection, pre/post baseline, healed path,
+  batch edit attribution, batch debt payment, no-success-on-regression
+- **Performance Modes**: Auto-detection of validation depth based on project size.
+  - `syntax` mode (< 50 files): Kernel disabled. Tree-sitter only.
+  - `project` mode (50-1000 files): Full cross-file semantic validation with early exit.
+  - `file` mode (> 1000 files): Semantic checks on edited files only. No cascade.
+  - Mode auto-detected via bounded DFS file counter in ~85ms.
+  - Deferred boot: kernel boots on first edit, not at startup. MCP server starts in 0ms.
+  - Early exit in project mode: stops evaluating after threshold errors (50 + 20 per edited file).
+  - Corrupted builder recovery via warm rebuild (~2-5s) after early exit.
+  - Global noise filter: ignores diagnostic noise from missing @types when editing source files.
+  - Toxicity scoring for TTRD: detects parameter-level regressions (RetryConfig to any).
+  - Structural collapse detection: catches Promise<any> to any.
+- **VSCode Benchmark (file mode)**: 5,584 files, 91.6s boot, 4.5GB RAM, 0 OOM crashes.
+  - Test A (safe edit): PASS, 23s
+  - Test B (local type break): CAUGHT, 25 errors in event.ts, 55s
+  - Test C (TTRD): CAUGHT via compilation, 1 error, 41s
+  - Test D (IDisposable): CAUGHT, 29 local errors in lifecycle.ts, 98s
+  - Previous project mode: 644s latency, 35,704 errors, OOM crashes
+
+### Tests
+- 20 new tests in `tests/mode-modes.test.ts` (mode detection, syntax/file/project behavior, early exit, recovery, elastic threshold, global noise, TTRD toxicity)
+- 1 new test in `tests/ttrd-silent-crime.test.ts` (silent type degradation)
+- Total: 590 tests across 29 suites, 0 failures
+
+---
+
+## [5.2.0] - 2026-03-18
+
+### Added
+- **Chronos Memory**: Cross-session file error tracking with Cognitive Friction Index (CFI)
+  - Exponential decay (λ=0.85) - file friction reduces 15% per clean session
+  - Success discount - successful edits on high-friction files halve their CFI score
+  - JIT warnings - error history appears only when reading/editing affected files
+  - Edit gating - high-friction files require uncompressed read before editing
+  - Blast radius tracking - error penalties go to files where errors occur, not the edited file
+  - Dead file cleanup - deleted files are removed from tracking on session start
+  - Baseline cache reuse - O(1) error counting without compiler invocation
+  - Crash-safe persistence with debounced atomic writes
+- `NrekiKernel.getInitialErrorCount()` - immutable boot-time error snapshot
+- `NrekiKernel.getCurrentErrorCount()` - O(1) via baseline cache
+- Global Health Delta tracking (ΔH = current errors - boot errors)
+- **Chronos Health Score** in `nreki_guard action:"report"` output
+- Circuit breaker trips now feed Chronos CFI automatically
+
+### Tests
+
+- 16 new tests in `tests/chronos-memory.test.ts`
+- Constructor, recordTrip/Error/Heal/Success, isHighFriction, passive decay, GC, dead file cleanup, persistence, health report, blast radius tracking
+
+---
+
+## v5.1.0 - Zero-Token Error Correction (2026-03-17)
+
+### New: NREKI L3.3 Auto-Healing Engine
+
+When the LLM's edit introduces structural errors (missing imports, forgotten `async` keyword, incomplete interface implementations), NREKI now **auto-corrects them in RAM** using TypeScript's CodeFix API - the same engine that powers VS Code's "Quick Fix" lightbulb. The LLM never sees the error. Zero tokens wasted.
+
+- **`attemptAutoHealing()`**: Iterative fix-recompile loop inside `interceptAtomicBatch()`. Applies one CodeFix at a time, recompiles the universe (~20ms), checks if errors decreased, and either accepts or micro-rollbacks.
+- **Error reduction rule**: Every fix must reduce total error count. If a fix leaves the same errors or more, it is reverted and blacklisted.
+- **SAFE_FIXES whitelist**: Only deterministic structural fixes are applied - never type mutations or business logic changes:
+  - `import` / `fixMissingImport` - adds forgotten imports
+  - `fixAwaitInSyncFunction` - adds `async` when LLM wrote `await` without it
+  - `fixPromiseResolve` - wraps returns in `Promise.resolve()`
+  - `fixMissingProperties` - auto-implements required interface properties
+  - `fixClassDoesntImplementInheritedAbstractMember` - implements abstract methods
+  - `fixAddMissingMember` - declares missing class properties
+  - `fixAddOverrideModifier` - adds `override` keyword
+- **Micro-rollback per fix**: Each fix has its own undo-log. Failed fixes revert without affecting successful ones.
+- **Macro-rollback on partial failure**: If not ALL errors are resolved, the entire healing attempt is undone and the original errors are returned to the LLM intact.
+- **Patch protection**: On successful healing, the response tells the agent not to overwrite the auto-applied fixes in the next edit.
+- **`healedFiles` in response**: Router creates `nreki_undo` backups for collateral files the healer touched.
+- **`healingStats`**: Public counter tracking `applied` and `failed` healing attempts.
+
+### New: `getFatalErrors()` - Centralized Triple Shield
+
+Extracted the 3-shield evaluation logic (Global → Syntactic → Semantic) into a reusable private method. Both `interceptAtomicBatch()` and `attemptAutoHealing()` use it, eliminating code duplication.
+
+### Bug Fixes
+
+- **`ts.emptyOptions` doesn't exist in TS 5.9**: Replaced with `{} as ts.UserPreferences`.
+
+### Tests
+
+- **526 tests**, 25 suites, zero failures, zero regressions
+- New: `tests/auto-healing.test.ts` -6 tests covering:
+  - Missing import → auto-healed → `safe: true` → disk has import
+  - `await` without `async`, callers healthy → auto-healed → `safe: true`
+  - `await` without `async`, callers break → cascade detected → micro-rollback → `safe: false`
+  - Business logic error (no CodeFix) → healing skipped → `safe: false`
+  - `healingStats` counter verification
+  - Clean code → healing not triggered → `safe: true` without heal text
+
+---
+
+## v5.0.0 - The NREKI Kernel (2026-03-16)
+
+### New: NREKI Kernel (Layer 2 - Cross-File Semantic Verification)
+
+- **VFS-LSP Kernel**: Hijacks TypeScript Compiler API with a Virtual File System in RAM. Edits are validated against the entire project's type system before reaching disk.
+- **True ACID Transactions**: `interceptAtomicBatch()` validates in RAM; `commitToDisk()` writes via two-phase atomic commit (backup → temp+rename → cleanup) with physical rollback on OS failure.
+- **Zero Disk Touch**: When the kernel is active, `semanticEdit()` operates in `dryRun` mode. The disk is immutable until semantic validation passes.
+- **Triple Shield**: Global diagnostics → Syntactic diagnostics → Semantic diagnostics. Catches broken syntax AND cross-file type errors.
+- **Predictive Blast Radius**: `predictBlastRadius()` uses `ts.LanguageService.findReferences()` to show what will break and WHY before the agent edits. ~20ms per query.
+- **PageRank Architecture Scoring**: Files classified by recursive importance via Markov Chain Power Iteration (damping factor 0.85, 20 iterations, <8ms convergence for 1,000 files). Replaces naive inDegree classification.
+- **Warm-Path Optimization**: Failed intercepts advance the monotonic clock instead of destroying the builder program. Rollback drops from ~10s to ~50ms.
+- **Path Jail at Kernel Level**: `interceptAtomicBatch()` rejects paths that resolve outside the project root.
+- **O(1) Virtual Directory Resolution**: `vfsDirectories` Set replaces O(n) VFS scan in `directoryExists`.
+- **LanguageService Integration**: VS Code's reference engine connected to the VFS for JIT lazy evaluation.
+
+### Renamed: TokenGuard → NREKI
+
+- npm package: `@ruso-0/tokenguard` → `@ruso-0/nreki`
+- Tool names: `tg_navigate` → `nreki_navigate`, `tg_code` → `nreki_code`, `tg_guard` → `nreki_guard`
+- Database: `.tokenguard.db` → `.nreki.db`
+- Pins: `.tokenguard-pins.json` → `.nreki-pins.json`
+- Backups: `.tokenguard-backup/` → `.nreki-backup/`
+- Server name: `TokenGuard` → `NREKI`
+
+### Security Hardening (30/30 Audit Findings Resolved)
+
+- **A1**: Kernel path jail blocks traversal attempts (`../../etc/passwd`)
+- **A2**: Write-Then-Validate eliminated - now Validate-Then-Write via dryRun
+- **A3**: Zombie mutex (`withTimeout`/`Promise.race`) deleted entirely
+- **A4**: Sensitive file blocklist expanded (+8 patterns: docker, kube, netrc, htpasswd, etc.)
+- **A5**: `node_modules` filter uses path segment regex, not substring match
+- **A6**: Kernel returns relative paths in error messages, not absolute
+- **A8**: Pin sanitization adds Unicode normalization (NFKC) + null byte rejection
+- **A9**: Prototype pollution guard on pin JSON.parse
+- **A10**: Kernel readFile blocks sensitive files (.env, .pem, .key) in disk fallback
+- **B1**: `commitToDisk()` resurrected as the only write path when kernel is active
+- **B2**: `isTypeScriptFile` regex expanded to `.mts`, `.cts`, `.mjs`, `.cjs`, `.d.mts`, `.d.cts`
+- **B4**: Double-boot guard added to `boot()`
+- **B5**: Pre-boot guard added to `interceptAtomicBatch()`
+- **B6**: `logicalTime` saved and restored on rollback
+- **B7**: Fingerprint hash upgraded from MD5 to SHA-256
+- **B8**: GC threshold made configurable (`gcThreshold` property)
+- **C4**: Heartbeat skipped during circuit breaker escalation ≥ 2
+- **C5**: Version read from `package.json` at runtime (no hardcoded string)
+- **D1**: Pin file writes use atomic temp+rename pattern
+- **D2**: Orphaned `.nreki-bak-*` files cleaned on kernel boot
+- **D4**: Token estimation margin documented (20-40% variance)
+- **E1**: `directoryExists` uses O(1) Set lookup instead of O(n) VFS scan
+
+### Tests
+
+- **520 tests**, 24 suites, zero failures
+- New: `tests/nreki-kernel.test.ts` -22 kernel unit tests (boot, semantic validation, syntactic shield, baseline tolerance, file operations, ACID, concurrency, edge cases)
+- New: `tests/nreki-integration.test.ts` -8 integration tests (dryRun, full commit path, type-break blocked, batch VFS, path traversal rejection)
+- New: PageRank tests (recursive importance, convergence <50ms for 1,000 files)
+- New: Precision tests (VFS staging leak, node_modules filtering, restore failure handling)
+
+### Benchmark: OpenDota (148 files, 1,600+ stars)
+
+- 6/6 correct verdicts (valid edit, type break, syntax break, file delete, non-TS file)
+- Zero false positives, zero false negatives
+- Boot: 10.68s | Type break detection: 12.6s | Syntax detection: 11.4s
+
+### 32 Sealed Failure Modes (P1-P32)
+
+P2 (atomic commit), P4 (dynamic rootNames), P5 (tombstone), P8 (monotonic clock), P9 (topological cardinality), P10 (FIFO mutex), P11 (periodic GC), P15 (path sanitization), P17 (zombie AST), P18 (destruction & resurrection), P19 (counter reset), P21 (multi-file deadlock), P25 (idempotent undo-log), P26 (POSIX normalization), P27 (recursive mkdir), P28 (syntactic blindness), P29 (TS6053 ghost), P30 (non-TS filter), P31 (virtual directories), P32 (physical rollback).
 
 ## [4.0.2] - 2026-03-13
 
@@ -33,10 +276,10 @@ All notable changes to TokenGuard will be documented in this file.
 - **`symbolName` extracted from AST**: Parser now uses tree-sitter `@_name` captures instead of ~10 fragile regexes. `ParsedChunk` interface adds `symbolName: string`. Database schema adds `symbol_name`, `start_index`, `end_index` columns (auto-migrated for existing DBs).
 
 ### Added
-- **`tg_code action:"batch_edit"`**: Atomically edit multiple symbols across multiple files. Uses Virtual File System in RAM with reverse splice ordering (descending startIndex) to avoid byte offset corruption. All-or-nothing: if ANY file fails AST validation, NOTHING is written to disk.
-- **Architecture Map**: `tg_navigate action:"map"` now includes dependency graph with import centrality classification. Files are tiered by in-degree percentile: P75+ = "core", P50-P75 = "logic", <P50 = "leaf". Uses O(1) FastLookup index for import resolution (relative paths, `@/` aliases, extensionless, index.ts implicit).
-- **Blast Radius Detection**: When `tg_code action:"edit"` changes a function's signature (parameters, return type), TokenGuard warns which files import that symbol. Suggests `batch_edit` to update dependents. Also applies to `batch_edit`.
-- **`tg_navigate action:"prepare_refactor"`**: AST-based confidence classification for safe renaming. Walks tree-sitter syntax nodes and classifies each occurrence as "high" confidence (safe to rename) or "review" (inside strings, comments, object keys, JSX text). Returns a formatted report with two sections.
+- **`nreki_code action:"batch_edit"`**: Atomically edit multiple symbols across multiple files. Uses Virtual File System in RAM with reverse splice ordering (descending startIndex) to avoid byte offset corruption. All-or-nothing: if ANY file fails AST validation, NOTHING is written to disk.
+- **Architecture Map**: `nreki_navigate action:"map"` now includes dependency graph with import centrality classification. Files are tiered by in-degree percentile: P75+ = "core", P50-P75 = "logic", <P50 = "leaf". Uses O(1) FastLookup index for import resolution (relative paths, `@/` aliases, extensionless, index.ts implicit).
+- **Blast Radius Detection**: When `nreki_code action:"edit"` changes a function's signature (parameters, return type), NREKI warns which files import that symbol. Suggests `batch_edit` to update dependents. Also applies to `batch_edit`.
+- **`nreki_navigate action:"prepare_refactor"`**: AST-based confidence classification for safe renaming. Walks tree-sitter syntax nodes and classifies each occurrence as "high" confidence (safe to rename) or "review" (inside strings, comments, object keys, JSX text). Returns a formatted report with two sections.
 - **`parseRaw<T>()`**: Public method on `ASTParser` for raw tree-sitter tree access via callback pattern with guaranteed WASM memory cleanup.
 - **`DependencyGraph` interface**: `importedBy`, `inDegree`, and `tiers` maps exported from `repo-map.ts`.
 - **`buildFastLookup()`**: O(1) import resolution mapping extensionless, src/-stripped, and index-collapsed variants to actual file paths.
@@ -45,10 +288,10 @@ All notable changes to TokenGuard will be documented in this file.
 - **`applySemanticSplice()`**: Extracted pure splice function for reuse in both single and batch edits.
 
 ### Fixed
-- **Bug A — Stale docstring**: `engine.ts` header incorrectly referenced "sqlite-vec + FTS5". Updated to reflect actual implementation (pure-JS VectorIndex + BM25 KeywordIndex).
-- **Bug B — Multi-line console.log stripping**: Regex-based `console.log()` removal failed on multi-line calls. Replaced with `stripCallStatements()` using balanced parenthesis tracking. Same fix applied to Python `print()`.
-- **Bug C — Python `#` in strings**: Comment stripping destroyed `#` inside string literals (e.g., `color = "#FF0000"`). Fixed by reordering (triple-quotes first) and protecting single/double-quoted strings with placeholders before stripping comments.
-- **Bug D — Simplistic glob matching**: `walkDirectory` converted `**/node_modules/**` to `node_modules` via string replace, failing for patterns like `**/*.min.js`. Replaced with `picomatch` for proper glob matching.
+- **Bug A - Stale docstring**: `engine.ts` header incorrectly referenced "sqlite-vec + FTS5". Updated to reflect actual implementation (pure-JS VectorIndex + BM25 KeywordIndex).
+- **Bug B - Multi-line console.log stripping**: Regex-based `console.log()` removal failed on multi-line calls. Replaced with `stripCallStatements()` using balanced parenthesis tracking. Same fix applied to Python `print()`.
+- **Bug C - Python `#` in strings**: Comment stripping destroyed `#` inside string literals (e.g., `color = "#FF0000"`). Fixed by reordering (triple-quotes first) and protecting single/double-quoted strings with placeholders before stripping comments.
+- **Bug D - Simplistic glob matching**: `walkDirectory` converted `**/node_modules/**` to `node_modules` via string replace, failing for patterns like `**/*.min.js`. Replaced with `picomatch` for proper glob matching.
 
 ### Changed
 - `semantic-edit.ts` refactored: extracted `applySemanticSplice()`, `findChunkBySymbol()`, `detectSignatureChange()` as pure functions.
@@ -62,20 +305,20 @@ All notable changes to TokenGuard will be documented in this file.
 ## [3.3.0] - 2026-03-13
 
 ### Added
-- **Context Heartbeat (Anti-Amnesia Protocol)**: Silently re-injects critical context
+- **Context Heartbeat**: Silently re-injects critical session state
   every ~15 tool calls to survive Claude Code's context compaction. Uses 4-layer
-  Neural State Consolidation:
-  - Layer 1 (Cortex): Master Plan file anchored via `set_plan`
-  - Layer 2 (Working Memory): Claude's scratchpad notes via `memorize` + pinned rules
-  - Layer 3 (Hippocampus): Recent successful edits for spatial awareness
-  - Layer 4 (Executive Attention): Active Circuit Breaker state if in Break & Build
-- **`tg_guard action:"set_plan"`**: Anchor a master plan file (PLAN.md, schemas).
+  state re-injection:
+  - Layer 1 (Plan File): Anchored plan document via `set_plan`
+  - Layer 2 (Scratchpad): Claude's progress notes via `memorize` + pinned rules
+  - Layer 3 (Recent Edits): Files modified in this session
+  - Layer 4 (Circuit Breaker): Active escalation alerts if in Break & Build
+- **`nreki_guard action:"set_plan"`**: Anchor a master plan file (PLAN.md, schemas).
   Includes Bankruptcy Shield rejecting plans >4000 tokens to prevent context bloat.
-- **`tg_guard action:"memorize"`**: Claude writes progress notes to persistent scratchpad.
+- **`nreki_guard action:"memorize"`**: Claude writes progress notes to persistent scratchpad.
   Notes survive context compaction and are re-injected during heartbeat.
-- **Attention Sandwich**: Heartbeat injects memory ABOVE the tool response, keeping the
+- **Top-injection pattern**: Heartbeat injects state ABOVE the tool response, keeping the
   immediate result at the bottom to respect the LLM's U-shaped attention curve.
-- **Psychological Filter**: Heartbeat only fires during context-gathering actions
+- **Read-only filter**: Heartbeat only fires during context-gathering actions
   (read, search, map, status, definition, references, outline). Never during
   edit, undo, or filter_output to avoid distracting Claude during critical operations.
 - **Restart Detection**: Heartbeat detects MCP server restarts (currentCalls < lastInjectCalls)
@@ -84,7 +327,7 @@ All notable changes to TokenGuard will be documented in this file.
 ## [3.2.0] - 2026-03-13
 
 ### Added
-- **Auto-Context Inlining**: When Claude requests a definition or reads a file, TokenGuard
+- **Auto-Context Inlining**: When Claude requests a definition or reads a file, NREKI
   automatically resolves signatures of imported dependencies and injects them in the response.
   Reduces follow-up tool calls by providing "X-ray vision" in a single turn.
   - Import extraction supports ESM (named + default), CommonJS require, Python from-import,
@@ -93,12 +336,12 @@ All notable changes to TokenGuard will be documented in this file.
     local alias name (not the original export name) for accurate matching.
   - Security filter: signatures containing passwords, API keys, auth tokens, or encryption
     keys are automatically excluded from injection.
-  - Anti-prompt-injection: JSDoc comments and TokenGuard stubs are stripped from signatures
+  - Anti-prompt-injection: JSDoc comments and NREKI stubs are stripped from signatures
     before injection, preventing malicious content from entering Claude's context.
   - Homonym disambiguation: BM25 searches combine symbol name + import path hint to find
     the correct signature even when multiple files export the same name.
   - 150ms hard timeout prevents event loop blocking on large codebases.
-  - `auto_context: false` parameter available on both `tg_navigate` and `tg_code` to disable.
+  - `auto_context: false` parameter available on both `nreki_navigate` and `nreki_code` to disable.
   - Session report tracks `autoContextInjections` count.
 - **Go import support**: Auto-Context infers exported symbols from Go namespace usage patterns
   (e.g., `utils.HashPassword()` resolves to `HashPassword` in the `utils` package).
@@ -135,8 +378,8 @@ All notable changes to TokenGuard will be documented in this file.
 - **Cross-platform byte indices**: Verifies tree-sitter byte offsets against actual content, falls back to indexOf if they differ across platforms.
 
 ### Added
-- **Behavioral Advisor (PreToolUseHook)**: Connected to `handleRead` — when Claude reads a file raw (compress:false), it gets a suggestion showing how many tokens it wasted and the exact command to compress next time.
-- **Danger Zones in status**: `tg_guard action:"status"` now shows the 5 heaviest unread files with estimated token counts. Files already read (raw or compressed) are filtered out dynamically.
+- **Behavioral Advisor (PreToolUseHook)**: Connected to `handleRead` - when Claude reads a file raw (compress:false), it gets a suggestion showing how many tokens it wasted and the exact command to compress next time.
+- **Danger Zones in status**: `nreki_guard action:"status"` now shows the 5 heaviest unread files with estimated token counts. Files already read (raw or compressed) are filtered out dynamically.
 - **CLI `--help` and `--version`**: Standard CLI hygiene. Version sourced from single `VERSION` constant.
 - **Telemetry via social sharing**: Session report footer invites users to share their receipt on GitHub Discussions.
 - **E2E breaker test**: Full integration test simulating 3 failures → Level 1 redirect → grace period → recovery with insert_after.
@@ -156,8 +399,8 @@ All notable changes to TokenGuard will be documented in this file.
 
 ### Added
 - **Creative Circuit Breaker ("Break & Build")**: 3-level escalation system that redirects Claude with increasingly specific strategies instead of just blocking. Level 1: rewrite from scratch. Level 2: decompose into helpers. Level 3: hard stop, ask the human.
-- **`tg_guard action:"reset"`**: Escape hatch for humans to clear the circuit breaker and let Claude retry with a new approach.
-- **`npx tokenguard init`**: CLI subcommand that generates a `CLAUDE.md` file with collaborative-tone instructions for Claude Code to prefer TokenGuard tools.
+- **`nreki_guard action:"reset"`**: Escape hatch for humans to clear the circuit breaker and let Claude retry with a new approach.
+- **`npx nreki init`**: CLI subcommand that generates a `CLAUDE.md` file with collaborative-tone instructions for Claude Code to prefer NREKI tools.
 - **Redirect statistics**: Session report now tracks `redirectsIssued` and `redirectsSuccessful` to measure creative breaker effectiveness.
 
 ### Performance
@@ -190,7 +433,7 @@ docs: fix README Quick Start syntax, update test count to 423, update keywords, 
 ### Fixed
 - **README Quick Start**: Replaced v2 `options:{}` syntax with v3 flat params (`text:`, `symbol:`, `new_code:`, `output:`).
 - **README Quick Start**: Replaced `target:` with correct param names (`query:`, `symbol:`).
-- **README**: Renamed `terminal` → `filter_output` in tg_code actions table, comparison table, architecture diagram, and Quick Start.
+- **README**: Renamed `terminal` → `filter_output` in nreki_code actions table, comparison table, architecture diagram, and Quick Start.
 - **README**: Updated test count from 361 → 423 in title, badges, stress test section, and real-world validation.
 - **README**: Updated test suites from 14 → 16.
 
@@ -207,28 +450,28 @@ docs: fix README Quick Start syntax, update test count to 423, update keywords, 
 ## [3.0.0] - 2026-03-10
 
 ### Headline
-TokenGuard v3.0 — Architecture overhaul. 16 tools collapsed to 3 routers. Invisible middleware. Lite/Pro mode. 81% reduction in tool definition overhead.
+NREKI v3.0 - Architecture overhaul. 16 tools collapsed to 3 routers. Invisible middleware. Lite/Pro mode. 81% reduction in tool definition overhead.
 
 ### BREAKING CHANGES
-- **16 tools → 3 router tools**: All MCP tool names have changed. LLMs must use the new `tg_navigate`, `tg_code`, `tg_guard` tool names with `action` parameters.
-- **`tg_validate` removed from MCP**: Now runs automatically as invisible middleware inside `tg_code action:"edit"`. No manual calls needed.
-- **`tg_circuit_breaker` removed from MCP**: Now runs as passive middleware monitoring all tool calls. Auto-resets after 60s inactivity or when a different action is called.
-- **`tg_audit` removed from MCP**: Moved to CLI only. Use `npx @ruso-0/tokenguard --audit`.
+- **16 tools → 3 router tools**: All MCP tool names have changed. LLMs must use the new `nreki_navigate`, `nreki_code`, `nreki_guard` tool names with `action` parameters.
+- **`nreki_validate` removed from MCP**: Now runs automatically as invisible middleware inside `nreki_code action:"edit"`. No manual calls needed.
+- **`nreki_circuit_breaker` removed from MCP**: Now runs as passive middleware monitoring all tool calls. Auto-resets after 60s inactivity or when a different action is called.
+- **`nreki_audit` removed from MCP**: Moved to CLI only. Use `npx @ruso-0/nreki --audit`.
 
-### Added — Router Pattern
-- **`tg_navigate`** — Unified navigation tool replacing `tg_search`, `tg_def`, `tg_refs`, `tg_outline`, `tg_map`. Actions: `search`, `definition`, `references`, `outline`, `map`.
-- **`tg_code`** — Unified code tool replacing `tg_read`, `tg_compress`, `tg_semantic_edit`, `tg_undo`, `tg_terminal`. Actions: `read`, `compress`, `edit`, `undo`, `terminal` (renamed to `filter_output` in v3.0.2).
-- **`tg_guard`** — Unified safety tool replacing `tg_pin`, `tg_status`, `tg_session_report`. Actions: `pin`, `unpin`, `status`, `report`.
-- `src/router.ts` — Central dispatcher mapping `{tool, action}` to handler functions (~700 lines).
+### Added - Router Pattern
+- **`nreki_navigate`** - Unified navigation tool replacing `nreki_search`, `nreki_def`, `nreki_refs`, `nreki_outline`, `nreki_map`. Actions: `search`, `definition`, `references`, `outline`, `map`.
+- **`nreki_code`** - Unified code tool replacing `nreki_read`, `nreki_compress`, `nreki_semantic_edit`, `nreki_undo`, `nreki_terminal`. Actions: `read`, `compress`, `edit`, `undo`, `terminal` (renamed to `filter_output` in v3.0.2).
+- **`nreki_guard`** - Unified safety tool replacing `nreki_pin`, `nreki_status`, `nreki_session_report`. Actions: `pin`, `unpin`, `status`, `report`.
+- `src/router.ts` - Central dispatcher mapping `{tool, action}` to handler functions (~700 lines).
 
-### Added — Invisible Middleware
-- `src/middleware/validator.ts` — AST validation wrapper. Validates code via tree-sitter before disk writes inside `tg_code action:"edit"`.
-- `src/middleware/circuit-breaker.ts` — Passive circuit breaker. Wraps all handlers, records tool call results, trips on destructive patterns, auto-resets on action diversity or 60s inactivity.
+### Added - Invisible Middleware
+- `src/middleware/validator.ts` - AST validation wrapper. Validates code via tree-sitter before disk writes inside `nreki_code action:"edit"`.
+- `src/middleware/circuit-breaker.ts` - Passive circuit breaker. Wraps all handlers, records tool call results, trips on destructive patterns, auto-resets on action diversity or 60s inactivity.
 
-### Added — Lite / Pro Mode
+### Added - Lite / Pro Mode
 - **Lite mode (default)**: Instant startup (~100ms). BM25 keyword-only search. No ONNX model dependency.
 - **Pro mode (`--enable-embeddings`)**: Hybrid semantic + BM25 search with RRF fusion. Requires ONNX Runtime for jina-v2-small embeddings.
-- `searchKeywordOnly()` method added to `TokenGuardDB` for Lite mode BM25 search.
+- `searchKeywordOnly()` method added to `NREKIDB` for Lite mode BM25 search.
 - Engine methods (`indexFile`, `indexDirectory`, `search`, `getRepoMap`) now branch based on `enableEmbeddings` config.
 
 ### Changed
@@ -238,24 +481,24 @@ TokenGuard v3.0 — Architecture overhaul. 16 tools collapsed to 3 routers. Invi
 - **`package.json`**: Version bumped to 3.0.0. Description updated.
 - **`README.md`**: Complete rewrite for v3.0 architecture.
 
-### Added — Tests
-- `tests/router.test.ts` — 30 tests for router dispatch correctness across all 14 `{tool, action}` pairs.
-- `tests/middleware.test.ts` — 13 tests for validator and circuit breaker middleware behavior.
-- `tests/backward-compat.test.ts` — 13 tests verifying all 16 original tool behaviors work through the new 3-tool API.
+### Added - Tests
+- `tests/router.test.ts` - 30 tests for router dispatch correctness across all 14 `{tool, action}` pairs.
+- `tests/middleware.test.ts` - 13 tests for validator and circuit breaker middleware behavior.
+- `tests/backward-compat.test.ts` - 13 tests verifying all 16 original tool behaviors work through the new 3-tool API.
 
 ---
 
 ## [2.1.2] - 2026-03-10
 
 ### Headline
-TokenGuard v2.1.2 — Lazy ONNX loading fixes MCP handshake timeout for real-world users.
+NREKI v2.1.2 - Lazy ONNX loading fixes MCP handshake timeout for real-world users.
 
 ### Fixed
-- **CRITICAL — MCP handshake timeout**: `engine.initialize()` was eagerly loading the ONNX embedding model (~5-10s) during startup, blocking ALL tool calls until the model was ready. Real users connecting via Claude Code would experience timeouts or slow first responses. Split initialization into two phases:
+- **CRITICAL - MCP handshake timeout**: `engine.initialize()` was eagerly loading the ONNX embedding model (~5-10s) during startup, blocking ALL tool calls until the model was ready. Real users connecting via Claude Code would experience timeouts or slow first responses. Split initialization into two phases:
   - **Fast path** (`initialize()`): SQLite + Tree-sitter only (~100ms). Used by 12/16 tools.
-  - **Embedder path** (`initializeEmbedder()`): Adds ONNX model load. Used only by `tg_search`, `tg_map`, and indexing operations.
-- **`tg_def` first-call latency**: Was 465ms because it waited for the embedder to load (which it doesn't use). Now completes in ~50ms on first call.
-- Removed background `engine.initialize()` from `main()` — tools now self-initialize at the correct level when first called.
+  - **Embedder path** (`initializeEmbedder()`): Adds ONNX model load. Used only by `nreki_search`, `nreki_map`, and indexing operations.
+- **`nreki_def` first-call latency**: Was 465ms because it waited for the embedder to load (which it doesn't use). Now completes in ~50ms on first call.
+- Removed background `engine.initialize()` from `main()` - tools now self-initialize at the correct level when first called.
 
 ### Changed
 - **package.json**: Version bumped to 2.1.2.
@@ -265,30 +508,30 @@ TokenGuard v2.1.2 — Lazy ONNX loading fixes MCP handshake timeout for real-wor
 ## [2.1.1] - 2026-03-10
 
 ### Headline
-TokenGuard v2.1.1 — Final audit fixes, tg_undo, 16 tools, 305 tests.
+NREKI v2.1.1 - Final audit fixes, nreki_undo, 16 tools, 305 tests.
 
-### Added — New Tool
-- **`tg_undo`** — Undo the last `tg_semantic_edit` on a file. Auto-restores from backup with one-shot semantics (backup is consumed after restore).
+### Added - New Tool
+- **`nreki_undo`** - Undo the last `nreki_semantic_edit` on a file. Auto-restores from backup with one-shot semantics (backup is consumed after restore).
 
-### Added — New Module
-- `src/undo.ts` — Backup/restore engine using base64url-encoded file paths. Stores pre-edit snapshots in `.tokenguard/backups/`.
-- `src/utils/read-source.ts` — Shared BOM-safe file reader. Strips U+FEFF byte order marks from Windows-created source files.
+### Added - New Module
+- `src/undo.ts` - Backup/restore engine using base64url-encoded file paths. Stores pre-edit snapshots in `.nreki/backups/`.
+- `src/utils/read-source.ts` - Shared BOM-safe file reader. Strips U+FEFF byte order marks from Windows-created source files.
 
 ### Security
-- **FIX 2 — XML injection prevention**: Pin content is now escaped (`&`, `<`, `>`, `"`, `'`) before storage to prevent prompt injection via pinned rules.
+- **FIX 2 - XML injection prevention**: Pin content is now escaped (`&`, `<`, `>`, `"`, `'`) before storage to prevent prompt injection via pinned rules.
 
 ### Fixed
-- **FIX 1 — BOM stripping**: All source file readers now use `readSource()` to strip U+FEFF BOM, fixing parse failures on Windows-created files.
-- **FIX 3 — Code tokenizer**: Rewritten to correctly handle `$scope`, `__proto__`, `_privateVar`, and other edge-case identifiers with `$`/`_` prefixes.
-- **FIX 4 — Fast dot product**: Replaced cosine similarity with direct dot product for L2-normalized vectors. Removes sqrt/division overhead; mathematically equivalent for unit vectors.
-- **FIX 6 — Pin order**: Pinned rules now appear AFTER repo map text (was before). Preserves Anthropic prompt cache hits since the static map stays at the start of context.
-- **FIX 7 — Circuit breaker normalization**: `hashError()` now normalizes ISO timestamps and improved memory address normalization. Added 5-minute TTL eviction to prevent stale errors from tripping the breaker.
-- **FIX 8 — ASCII receipt**: Replaced all Unicode box-drawing characters and emojis in session receipt and reports with ASCII equivalents for terminal compatibility.
+- **FIX 1 - BOM stripping**: All source file readers now use `readSource()` to strip U+FEFF BOM, fixing parse failures on Windows-created files.
+- **FIX 3 - Code tokenizer**: Rewritten to correctly handle `$scope`, `__proto__`, `_privateVar`, and other edge-case identifiers with `$`/`_` prefixes.
+- **FIX 4 - Fast dot product**: Replaced cosine similarity with direct dot product for L2-normalized vectors. Removes sqrt/division overhead; mathematically equivalent for unit vectors.
+- **FIX 6 - Pin order**: Pinned rules now appear AFTER repo map text (was before). Preserves Anthropic prompt cache hits since the static map stays at the start of context.
+- **FIX 7 - Circuit breaker normalization**: `hashError()` now normalizes ISO timestamps and improved memory address normalization. Added 5-minute TTL eviction to prevent stale errors from tripping the breaker.
+- **FIX 8 - ASCII receipt**: Replaced all Unicode box-drawing characters and emojis in session receipt and reports with ASCII equivalents for terminal compatibility.
 
 ### Changed
 - **Tool count**: 15 -> 16 MCP tools.
 - **Test count**: 282 -> 305 tests across 11 test suites.
-- **tg_map**: Pinned rules now appended after repo map (was prepended before).
+- **nreki_map**: Pinned rules now appended after repo map (was prepended before).
 - **package.json**: Version bumped to 2.1.1.
 
 ---
@@ -296,48 +539,48 @@ TokenGuard v2.1.1 — Final audit fixes, tg_undo, 16 tools, 305 tests.
 ## [2.1.0] - 2026-03-10
 
 ### Headline
-TokenGuard v2.1 — 15 MCP tools, 282 tests, circuit breaker, surgical edit, pin memory, session receipt.
+NREKI v2.1 - 15 MCP tools, 282 tests, circuit breaker, surgical edit, pin memory, session receipt.
 
-### Added — New Tools
-- **`tg_semantic_edit`** — Surgically edit a function/class/interface by name without reading or rewriting the entire file. Finds the exact AST node, replaces only those bytes, validates syntax before saving. Saves 98% of output tokens vs full file rewrites.
-- **`tg_circuit_breaker`** — Detects infinite failure loops (same error 3+ times, same file 5+ times, write-test-fail cycles). When tripped, forces Claude to stop and ask the human for guidance. Prevents doom loops that burn through remaining context.
-- **`tg_pin`** — Pin important rules Claude should never forget. Pinned items are injected into every `tg_map` response, keeping project conventions permanently in Claude's attention window. Max 10 pins, 200 chars each, persisted to disk.
+### Added - New Tools
+- **`nreki_semantic_edit`** - Surgically edit a function/class/interface by name without reading or rewriting the entire file. Finds the exact AST node, replaces only those bytes, validates syntax before saving. Saves 98% of output tokens vs full file rewrites.
+- **`nreki_circuit_breaker`** - Detects infinite failure loops (same error 3+ times, same file 5+ times, write-test-fail cycles). When tripped, forces Claude to stop and ask the human for guidance. Prevents doom loops that burn through remaining context.
+- **`nreki_pin`** - Pin important rules Claude should never forget. Pinned items are injected into every `nreki_map` response, keeping project conventions permanently in Claude's attention window. Max 10 pins, 200 chars each, persisted to disk.
 
-### Added — New Modules
-- `src/semantic-edit.ts` — Zero-read surgical AST patching. Symbol name lookup, byte-level splice, syntax validation before write.
-- `src/circuit-breaker.ts` — Loop detection engine with sliding window analysis, consecutive failure tracking, and automatic trip/reset.
-- `src/pin-memory.ts` — Persistent pinned rules with deterministic output (sorted by id) for prompt cache compatibility.
+### Added - New Modules
+- `src/semantic-edit.ts` - Zero-read surgical AST patching. Symbol name lookup, byte-level splice, syntax validation before write.
+- `src/circuit-breaker.ts` - Loop detection engine with sliding window analysis, consecutive failure tracking, and automatic trip/reset.
+- `src/pin-memory.ts` - Persistent pinned rules with deterministic output (sorted by id) for prompt cache compatibility.
 
-### Added — Session Receipt
-- `tg_session_report` now generates an ASCII receipt showing input tokens saved, output tokens avoided, search queries, surgical edits, syntax errors blocked, doom loops prevented, pinned rules active, estimated USD savings, and model info.
+### Added - Session Receipt
+- `nreki_session_report` now generates an ASCII receipt showing input tokens saved, output tokens avoided, search queries, surgical edits, syntax errors blocked, doom loops prevented, pinned rules active, estimated USD savings, and model info.
 
 ### Changed
 - **Tool count**: 12 -> 15 MCP tools.
 - **Test count**: 194 -> 282 tests across 11 test suites.
-- **tg_map**: Now prepends pinned rules at the top of the repo map output.
+- **nreki_map**: Now prepends pinned rules at the top of the repo map output.
 - **README**: Complete rewrite for v2.1 with comparison table, 3 unique features highlight, receipt preview, and updated architecture diagram.
 - **package.json**: Version bumped to 2.1.0.
 
 ### Architecture
-- **Pin memory layer**: Pinned rules are stored in `.tokenguard/pins.json` and prepended to every `tg_map` response. Deterministic output (sorted by id) preserves prompt cache compatibility.
-- **Circuit breaker integration**: `tg_terminal` automatically feeds errors to the circuit breaker for proactive loop detection.
+- **Pin memory layer**: Pinned rules are stored in `.nreki/pins.json` and prepended to every `nreki_map` response. Deterministic output (sorted by id) preserves prompt cache compatibility.
+- **Circuit breaker integration**: `nreki_terminal` automatically feeds errors to the circuit breaker for proactive loop detection.
 
 ## [2.0.0] - 2026-03-10
 
 ### Headline
-TokenGuard v2.0 — 12 MCP tools, 194 tests, cache-aware two-layer architecture.
+NREKI v2.0 - 12 MCP tools, 194 tests, cache-aware two-layer architecture.
 
-### Added — New Tools
-- **`tg_def`** — Go-to-definition by symbol name. AST-based, 100% precise, returns full source body with signature.
-- **`tg_refs`** — Find all references to a symbol across the project. Cross-file word-boundary matching with context.
-- **`tg_outline`** — List all symbols in a file with kind, signature, export status, and line ranges. Like VS Code Outline.
-- **`tg_validate`** — AST sandbox validator. Parses code with tree-sitter before disk write. Catches missing commas, unclosed braces, invalid syntax with exact line/column and fix suggestions. Prevents the "write broken code → see error → retry" token burn loop.
+### Added - New Tools
+- **`nreki_def`** - Go-to-definition by symbol name. AST-based, 100% precise, returns full source body with signature.
+- **`nreki_refs`** - Find all references to a symbol across the project. Cross-file word-boundary matching with context.
+- **`nreki_outline`** - List all symbols in a file with kind, signature, export status, and line ranges. Like VS Code Outline.
+- **`nreki_validate`** - AST sandbox validator. Parses code with tree-sitter before disk write. Catches missing commas, unclosed braces, invalid syntax with exact line/column and fix suggestions. Prevents the "write broken code → see error → retry" token burn loop.
 
-### Added — New Modules
-- `src/ast-navigator.ts` — AST navigation engine for tg_def, tg_refs, tg_outline. Walks project files, extracts symbols, signatures, export status.
-- `src/ast-sandbox.ts` — AST sandbox validator with `validateCode()` and `validateDiff()`. Recursive tree walk with `hasError` subtree pruning for large-file performance.
-- `src/terminal-filter.ts` — Terminal entropy filter. Strips ANSI codes, deduplicates stack traces, extracts unique errors and affected files. 89% token reduction on error output.
-- `src/repo-map.ts` — Static deterministic repo map for Anthropic prompt cache optimization. Identical output for same repo state enables $0.30/M caching vs $3.00/M input.
+### Added - New Modules
+- `src/ast-navigator.ts` - AST navigation engine for nreki_def, nreki_refs, nreki_outline. Walks project files, extracts symbols, signatures, export status.
+- `src/ast-sandbox.ts` - AST sandbox validator with `validateCode()` and `validateDiff()`. Recursive tree walk with `hasError` subtree pruning for large-file performance.
+- `src/terminal-filter.ts` - Terminal entropy filter. Strips ANSI codes, deduplicates stack traces, extracts unique errors and affected files. 89% token reduction on error output.
+- `src/repo-map.ts` - Static deterministic repo map for Anthropic prompt cache optimization. Identical output for same repo state enables $0.30/M caching vs $3.00/M input.
 
 ### Changed
 - **Embeddings**: Migrated from all-MiniLM-L6-v2 (384-dim) to jina-embeddings-v2-small-en (512-dim) for 3x better code search precision.
@@ -350,17 +593,17 @@ TokenGuard v2.0 — 12 MCP tools, 194 tests, cache-aware two-layer architecture.
 
 ### Architecture
 - **Two-layer design**: Layer 1 (static repo map, prompt-cacheable) + Layer 2 (dynamic context, per-query).
-- **Cache-friendly**: tg_map output is deterministic — same repo state produces identical text, enabling Anthropic prompt caching.
+- **Cache-friendly**: nreki_map output is deterministic - same repo state produces identical text, enabling Anthropic prompt caching.
 
 ### Performance (Self-Benchmark)
-- tg_search: 10 results in 16ms (hybrid RRF fusion)
-- tg_def: Definition lookup in 128ms across 22 files
-- tg_refs: 20 references found in 11ms
-- tg_outline: 25 symbols extracted in 7ms
-- tg_compress: 5,502 → 1,753 tokens (68% reduction, medium level)
-- tg_terminal: 11,967 → 1,276 tokens (89% reduction)
-- tg_validate: Syntax error detection with line/column in <1ms
-- tg_map: 22 files mapped, 4,677 tokens, 169ms
+- nreki_search: 10 results in 16ms (hybrid RRF fusion)
+- nreki_def: Definition lookup in 128ms across 22 files
+- nreki_refs: 20 references found in 11ms
+- nreki_outline: 25 symbols extracted in 7ms
+- nreki_compress: 5,502 → 1,753 tokens (68% reduction, medium level)
+- nreki_terminal: 11,967 → 1,276 tokens (89% reduction)
+- nreki_validate: Syntax error detection with line/column in <1ms
+- nreki_map: 22 files mapped, 4,677 tokens, 169ms
 
 ## [1.2.0] - 2026-03-10
 
@@ -378,14 +621,14 @@ TokenGuard v2.0 — 12 MCP tools, 194 tests, cache-aware two-layer architecture.
 - **RRF scoring**: Verified correct rank-based fusion (was already using positions, not scores)
 
 ### Added
-- `src/utils/path-jail.ts` — Path traversal protection
-- `src/utils/safe-parse.ts` — WASM memory-safe parsing
-- `src/utils/file-filter.ts` — File size and extension filtering
-- `src/utils/code-tokenizer.ts` — Code-aware identifier tokenization
-- `src/schemas.ts` — Zod validation schemas for all tools
-- `.github/workflows/ci.yml` — CI/CD with matrix testing (3 OSes × 3 Node versions)
-- `CONTRIBUTING.md` — Contributor guide
-- `CHANGELOG.md` — This file
+- `src/utils/path-jail.ts` - Path traversal protection
+- `src/utils/safe-parse.ts` - WASM memory-safe parsing
+- `src/utils/file-filter.ts` - File size and extension filtering
+- `src/utils/code-tokenizer.ts` - Code-aware identifier tokenization
+- `src/schemas.ts` - Zod validation schemas for all tools
+- `.github/workflows/ci.yml` - CI/CD with matrix testing (3 OSes × 3 Node versions)
+- `CONTRIBUTING.md` - Contributor guide
+- `CHANGELOG.md` - This file
 - `.github/ISSUE_TEMPLATE/bug_report.md`
 - `.github/ISSUE_TEMPLATE/feature_request.md`
 - Comprehensive test suite for all new utilities
@@ -397,7 +640,7 @@ TokenGuard v2.0 — 12 MCP tools, 194 tests, cache-aware two-layer architecture.
 ## [1.1.1] - 2026-03-09
 
 ### Initial Release
-- MCP server with 6 tools: tg_search, tg_audit, tg_compress, tg_status, tg_session_report, tg_read
+- MCP server with 6 tools: nreki_search, nreki_audit, nreki_compress, nreki_status, nreki_session_report, nreki_read
 - Hybrid RRF search (BM25 + vector similarity)
 - Three-tier classic compression + LLMLingua-2-inspired advanced compression
 - Real-time file watching with chokidar

@@ -1,5 +1,5 @@
 /**
- * security.test.ts — Tests for v3.0.1 security hardening.
+ * security.test.ts - Tests for v3.0.1 security hardening.
  *
  * Covers:
  * - Fix 3A: Symlink resolution + sensitive file blocklist
@@ -23,7 +23,7 @@ import type { McpToolResponse } from "../src/router.js";
 
 // ─── Fix 3A: Symlink Resolution + Sensitive File Blocklist ──────────
 
-describe("safePath — Symlink Resolution", () => {
+describe("safePath - Symlink Resolution", () => {
     let tmpDir: string;
 
     beforeEach(() => {
@@ -53,7 +53,7 @@ describe("safePath — Symlink Resolution", () => {
         try {
             fs.symlinkSync(outsideFile, symlinkPath);
         } catch {
-            // Symlinks may require elevated permissions on Windows — skip test
+            // Symlinks may require elevated permissions on Windows - skip test
             return;
         }
 
@@ -73,7 +73,7 @@ describe("safePath — Symlink Resolution", () => {
         try {
             fs.symlinkSync(realFile, linkPath);
         } catch {
-            // Symlinks may require elevated permissions on Windows — skip test
+            // Symlinks may require elevated permissions on Windows - skip test
             return;
         }
 
@@ -82,13 +82,13 @@ describe("safePath — Symlink Resolution", () => {
     });
 
     it("allows non-existent files (new file creation)", () => {
-        // Should not throw ENOENT — just validate path structure
+        // Should not throw ENOENT - just validate path structure
         const result = safePath(tmpDir, "new-file.ts");
         expect(result).toBe(path.resolve(tmpDir, "new-file.ts"));
     });
 });
 
-describe("safePath — Sensitive File Blocklist", () => {
+describe("safePath - Sensitive File Blocklist", () => {
     let tmpDir: string;
 
     beforeEach(() => {
@@ -171,7 +171,7 @@ describe("isSensitivePath helper", () => {
 
 // ─── Fix 3B: Per-File Circuit Breaker Error Tracking ────────────────
 
-describe("CircuitBreaker — Per-File Failure Tracking", () => {
+describe("CircuitBreaker - Per-File Failure Tracking", () => {
     let cb: CircuitBreaker;
 
     beforeEach(() => {
@@ -179,7 +179,7 @@ describe("CircuitBreaker — Per-File Failure Tracking", () => {
     });
 
     it("increments per-file counter on error", () => {
-        cb.recordToolCall("tg_code:edit", "TypeError: something", "src/foo.ts");
+        cb.recordToolCall("nreki_code:edit", "TypeError: something", "src/foo.ts");
         const state = cb.getState();
         const normalized = path.resolve(process.cwd(), "src/foo.ts").replace(/\\/g, "/");
         expect(state.perFileFailures.get(normalized)).toBe(1);
@@ -187,18 +187,18 @@ describe("CircuitBreaker — Per-File Failure Tracking", () => {
 
     it("resets per-file counter on success for that file", () => {
         const normalized = path.resolve(process.cwd(), "src/foo.ts").replace(/\\/g, "/");
-        cb.recordToolCall("tg_code:edit", "TypeError: something", "src/foo.ts");
-        cb.recordToolCall("tg_code:edit", "TypeError: something", "src/foo.ts");
+        cb.recordToolCall("nreki_code:edit", "TypeError: something", "src/foo.ts");
+        cb.recordToolCall("nreki_code:edit", "TypeError: something", "src/foo.ts");
         expect(cb.getState().perFileFailures.get(normalized)).toBe(2);
 
         // Success resets
-        cb.recordToolCall("tg_code:edit", "Edit successful", "src/foo.ts");
+        cb.recordToolCall("nreki_code:edit", "Edit successful", "src/foo.ts");
         expect(cb.getState().perFileFailures.get(normalized)).toBeUndefined();
     });
 
     it("tracks errors independently per file", () => {
-        cb.recordToolCall("tg_code:edit", "TypeError: fail", "src/a.ts");
-        cb.recordToolCall("tg_code:edit", "TypeError: fail", "src/b.ts");
+        cb.recordToolCall("nreki_code:edit", "TypeError: fail", "src/a.ts");
+        cb.recordToolCall("nreki_code:edit", "TypeError: fail", "src/b.ts");
 
         const state = cb.getState();
         const normA = path.resolve(process.cwd(), "src/a.ts").replace(/\\/g, "/");
@@ -209,9 +209,9 @@ describe("CircuitBreaker — Per-File Failure Tracking", () => {
 
     it("trips after 3 per-file failures (Pattern 4)", () => {
         // Use different error messages so Pattern 1 (same error hash) doesn't trip first
-        cb.recordToolCall("tg_code:edit", "TypeError: x is not a function", "src/broken.ts");
-        cb.recordToolCall("tg_code:edit", "ReferenceError: y is not defined", "src/broken.ts");
-        const result = cb.recordToolCall("tg_code:edit", "SyntaxError: unexpected token", "src/broken.ts");
+        cb.recordToolCall("nreki_code:edit", "TypeError: x is not a function", "src/broken.ts");
+        cb.recordToolCall("nreki_code:edit", "ReferenceError: y is not defined", "src/broken.ts");
+        const result = cb.recordToolCall("nreki_code:edit", "SyntaxError: unexpected token", "src/broken.ts");
 
         expect(result.tripped).toBe(true);
         expect(result.reason).toContain("src/broken.ts");
@@ -219,17 +219,17 @@ describe("CircuitBreaker — Per-File Failure Tracking", () => {
 
     it("does NOT trip if errors are on different files with different messages", () => {
         // Different files + different error messages avoids both Pattern 1 and Pattern 4
-        cb.recordToolCall("tg_code:edit", "TypeError: property x", "src/a.ts");
-        cb.recordToolCall("tg_code:edit", "ReferenceError: y undefined", "src/b.ts");
-        const result = cb.recordToolCall("tg_code:edit", "SyntaxError: unexpected", "src/c.ts");
+        cb.recordToolCall("nreki_code:edit", "TypeError: property x", "src/a.ts");
+        cb.recordToolCall("nreki_code:edit", "ReferenceError: y undefined", "src/b.ts");
+        const result = cb.recordToolCall("nreki_code:edit", "SyntaxError: unexpected", "src/c.ts");
 
         expect(result.tripped).toBe(false);
     });
 
     it("softReset clears tripped state and purges file history (amnesia total)", () => {
-        cb.recordToolCall("tg_code:edit", "TypeError: fail", "src/broken.ts");
-        cb.recordToolCall("tg_code:edit", "TypeError: fail", "src/broken.ts");
-        cb.recordToolCall("tg_code:edit", "TypeError: fail", "src/broken.ts");
+        cb.recordToolCall("nreki_code:edit", "TypeError: fail", "src/broken.ts");
+        cb.recordToolCall("nreki_code:edit", "TypeError: fail", "src/broken.ts");
+        cb.recordToolCall("nreki_code:edit", "TypeError: fail", "src/broken.ts");
 
         expect(cb.getState().tripped).toBe(true);
 
@@ -244,8 +244,8 @@ describe("CircuitBreaker — Per-File Failure Tracking", () => {
     });
 
     it("full reset clears everything including per-file counters", () => {
-        cb.recordToolCall("tg_code:edit", "TypeError: fail", "src/broken.ts");
-        cb.recordToolCall("tg_code:edit", "TypeError: fail", "src/broken.ts");
+        cb.recordToolCall("nreki_code:edit", "TypeError: fail", "src/broken.ts");
+        cb.recordToolCall("nreki_code:edit", "TypeError: fail", "src/broken.ts");
 
         cb.reset();
 
@@ -255,7 +255,7 @@ describe("CircuitBreaker — Per-File Failure Tracking", () => {
     });
 });
 
-describe("CircuitBreaker Middleware — Bypass Prevention", () => {
+describe("CircuitBreaker Middleware - Bypass Prevention", () => {
     let cb: CircuitBreaker;
 
     beforeEach(() => {
@@ -274,11 +274,11 @@ describe("CircuitBreaker Middleware — Bypass Prevention", () => {
         });
 
         // Alternate: edit fails, read succeeds, edit fails, read succeeds, edit fails
-        await wrapWithCircuitBreaker(cb, "tg_code", "edit", editErrorHandler, "src/target.ts");
-        await wrapWithCircuitBreaker(cb, "tg_code", "read", readSuccessHandler, "src/other.ts");
-        await wrapWithCircuitBreaker(cb, "tg_code", "edit", editErrorHandler, "src/target.ts");
-        await wrapWithCircuitBreaker(cb, "tg_code", "read", readSuccessHandler, "src/other.ts");
-        const result = await wrapWithCircuitBreaker(cb, "tg_code", "edit", editErrorHandler, "src/target.ts");
+        await wrapWithCircuitBreaker(cb, "nreki_code", "edit", editErrorHandler, "src/target.ts");
+        await wrapWithCircuitBreaker(cb, "nreki_code", "read", readSuccessHandler, "src/other.ts");
+        await wrapWithCircuitBreaker(cb, "nreki_code", "edit", editErrorHandler, "src/target.ts");
+        await wrapWithCircuitBreaker(cb, "nreki_code", "read", readSuccessHandler, "src/other.ts");
+        const result = await wrapWithCircuitBreaker(cb, "nreki_code", "edit", editErrorHandler, "src/target.ts");
 
         // Per-file tracking should catch this even though the global pattern alternates
         expect(result.isError).toBe(true);
@@ -292,8 +292,8 @@ describe("CircuitBreaker Middleware — Bypass Prevention", () => {
         });
 
         // Build up per-file failures
-        await wrapWithCircuitBreaker(cb, "tg_code", "edit", editErrorHandler, "src/target.ts");
-        await wrapWithCircuitBreaker(cb, "tg_code", "edit", editErrorHandler, "src/target.ts");
+        await wrapWithCircuitBreaker(cb, "nreki_code", "edit", editErrorHandler, "src/target.ts");
+        await wrapWithCircuitBreaker(cb, "nreki_code", "edit", editErrorHandler, "src/target.ts");
 
         // Per-file counter should be 2
         const normTarget = path.resolve(process.cwd(), "src/target.ts").replace(/\\/g, "/");
@@ -303,7 +303,7 @@ describe("CircuitBreaker Middleware — Bypass Prevention", () => {
         const searchHandler = async (): Promise<McpToolResponse> => ({
             content: [{ type: "text", text: "Search results..." }],
         });
-        await wrapWithCircuitBreaker(cb, "tg_navigate", "search", searchHandler);
+        await wrapWithCircuitBreaker(cb, "nreki_navigate", "search", searchHandler);
 
         // Per-file counter should be preserved (soft reset doesn't clear it)
         expect(cb.getState().perFileFailures.get(normTarget)).toBe(2);
@@ -313,14 +313,19 @@ describe("CircuitBreaker Middleware — Bypass Prevention", () => {
 // ─── Fix 3C: Terminal → filter_output Rename ────────────────────────
 
 describe("Terminal → filter_output Rename", () => {
-    // Covered by router.test.ts and backward-compat.test.ts
-    // Additional coverage here for action enum correctness
+    it("dispatching 'terminal' returns an error with the rename hint", async () => {
+        const { handleCode } = await import("../src/router.js");
+        const deps = {
+            engine: { initialize: vi.fn() },
+            monitor: {},
+            sandbox: {},
+            circuitBreaker: new CircuitBreaker(),
+        } as any;
 
-    it("filter_output is in valid action list for tg_code", async () => {
-        // This is a compile-time check — the Zod schema in index.ts
-        // accepts "filter_output" and rejects "terminal"
-        // Runtime behavior tested in router.test.ts
-        expect(true).toBe(true);
+        const result = await handleCode("terminal", { action: "terminal" }, deps);
+        expect(result.isError).toBe(true);
+        expect(result.content[0].text).toContain("filter_output");
+        expect(result.content[0].text).toContain("renamed");
     });
 });
 
@@ -392,8 +397,13 @@ describe("Pin Sanitization", () => {
         }
     });
 
-    it("blocks backtick execution", () => {
-        const result = sanitizePin("Set variable to `whoami` output");
+    it("allows simple backtick-quoted code references (A-07)", () => {
+        const result = sanitizePin("always use `fetchUser` not `getUser`");
+        expect(result.valid).toBe(true);
+    });
+
+    it("blocks backtick command substitution with ${}", () => {
+        const result = sanitizePin("Run `${CMD}` for output");
         expect(result.valid).toBe(false);
         if (!result.valid) {
             expect(result.reason).toContain("backtick");

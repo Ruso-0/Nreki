@@ -1,5 +1,5 @@
 /**
- * terminal-filter.test.ts — Tests for terminal entropy filter.
+ * terminal-filter.test.ts - Tests for terminal entropy filter.
  *
  * Covers:
  * - ANSI code stripping
@@ -174,7 +174,7 @@ describe("extractErrorSummary", () => {
         const text = [
             "npm ERR! code ELIFECYCLE",
             "npm ERR! errno 1",
-            "npm ERR! tokenguard@1.0.0 test: vitest run",
+            "npm ERR! nreki@1.0.0 test: vitest run",
         ].join("\n");
 
         const summary = extractErrorSummary(text);
@@ -233,7 +233,7 @@ describe("normalization-based deduplication", () => {
             "  at handler (node_modules/express/lib/router.js:30)",
         ].join("\n");
         const result = filterTerminalOutput(input);
-        // node_modules lines get normalized — only 1 unique after dedup
+        // node_modules lines get normalized - only 1 unique after dedup
         // (then node_modules filter collapses them further)
         const lines = result.filtered_text.split("\n").filter(l => l.trim().length > 0);
         expect(lines.length).toBeLessThanOrEqual(2);
@@ -250,11 +250,11 @@ describe("normalization-based deduplication", () => {
 
     it("preserves user source lines with different line numbers", () => {
         const input = [
-            "  Error in src/auth.ts:10:5 — missing semicolon",
-            "  Error in src/auth.ts:45:3 — unexpected token",
+            "  Error in src/auth.ts:10:5 - missing semicolon",
+            "  Error in src/auth.ts:45:3 - unexpected token",
         ].join("\n");
         const result = filterTerminalOutput(input);
-        // User source lines should NOT be collapsed — they are different errors
+        // User source lines should NOT be collapsed - they are different errors
         expect(result.filtered_text.split("\n").length).toBe(2);
         expect(result.filtered_text).toContain("src/auth.ts:10:5");
         expect(result.filtered_text).toContain("src/auth.ts:45:3");

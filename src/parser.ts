@@ -1,12 +1,12 @@
 /**
- * parser.ts — Universal AST parser for TokenGuard.
+ * parser.ts - Universal AST parser for NREKI.
  *
  * Wraps web-tree-sitter to parse TypeScript, JavaScript, Python, and Go
  * source files into semantic chunks. Each chunk is an AST node (class,
  * function, method, interface) compressed into shorthand notation.
  *
  * Shorthand format: `[type] signature { /* TG:L42-L67 *​/ }`
- * This preserves structure while stripping implementation — ~18% savings.
+ * This preserves structure while stripping implementation - ~18% savings.
  */
 
 import Parser from "web-tree-sitter";
@@ -135,6 +135,7 @@ const LANGUAGE_CONFIGS: Record<string, LanguageConfig> = {
 export class ASTParser {
     private parser!: Parser;
     private languageCache = new Map<string, Parser.Language>();
+    private languagePromises = new Map<string, Promise<Parser.Language | null>>();
     private queryCache = new Map<string, Parser.Query>();
     private wasmDir: string;
     private initialized = false;
@@ -165,26 +166,38 @@ export class ASTParser {
         return Object.keys(LANGUAGE_CONFIGS);
     }
 
-    /** Load a Tree-sitter language grammar from WASM. */
+    /** Load a Tree-sitter language grammar from WASM. A-08: Deduplicates concurrent loads. */
     private async loadLanguage(ext: string): Promise<Parser.Language | null> {
         if (this.languageCache.has(ext)) {
             return this.languageCache.get(ext)!;
         }
 
+        // A-08: Return in-flight promise if another caller is already loading this language
+        if (this.languagePromises.has(ext)) {
+            return this.languagePromises.get(ext)!;
+        }
+
         const config = LANGUAGE_CONFIGS[ext];
         if (!config) return null;
 
-        try {
-            const wasmPath = path.join(this.wasmDir, config.wasmFile);
-            const language = await Parser.Language.load(wasmPath);
-            this.languageCache.set(ext, language);
-            return language;
-        } catch (err) {
-            console.error(
-                `[TokenGuard] Failed to load grammar for ${ext}: ${(err as Error).message}`
-            );
-            return null;
-        }
+        const promise = (async (): Promise<Parser.Language | null> => {
+            try {
+                const wasmPath = path.join(this.wasmDir, config.wasmFile);
+                const language = await Parser.Language.load(wasmPath);
+                this.languageCache.set(ext, language);
+                return language;
+            } catch (err) {
+                console.error(
+                    `[NREKI] Failed to load grammar for ${ext}: ${(err as Error).message}`
+                );
+                return null;
+            } finally {
+                this.languagePromises.delete(ext);
+            }
+        })();
+
+        this.languagePromises.set(ext, promise);
+        return promise;
     }
 
     /** Get or create a Tree-sitter query for a language. */
@@ -202,7 +215,7 @@ export class ASTParser {
             return query;
         } catch (err) {
             console.error(
-                `[TokenGuard] Failed to create query for ${ext}: ${(err as Error).message}`
+                `[NREKI] Failed to create query for ${ext}: ${(err as Error).message}`
             );
             return null;
         }
@@ -346,29 +359,31 @@ export class ASTParser {
         // Find the signature boundary
         let signatureEnd = 0;
         let braceDepth = 0;
-        let colonDepth = 0;
+        let angleDepth = 0;
 
         for (let i = 0; i < rawCode.length; i++) {
             const char = rawCode[i];
             if (char === "(") braceDepth++;
             if (char === ")") braceDepth--;
-            if (char === "<") colonDepth++;
-            if (char === ">") colonDepth--;
+            if (char === "<") angleDepth++;
+            if (char === ">") angleDepth--;
 
-            // Signature ends at the first `{` at depth 0
-            if (char === "{" && braceDepth === 0 && colonDepth === 0) {
+            // Signature ends at the first `{` at depth 0 (JS/TS/Go)
+            // or first `:` at depth 0 for Python (A-02: skip colons inside parens)
+            if (char === "{" && braceDepth === 0 && angleDepth === 0) {
                 signatureEnd = i;
                 break;
+            }
+            if (char === ":" && braceDepth === 0 && angleDepth === 0) {
+                // Python def/class colon - only match if this looks like Python
+                if (/^(?:async\s+)?def\s|^class\s/.test(rawCode)) {
+                    const signature = rawCode.slice(0, i + 1).trim();
+                    return `[${nodeType}] ${signature} # TG:L${startLine}-L${endLine}`;
+                }
             }
         }
 
         if (signatureEnd === 0) {
-            // Python-style: find the colon after `def` or `class`
-            const colonIdx = rawCode.indexOf(":");
-            if (colonIdx > 0) {
-                const signature = rawCode.slice(0, colonIdx + 1).trim();
-                return `[${nodeType}] ${signature} # TG:L${startLine}-L${endLine}`;
-            }
             // Fallback: keep first line
             return `[${nodeType}] ${lines[0].trim()} /* TG:L${startLine}-L${endLine} */`;
         }

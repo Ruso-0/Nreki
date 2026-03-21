@@ -1,6 +1,6 @@
 ---
 name: Feature Request
-about: Suggest an idea for TokenGuard
+about: Suggest an idea for NREKI
 title: "[FEATURE] "
 labels: enhancement
 assignees: ''

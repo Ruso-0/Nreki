@@ -4,10 +4,10 @@ node_modules/
 # Build output
 dist/
 
-# TokenGuard runtime data
-.tokenguard.db
-.tokenguard.db-journal
-.tokenguard.db-wal
+# NREKI runtime data
+.nreki.db
+.nreki.db-journal
+.nreki.db-wal
 
 # WASM binaries (downloaded at build time)
 wasm/*.wasm
@@ -35,9 +35,21 @@ coverage/
 npm-debug.log*
 
 # Benchmark & test artifacts
-.tokenguard-bench*
+.nreki-bench*
+.tokenguard-bench.vec
+.tokenguard-bench2.vec
 test-results-sicaep.json
 scripts/bench-compress.ts
+AUDIT_PACKAGE.md
+hologram-benchmark.mjs
+hologram-lazy-benchmark.mjs
+hologram-scanner.mjs
+nreki-vscode-benchmark.md
+repomix-output.txt
+prisma-test/
+
+# NREKI runtime directory
+.nreki/
 
 # TokenGuard runtime directory
 .tokenguard/

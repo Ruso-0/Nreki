@@ -1,5 +1,5 @@
 /**
- * engine.test.ts — Unit tests for the TokenGuard engine.
+ * engine.test.ts - Unit tests for the NREKI engine.
  *
  * Tests cover:
  * - Database schema setup and CRUD operations (async init for sql.js)
@@ -61,9 +61,9 @@ export function createMiddleware(service: AuthService) {
 
 // ─── Database Tests ──────────────────────────────────────────────────
 
-describe("TokenGuardDB", () => {
+describe("NrekiDB", () => {
     let db: TokenGuardDB;
-    const testDbPath = path.join(os.tmpdir(), `tokenguard-test-${Date.now()}.db`);
+    const testDbPath = path.join(os.tmpdir(), `nreki-test-${Date.now()}.db`);
 
     beforeAll(async () => {
         db = new TokenGuardDB(testDbPath);
@@ -166,12 +166,12 @@ describe("TokenGuardDB", () => {
         const embedding = new Float32Array(512).fill(0.4);
         db.insertChunk("/test/clearme.ts", "[func] temp()", "function temp() {}", "func", 1, 1, embedding);
         db.clearChunks("/test/clearme.ts");
-        // Cannot directly verify deletion without querying — but no error means success
+        // Cannot directly verify deletion without querying - but no error means success
     });
 
     it("should log and retrieve usage stats", () => {
-        db.logUsage("tg_search", 100, 200, 500);
-        db.logUsage("tg_compress", 50, 100, 300);
+        db.logUsage("nreki_search", 100, 200, 500);
+        db.logUsage("nreki_compress", 50, 100, 300);
 
         const stats = db.getUsageStats();
         expect(stats.total_saved).toBeGreaterThanOrEqual(800);
@@ -199,7 +199,7 @@ describe("TokenGuardDB", () => {
         db.insertChunk("/test/dim.ts", "[fn] dimTest()", "function dimTest() {}", "func", 1, 1, emb);
         expect(db.getVectorCount()).toBeGreaterThan(0);
 
-        // Check with different dimension — should clear
+        // Check with different dimension - should clear
         const needsReindex = db.checkEmbeddingDimension(384);
         expect(needsReindex).toBe(true);
         expect(db.getVectorCount()).toBe(0);
@@ -291,7 +291,7 @@ describe("TokenMonitor", () => {
 
     it("should generate a formatted report", () => {
         const report = monitor.generateReport();
-        expect(report).toContain("TokenGuard");
+        expect(report).toContain("NREKI");
         expect(report).toContain("Burn Rate");
         expect(report).toContain("Total Used");
     });
@@ -340,7 +340,7 @@ describe("PreToolUseHook", () => {
         expect(result.shouldIntercept).toBe(true);
         expect(result.wastedTokens).toBeGreaterThan(0);
         expect(result.savingsPercent).toBeGreaterThan(0);
-        expect(result.suggestion).toContain("TokenGuard Advice");
+        expect(result.suggestion).toContain("NREKI Advice");
 
         fs.unlinkSync(tempFile);
     });
@@ -350,7 +350,7 @@ describe("PreToolUseHook", () => {
 
 describe("Porter Stemmer (via KeywordIndex)", () => {
     let db: TokenGuardDB;
-    const stemDbPath = path.join(os.tmpdir(), `tokenguard-stem-test-${Date.now()}.db`);
+    const stemDbPath = path.join(os.tmpdir(), `nreki-stem-test-${Date.now()}.db`);
 
     beforeAll(async () => {
         db = new TokenGuardDB(stemDbPath);

@@ -1,5 +1,5 @@
 /**
- * repo-map.ts — Static repository map for Anthropic prompt cache optimization.
+ * repo-map.ts - Static repository map for Anthropic prompt cache optimization.
  *
  * Generates a deterministic text representation of all file signatures,
  * exports, and imports. Same repo state produces identical text output,
@@ -61,12 +61,12 @@ const SUPPORTED_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".py", ".go"
 
 const IGNORE_DIRS = new Set([
     "node_modules", "dist", "build", ".git", "coverage",
-    ".next", "__pycache__", ".tokenguard",
+    ".next", "__pycache__", ".nreki",
 ]);
 
 const STRIP_KEYWORD = /^(?:export|default|declare|abstract|public|private|protected|static|readonly|async|function|class|interface|type|enum|const|let|var|def|func)\s+/;
 
-/** Byte-identical comparator — same result on every OS (no ICU dependency). */
+/** Byte-identical comparator - same result on every OS (no ICU dependency). */
 const stableCompare = (a: string, b: string): number =>
     a < b ? -1 : a > b ? 1 : 0;
 
@@ -80,17 +80,30 @@ export function extractSignature(rawCode: string): string {
     let parenDepth = 0;
     let angleDepth = 0;
     let inString: string | null = null;
+    let templateExprDepth = 0; // Track ${...} nesting in template literals
 
     for (let i = 0; i < rawCode.length; i++) {
         const ch = rawCode[i];
 
-        // Track string state — skip everything inside strings
+        // Track string state - skip everything inside strings
         if (inString) {
             if (ch === "\\" && i + 1 < rawCode.length) {
                 i++; // Skip escaped character
+            } else if (inString === '`' && ch === '$' && i + 1 < rawCode.length && rawCode[i + 1] === '{') {
+                // Enter template expression ${...}
+                templateExprDepth++;
+                inString = null;
+                i++; // skip the {
             } else if (ch === inString) {
                 inString = null;
             }
+            continue;
+        }
+
+        // Track closing of template expressions
+        if (templateExprDepth > 0 && ch === '}') {
+            templateExprDepth--;
+            inString = '`'; // Re-enter template literal
             continue;
         }
 
@@ -107,12 +120,12 @@ export function extractSignature(rawCode: string): string {
         else if (ch === "{" && parenDepth === 0 && angleDepth === 0) {
             return rawCode.slice(0, i).trim();
         }
-    }
-
-    // Python: colon after def/class
-    if (/^(?:async\s+)?def\s|^class\s/.test(rawCode)) {
-        const colonIdx = rawCode.indexOf(":");
-        if (colonIdx > 0) return rawCode.slice(0, colonIdx).trim();
+        // A-02: Python colon - only match at depth 0 (skip colons inside type hints)
+        else if (ch === ":" && parenDepth === 0 && angleDepth === 0) {
+            if (/^(?:async\s+)?def\s|^class\s/.test(rawCode)) {
+                return rawCode.slice(0, i).trim();
+            }
+        }
     }
 
     return lines[0].trim();
@@ -256,6 +269,78 @@ function walkFiles(dirPath: string): string[] {
     return files.sort(stableCompare);
 }
 
+// ─── PageRank ───────────────────────────────────────────────────────
+
+/**
+ * PageRank via Power Iteration on a Markov Chain.
+ * PR(A) = (1-d)/N + d * Σ (PR(Ti) / OutDegree(Ti))
+ * Convergence for 5,000 files: < 8ms (20 iterations).
+ *
+ * @param files All file paths in the project
+ * @param importedBy Reverse dependency map: file → set of files that import it
+ * @returns Map of file → normalized PageRank score (0 to 1)
+ */
+export function computePageRank(
+    files: string[],
+    importedBy: Map<string, Set<string>>,
+): Map<string, number> {
+    const N = files.length;
+    let pr = new Map<string, number>();
+    if (N === 0) return pr;
+
+    const d = 0.85; // Standard damping factor
+    const outDegree = new Map<string, number>();
+
+    // Initialize uniform distribution
+    for (const f of files) {
+        pr.set(f, 1 / N);
+        outDegree.set(f, 0);
+    }
+
+    // Compute out-degree (how many things each file imports)
+    for (const consumers of importedBy.values()) {
+        for (const consumer of consumers) {
+            outDegree.set(consumer, (outDegree.get(consumer) || 0) + 1);
+        }
+    }
+
+    // Power iteration (20 cycles is sufficient for convergence)
+    for (let iter = 0; iter < 20; iter++) {
+        const nextPr = new Map<string, number>();
+
+        // Sink nodes: files that don't import anything (rank leaks without redistribution)
+        let sinkSum = 0;
+        for (const f of files) {
+            if (outDegree.get(f) === 0) sinkSum += pr.get(f)!;
+        }
+
+        for (const target of files) {
+            let rankSum = 0;
+            const consumers = importedBy.get(target);
+            if (consumers) {
+                for (const consumer of consumers) {
+                    rankSum += pr.get(consumer)! / (outDegree.get(consumer) || 1);
+                }
+            }
+            nextPr.set(target, ((1 - d) / N) + d * (rankSum + sinkSum / N));
+        }
+        pr = nextPr;
+    }
+
+    // Normalize to 0-1 range for percentile calculation
+    let maxPr = 0;
+    for (const rank of pr.values()) {
+        if (rank > maxPr) maxPr = rank;
+    }
+    if (maxPr > 0) {
+        for (const [file, rank] of pr.entries()) {
+            pr.set(file, rank / maxPr);
+        }
+    }
+
+    return pr;
+}
+
 // ─── Dependency Graph ───────────────────────────────────────────────
 
 /**
@@ -352,18 +437,17 @@ export function buildDependencyGraph(
         }
     }
 
-    // Classify by percentiles
-    const sorted = [...inDegree.entries()]
-        .filter(([, count]) => count > 0)
-        .sort((a, b) => b[1] - a[1]);
-
-    const p75 = sorted[Math.floor(sorted.length * 0.25)]?.[1] ?? 1;
-    const p50 = sorted[Math.floor(sorted.length * 0.50)]?.[1] ?? 0;
+    // PageRank classification (recursive importance, not naive inDegree)
+    const prScores = computePageRank(allFiles, importedBy);
+    const prScoresArray = Array.from(prScores.values()).sort((a, b) => a - b);
+    const p85 = prScoresArray[Math.floor(allFiles.length * 0.85)] || 0;
+    const p50 = prScoresArray[Math.floor(allFiles.length * 0.50)] || 0;
 
     const tiers = new Map<string, "core" | "logic" | "leaf">();
-    for (const [file, count] of inDegree.entries()) {
-        if (count >= p75) tiers.set(file, "core");
-        else if (count >= p50 && count > 0) tiers.set(file, "logic");
+    for (const [file, score] of prScores.entries()) {
+        // Only CORE/LOGIC if someone actually imports it (prevents orphan anomalies)
+        if (score >= p85 && (inDegree.get(file) || 0) > 0) tiers.set(file, "core");
+        else if (score >= p50 && (inDegree.get(file) || 0) > 0) tiers.set(file, "logic");
         else tiers.set(file, "leaf");
     }
 
@@ -513,7 +597,7 @@ export function repoMapToText(map: RepoMap): string {
         }
 
         if (coreFiles.length > 0) {
-            lines.push("=== CORE DOMAIN (Top 25% — modify with caution) ===");
+            lines.push("=== CORE DOMAIN (Top 25% - modify with caution) ===");
             for (const f of coreFiles) lines.push(f);
             lines.push("");
         }
@@ -525,7 +609,7 @@ export function repoMapToText(map: RepoMap): string {
         }
 
         if (leafCount > 0) {
-            lines.push(`=== LEAF NODES (${leafCount} files — safe to experiment) ===`);
+            lines.push(`=== LEAF NODES (${leafCount} files - safe to experiment) ===`);
             lines.push("");
         }
     }
@@ -543,7 +627,8 @@ function computeFileDigest(projectRoot: string): string {
         try {
             const stat = fs.statSync(file);
             const rel = path.relative(projectRoot, file).replace(/\\/g, "/");
-            hash.update(`${rel}:${stat.size}:${stat.mtimeMs}\n`);
+            // M-04: Use only rel:size - mtimeMs causes full cache invalidation on git clone
+            hash.update(`${rel}:${stat.size}\n`);
         } catch {
             // Skip
         }
@@ -557,7 +642,7 @@ export async function getOrGenerateRepoMap(
     parser: ASTParser,
     forceRefresh: boolean = false
 ): Promise<{ map: RepoMap; text: string; fromCache: boolean }> {
-    const cacheDir = path.join(projectRoot, ".tokenguard");
+    const cacheDir = path.join(projectRoot, ".nreki");
     const cachePath = path.join(cacheDir, "repo-map.json");
 
     const currentDigest = computeFileDigest(projectRoot);

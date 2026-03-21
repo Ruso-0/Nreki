@@ -1,5 +1,5 @@
 /**
- * router.test.ts — Tests for the v3.0.1 router dispatcher.
+ * router.test.ts - Tests for the v3.0.1 router dispatcher.
  *
  * Covers:
  * - All 14 {tool, action} dispatch combinations
@@ -102,7 +102,7 @@ function createMockDeps(): RouterDependencies {
     };
 }
 
-// ─── tg_navigate dispatch ───────────────────────────────────────────
+// ─── nreki_navigate dispatch ───────────────────────────────────────────
 
 describe("handleNavigate", () => {
     let deps: RouterDependencies;
@@ -132,7 +132,7 @@ describe("handleNavigate", () => {
         ]);
         const result = await handleNavigate("search", { action: "search", query: "init" }, deps);
         expect(result.content[0].text).toContain("init");
-        expect(result.content[0].text).toContain("TokenGuard");
+        expect(result.content[0].text).toContain("NREKI");
     });
 
     it("dispatches 'definition' action correctly", async () => {
@@ -165,7 +165,7 @@ describe("handleNavigate", () => {
     it("returns error for invalid action", async () => {
         const result = await handleNavigate("invalid_action", { action: "invalid_action" }, deps);
         expect(result.isError).toBe(true);
-        expect(result.content[0].text).toContain("Unknown tg_navigate action");
+        expect(result.content[0].text).toContain("Unknown nreki_navigate action");
         expect(result.content[0].text).toContain("invalid_action");
     });
 
@@ -190,7 +190,7 @@ describe("handleNavigate", () => {
     });
 });
 
-// ─── tg_code dispatch ───────────────────────────────────────────────
+// ─── nreki_code dispatch ───────────────────────────────────────────────
 
 describe("handleCode", () => {
     let deps: RouterDependencies;
@@ -229,7 +229,7 @@ describe("handleCode", () => {
 
     it("dispatches 'undo' requires valid file", async () => {
         const result = await handleCode("undo", { action: "undo", path: "nonexistent.ts" }, deps);
-        expect(result.content[0].text).toContain("tg_undo");
+        expect(result.content[0].text).toContain("nreki_undo");
     });
 
     it("dispatches 'filter_output' requires output", async () => {
@@ -249,7 +249,7 @@ describe("handleCode", () => {
     it("returns error for invalid action", async () => {
         const result = await handleCode("deploy", { action: "deploy", path: "file.ts" }, deps);
         expect(result.isError).toBe(true);
-        expect(result.content[0].text).toContain("Unknown tg_code action");
+        expect(result.content[0].text).toContain("Unknown nreki_code action");
         expect(result.content[0].text).toContain("deploy");
     });
 
@@ -281,7 +281,7 @@ describe("handleCode", () => {
     });
 });
 
-// ─── tg_guard dispatch ──────────────────────────────────────────────
+// ─── nreki_guard dispatch ──────────────────────────────────────────────
 
 describe("handleGuard", () => {
     let deps: RouterDependencies;
@@ -321,7 +321,7 @@ describe("handleGuard", () => {
     it("returns error for invalid action", async () => {
         const result = await handleGuard("deploy", { action: "deploy" }, deps);
         expect(result.isError).toBe(true);
-        expect(result.content[0].text).toContain("Unknown tg_guard action");
+        expect(result.content[0].text).toContain("Unknown nreki_guard action");
     });
 
     it("lists valid actions in error message", async () => {

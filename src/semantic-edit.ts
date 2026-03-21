@@ -1,5 +1,5 @@
 /**
- * semantic-edit.ts — Zero-read surgical AST patching for TokenGuard.
+ * semantic-edit.ts - Zero-read surgical AST patching for NREKI.
  *
  * Replaces a single function/class/interface/type by name without
  * reading or rewriting the entire file. Finds the exact AST node,
@@ -35,6 +35,7 @@ export interface EditResult {
     syntaxValid: boolean;
     error?: string;
     oldRawCode?: string;
+    newContent?: string;
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────
@@ -161,8 +162,8 @@ export function applySemanticSplice(
         if (localOffset >= 0) {
             startIdx = windowStart + localOffset;
         } else {
-            // Last resort: global search (better than crashing)
-            startIdx = content.indexOf(rawCode);
+            // M-05: No global fallback - risk of matching wrong occurrence in large files
+            startIdx = -1;
         }
 
         if (startIdx < 0) {
@@ -237,6 +238,7 @@ export interface BatchEditResult {
     error?: string;
     /** Per-edit old raw code (for blast radius detection) */
     oldRawCodes?: Map<string, string>;
+    vfs?: Map<string, string>;
 }
 
 /**
@@ -248,6 +250,7 @@ export async function batchSemanticEdit(
     parser: ASTParser,
     sandbox: AstSandbox,
     projectRoot: string,
+    dryRun: boolean = false,
 ): Promise<BatchEditResult> {
     const { safePath } = await import("./utils/path-jail.js");
 
@@ -355,23 +358,29 @@ export async function batchSemanticEdit(
         const validation = await sandbox.validateCode(virtualContent, language);
         if (!validation.valid) {
             const errDetail = validation.errors.slice(0, 3).map(e =>
-                `  L${e.line}:${e.column} — ${e.context.split("\n")[0].trim()}`
+                `  L${e.line}:${e.column} - ${e.context.split("\n")[0].trim()}`
             ).join("\n");
 
             return {
                 success: false, editCount: edits.length, fileCount: editsByFile.size, files: [],
-                error: `TRANSACTION ABORTED — syntax error in ${path.relative(projectRoot, filePath)}:\n${errDetail}\n\n` +
+                error: `TRANSACTION ABORTED - syntax error in ${path.relative(projectRoot, filePath)}:\n${errDetail}\n\n` +
                     `No files were modified.\n${validation.suggestion}\nFix the code and resend the full batch.`,
             };
         }
     }
 
-    // 5. COMMIT: all passed validation → write to disk
+    // 5. COMMIT: all passed validation → write to disk (if not dry run)
     const writtenFiles: string[] = [];
-    for (const [filePath, virtualContent] of vfs.entries()) {
-        try { saveBackup(projectRoot, filePath); } catch { /* non-fatal */ }
-        fs.writeFileSync(filePath, virtualContent, "utf-8");
-        writtenFiles.push(path.relative(projectRoot, filePath));
+    if (!dryRun) {
+        for (const [filePath, virtualContent] of vfs.entries()) {
+            try { saveBackup(projectRoot, filePath); } catch { /* non-fatal */ }
+            fs.writeFileSync(filePath, virtualContent, "utf-8");
+            writtenFiles.push(path.relative(projectRoot, filePath));
+        }
+    } else {
+        for (const filePath of vfs.keys()) {
+            writtenFiles.push(path.relative(projectRoot, filePath));
+        }
     }
 
     return {
@@ -380,6 +389,7 @@ export async function batchSemanticEdit(
         fileCount: editsByFile.size,
         files: writtenFiles,
         oldRawCodes,
+        vfs,
     };
 }
 
@@ -402,6 +412,7 @@ export async function semanticEdit(
     parser: ASTParser,
     sandbox: AstSandbox,
     mode: EditMode = "replace",
+    dryRun: boolean = false,
 ): Promise<EditResult> {
     // Read file
     let content: string;
@@ -470,7 +481,7 @@ export async function semanticEdit(
             };
         }
 
-        // BONUS: JIT Heuristic — guess the intended symbol by comparing tokens
+        // BONUS: JIT Heuristic - guess the intended symbol by comparing tokens
         const codeTokens = new Set(newCode.match(/[a-zA-Z_]\w*/g) || []);
         let bestChunk: ParsedChunk | null = null;
         let bestScore = 0;
@@ -498,7 +509,7 @@ export async function semanticEdit(
                 tokensAvoided: 0,
                 syntaxValid: false,
                 error:
-                    `Symbol "${symbolName}" not found. TokenGuard detected you likely meant to edit \`${guessedName}\`.\n` +
+                    `Symbol "${symbolName}" not found. NREKI detected you likely meant to edit \`${guessedName}\`.\n` +
                     `Please retry using: symbol:"${guessedName}"`,
             };
         }
@@ -530,7 +541,7 @@ export async function semanticEdit(
             syntaxValid: false,
             error:
                 `Multiple symbols named "${symbolName}" found at: ${locs}. ` +
-                `Use tg_def to identify the correct one.`,
+                `Use nreki_navigate action:"definition" to identify the correct one.`,
         };
     }
 
@@ -604,22 +615,22 @@ export async function semanticEdit(
             tokensAvoided: 0,
             syntaxValid: false,
             error:
-                `Syntax error in edited code — file NOT modified:\n${errDetails}\n\n${validation.suggestion}`,
+                `Syntax error in edited code - file NOT modified:\n${errDetails}\n\n${validation.suggestion}`,
         };
     }
 
-    // Save backup before writing (enables tg_undo)
-    try {
-        saveBackup(process.cwd(), filePath);
-    } catch {
-        // Non-fatal: don't block the edit if backup fails
+    // Save backup and write to disk ONLY if not dry run
+    if (!dryRun) {
+        try {
+            saveBackup(process.cwd(), filePath);
+        } catch {
+            // Non-fatal: don't block the edit if backup fails
+        }
+        fs.writeFileSync(filePath, newContent, "utf-8");
     }
 
-    // Write to disk
-    fs.writeFileSync(filePath, newContent, "utf-8");
-
-    // Tokens avoided: without TokenGuard Claude reads full file + sends old symbol code.
-    // With TokenGuard: only sends newCode. Savings = (fullFile + oldSymbol) - newCode.
+    // Tokens avoided: without NREKI Claude reads full file + sends old symbol code.
+    // With NREKI: only sends newCode. Savings = (fullFile + oldSymbol) - newCode.
     const fullFileTokens = Embedder.estimateTokens(content);
     const symbolTokens = Embedder.estimateTokens(rawCode);
     const newCodeTokens = Embedder.estimateTokens(newCode);
@@ -634,5 +645,6 @@ export async function semanticEdit(
         tokensAvoided,
         syntaxValid: true,
         oldRawCode: rawCode,
+        newContent,
     };
 }

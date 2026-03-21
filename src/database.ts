@@ -1,5 +1,5 @@
 /**
- * database.ts — SQLite persistence layer for TokenGuard.
+ * database.ts - SQLite persistence layer for NREKI.
  *
  * Uses sql.js (SQLite compiled to WASM) for zero-native-dependency
  * operation. Vector search AND keyword search are both implemented
@@ -9,7 +9,7 @@
  * - KeywordIndex: inverted index with Porter-inspired BM25 scoring
  *
  * This eliminates the need for FTS5, sqlite-vec, better-sqlite3,
- * node-gyp, and Visual Studio Build Tools — making TokenGuard
+ * node-gyp, and Visual Studio Build Tools - making NREKI
  * portable to any platform without native compilation.
  */
 
@@ -126,6 +126,12 @@ class VectorIndex {
         return this.vectors.size;
     }
 
+    /**
+     * Serialize the vector index to a binary buffer.
+     * Format: [count:u32] + ([rowid:u32][vec:f32×dim])×count
+     * Note: rowid uses UInt32 - max 4,294,967,295. Sufficient for practical
+     * codebases (would require billions of INSERT/DELETE cycles to overflow).
+     */
     serialize(): Buffer {
         const entries = Array.from(this.vectors.entries());
         const header = Buffer.alloc(4);
@@ -171,6 +177,7 @@ class VectorIndex {
  */
 class PorterStemmer {
     private static isConsonant(word: string, i: number): boolean {
+        if (i < 0 || i >= word.length) return false;
         const c = word[i];
         if (/[aeiou]/.test(c)) return false;
         if (c === "y") return i === 0 || !PorterStemmer.isConsonant(word, i - 1);
@@ -220,7 +227,7 @@ class PorterStemmer {
     }
 
     static stem(word: string): string {
-        if (word.length <= 2) return word;
+        if (!word || word.length <= 2) return word || "";
         let w = word.toLowerCase();
 
         // Step 1a: Plurals
@@ -330,13 +337,13 @@ class PorterStemmer {
 
 /**
  * Pure JavaScript inverted index for BM25-style keyword search.
- * Replaces FTS5 entirely — no native extensions needed.
+ * Replaces FTS5 entirely - no native extensions needed.
  *
  * Tokenization: lowercases, splits on non-alphanumeric chars,
  * filters stopwords, applies basic stemming (suffix removal).
  */
 class KeywordIndex {
-    /** Map from term → Map<rowid, TF> — unified inverted index + term frequency */
+    /** Map from term → Map<rowid, TF> - unified inverted index + term frequency */
     private invertedIndex = new Map<string, Map<number, number>>();
     /** Map from bigram → Set of document rowids (for phrase search) */
     private bigramIndex = new Map<string, Set<number>>();
@@ -386,7 +393,7 @@ class KeywordIndex {
     }
 
     /**
-     * Porter stemmer — full implementation of the Porter stemming algorithm.
+     * Porter stemmer - full implementation of the Porter stemming algorithm.
      * 5 steps with consonant-vowel pattern analysis for accurate English stemming.
      */
     private stem(word: string): string {
@@ -504,7 +511,7 @@ class KeywordIndex {
                 (this.docCount - df + 0.5) / (df + 0.5) + 1
             );
 
-            // TF read directly from inverted index — O(1)
+            // TF read directly from inverted index - O(1)
             for (const [rowid, tf] of docMap) {
                 const docLen = this.docTerms.get(rowid)!.length;
 
@@ -541,7 +548,7 @@ class KeywordIndex {
 
 // ─── Database Manager ────────────────────────────────────────────────
 
-export class TokenGuardDB {
+export class NrekiDB {
     private db!: SqlJsDatabase;
     private vecIndex = new VectorIndex();
     private kwIndex = new KeywordIndex();
@@ -550,12 +557,12 @@ export class TokenGuardDB {
     private initPromise: Promise<void> | null = null;
     private _ready = false;
 
-    constructor(dbPath: string = ".tokenguard.db") {
+    constructor(dbPath: string = ".nreki.db") {
         this.dbPath = dbPath;
         this.vecPath = dbPath.replace(/\.db$/, ".vec");
     }
 
-    /** Async initialization — must be called before any DB operation. */
+    /** Async initialization - must be called before any DB operation. */
     async initialize(): Promise<void> {
         if (this._ready) return;
         if (!this.initPromise) {
@@ -694,8 +701,8 @@ export class TokenGuardDB {
         const storedDim = this.getMetadata("embedding_dim");
 
         if (storedDim && parseInt(storedDim, 10) !== activeDim) {
-            console.warn(
-                `[TokenGuard] Embedding dimension changed (${storedDim} -> ${activeDim}). Clearing index.`
+            console.error(
+                `[NREKI] Embedding dimension changed (${storedDim} -> ${activeDim}). Clearing index.`
             );
             // Clear all vectors
             this.vecIndex = new VectorIndex();
@@ -800,7 +807,10 @@ export class TokenGuardDB {
         const rowid = (this.db.exec("SELECT last_insert_rowid() AS id")[0]
             .values[0][0] as number);
 
-        this.vecIndex.insert(rowid, embedding);
+        // A-04: Only insert non-empty vectors (Lite mode uses Float32Array(0))
+        if (embedding.length > 0) {
+            this.vecIndex.insert(rowid, embedding);
+        }
         this.kwIndex.insert(rowid, shorthand);
         return rowid;
     }
@@ -924,12 +934,12 @@ export class TokenGuardDB {
         queryText: string,
         limit: number = 10
     ): HybridSearchResult[] {
-        // 1. Vector search — top 60 by cosine similarity
+        // 1. Vector search - top 60 by cosine similarity
         const vecResults = this.vecIndex.search(queryEmbedding, 60);
         const vecRanks = new Map<number, number>();
         vecResults.forEach((r, i) => vecRanks.set(r.rowid, i + 1));
 
-        // 2. BM25 keyword search — top 60 by term relevance
+        // 2. BM25 keyword search - top 60 by term relevance
         const kwResults = this.kwIndex.search(queryText, 60);
         const kwRanks = new Map<number, number>();
         kwResults.forEach((r, i) => kwRanks.set(r.rowid, i + 1));
@@ -978,7 +988,7 @@ export class TokenGuardDB {
     }
 
     /**
-     * Keyword-only search using BM25 (for Lite mode — no embeddings needed).
+     * Keyword-only search using BM25 (for Lite mode - no embeddings needed).
      * Uses the in-memory KeywordIndex with path boosting.
      */
     searchKeywordOnly(
@@ -1139,7 +1149,7 @@ export class TokenGuardDB {
 
     /**
      * Find the heaviest files by total raw code size.
-     * Zero disk I/O — queries indexed data in SQLite.
+     * Zero disk I/O - queries indexed data in SQLite.
      */
     getTopHeavyFiles(limit: number = 5): Array<{ path: string; estimated_tokens: number }> {
         if (!this._ready) return [];
@@ -1217,10 +1227,12 @@ export class TokenGuardDB {
      */
     searchRawCode(symbolName: string): string[] {
         if (!this._ready) return [];
+        // C-04 + A-07: Escape backslashes first, then LIKE wildcards
+        const escaped = symbolName.replace(/\\/g, '\\\\').replace(/[%_]/g, '\\$&');
         const stmt = this.db.prepare(
-            `SELECT DISTINCT path FROM chunks WHERE raw_code LIKE ?`
+            `SELECT DISTINCT path FROM chunks WHERE raw_code LIKE ? ESCAPE '\\'`
         );
-        stmt.bind([`%${symbolName}%`]);
+        stmt.bind([`%${escaped}%`]);
         const paths: string[] = [];
         while (stmt.step()) {
             paths.push(stmt.getAsObject().path as string);
@@ -1237,3 +1249,6 @@ export class TokenGuardDB {
 
 // Re-export for testing
 export { fastSimilarity };
+
+// Backward-compat alias
+export { NrekiDB as TokenGuardDB };

@@ -1,6 +1,6 @@
-# Contributing to TokenGuard
+# Contributing to NREKI
 
-Thank you for your interest in contributing to TokenGuard! This guide will help you get started.
+Thank you for your interest in contributing to NREKI! This guide will help you get started.
 
 ## Development Setup
 
@@ -10,8 +10,8 @@ Thank you for your interest in contributing to TokenGuard! This guide will help 
 
 ### Setup
 ```bash
-git clone https://github.com/YOUR_USERNAME/TokenGuard.git
-cd TokenGuard
+git clone https://github.com/Ruso-0/nreki.git
+cd nreki
 npm ci
 ```
 

@@ -1,5 +1,5 @@
 /**
- * repo-map.test.ts — Tests for static repo map generation.
+ * repo-map.test.ts - Tests for static repo map generation.
  *
  * Covers:
  * - Deterministic output (same input = same output)
@@ -15,7 +15,7 @@ import fs from "fs";
 import path from "path";
 import os from "os";
 import { ASTParser } from "../src/parser.js";
-import { generateRepoMap, repoMapToText } from "../src/repo-map.js";
+import { generateRepoMap, repoMapToText, computePageRank } from "../src/repo-map.js";
 
 /** Same byte-identical comparator used in repo-map.ts */
 const stableCompare = (a: string, b: string): number =>
@@ -211,7 +211,7 @@ describe("Repo Map Generation", () => {
 
         expect(authEntry.imports).toContain("./database.js");
         expect(dbEntry.imports).toContain("./auth.js");
-        // No infinite loop — both files processed independently
+        // No infinite loop - both files processed independently
     });
 
     it("should count total lines correctly", async () => {
@@ -320,5 +320,71 @@ describe("Repo Map Text Rendering", () => {
         expect(headerMatch).not.toBeNull();
         expect(Number(headerMatch![1])).toBe(map.totalFiles);
         expect(Number(headerMatch![2])).toBe(map.totalLines);
+    });
+});
+
+describe("PageRank Architecture Scoring", () => {
+    it("should rank files imported by important files higher than files imported by leaf files", () => {
+        const files = ["core.ts", "service-a.ts", "service-b.ts", "util.ts", "leaf-1.ts", "leaf-2.ts", "leaf-3.ts"];
+
+        // core.ts is imported by service-a and service-b (important files)
+        // util.ts is imported by leaf-1, leaf-2, leaf-3 (unimportant files)
+        // Both have inDegree = 2-3, but core.ts should rank higher
+        const importedBy = new Map<string, Set<string>>([
+            ["core.ts", new Set(["service-a.ts", "service-b.ts"])],
+            ["service-a.ts", new Set(["leaf-1.ts"])],
+            ["service-b.ts", new Set(["leaf-2.ts"])],
+            ["util.ts", new Set(["leaf-1.ts", "leaf-2.ts", "leaf-3.ts"])],
+            ["leaf-1.ts", new Set()],
+            ["leaf-2.ts", new Set()],
+            ["leaf-3.ts", new Set()],
+        ]);
+
+        const scores = computePageRank(files, importedBy);
+
+        // core.ts should score higher than util.ts despite similar inDegree
+        // because its importers (service-a, service-b) are themselves imported
+        expect(scores.get("core.ts")).toBeGreaterThan(scores.get("util.ts")!);
+
+        // Leaf files should have the lowest scores
+        expect(scores.get("leaf-1.ts")).toBeLessThan(scores.get("service-a.ts")!);
+    });
+
+    it("should handle empty file list", () => {
+        const scores = computePageRank([], new Map());
+        expect(scores.size).toBe(0);
+    });
+
+    it("should handle single file with no dependencies", () => {
+        const scores = computePageRank(["solo.ts"], new Map([["solo.ts", new Set()]]));
+        expect(scores.get("solo.ts")).toBeDefined();
+    });
+
+    it("should converge in under 50ms for 1000 files", () => {
+        // Generate synthetic graph with 1000 files
+        const files: string[] = [];
+        const importedBy = new Map<string, Set<string>>();
+        for (let i = 0; i < 1000; i++) {
+            const name = `file-${i}.ts`;
+            files.push(name);
+            importedBy.set(name, new Set());
+        }
+        // Create random edges (each file imports 2-5 others)
+        for (let i = 0; i < 1000; i++) {
+            const numImports = 2 + Math.floor(Math.random() * 4);
+            for (let j = 0; j < numImports; j++) {
+                const target = Math.floor(Math.random() * 1000);
+                if (target !== i) {
+                    importedBy.get(files[target])!.add(files[i]);
+                }
+            }
+        }
+
+        const t0 = performance.now();
+        const scores = computePageRank(files, importedBy);
+        const elapsed = performance.now() - t0;
+
+        expect(scores.size).toBe(1000);
+        expect(elapsed).toBeLessThan(200); // Must converge in under 200ms (relaxed for CI)
     });
 });

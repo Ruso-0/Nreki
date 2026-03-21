@@ -1,5 +1,5 @@
 /**
- * ast-navigator.ts — Deterministic AST navigation for TokenGuard.
+ * ast-navigator.ts - Deterministic AST navigation for NREKI.
  *
  * Provides go-to-definition, find-references, and file-outline using
  * tree-sitter AST parsing. 100% precise, no vector search needed.
@@ -40,7 +40,7 @@ const SUPPORTED_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".py", ".go"
 
 const IGNORE_DIRS = new Set([
     "node_modules", "dist", "build", ".git", "coverage",
-    ".next", "__pycache__", ".tokenguard",
+    ".next", "__pycache__", ".nreki",
 ]);
 
 // Map parser nodeType to user-facing kind
@@ -110,12 +110,12 @@ function extractSignature(rawCode: string): string {
         else if (ch === "{" && parenDepth === 0 && angleDepth === 0) {
             return rawCode.slice(0, i).trim();
         }
-    }
-
-    // Python: colon after def/class
-    if (/^(?:async\s+)?def\s|^class\s/.test(rawCode)) {
-        const colonIdx = rawCode.indexOf(":");
-        if (colonIdx > 0) return rawCode.slice(0, colonIdx).trim();
+        // A-02: Python colon - only match at depth 0 (skip colons inside type hints)
+        else if (ch === ":" && parenDepth === 0 && angleDepth === 0) {
+            if (/^(?:async\s+)?def\s|^class\s/.test(rawCode)) {
+                return rawCode.slice(0, i).trim();
+            }
+        }
     }
 
     return lines[0].trim();

@@ -1,5 +1,5 @@
 /**
- * embedder.ts — Local embedding generation for TokenGuard.
+ * embedder.ts - Local embedding generation for NREKI.
  *
  * Uses Xenova/transformers (ONNX Runtime) to run embedding models
  * entirely on-device. No Ollama, no API keys, no cloud calls.
@@ -86,8 +86,8 @@ export class Embedder {
             ({ pipeline } = await import("@xenova/transformers"));
         } catch (err) {
             throw new Error(
-                "[TokenGuard] Pro mode requires @xenova/transformers. Install it with: npm install @xenova/transformers\n" +
-                "Or run TokenGuard in Lite mode (default, no flag needed)."
+                "[NREKI] Pro mode requires @xenova/transformers. Install it with: npm install @xenova/transformers\n" +
+                "Or run NREKI in Lite mode (default, no flag needed)."
             );
         }
 
@@ -101,7 +101,7 @@ export class Embedder {
             });
             this.loadedModel = spec;
             this.isReady = true;
-            console.log(`[TokenGuard] Loaded embedding model: ${spec.name} (${spec.type})`);
+            console.error(`[NREKI] Loaded embedding model: ${spec.name} (${spec.type})`);
             return;
         }
 
@@ -113,15 +113,15 @@ export class Embedder {
                 });
                 this.loadedModel = spec;
                 this.isReady = true;
-                console.log(`[TokenGuard] Loaded embedding model: ${spec.name} (${spec.type})`);
+                console.error(`[NREKI] Loaded embedding model: ${spec.name} (${spec.type})`);
                 return;
             } catch {
-                console.log(`[TokenGuard] Model ${spec.name} not available, trying next...`);
+                console.error(`[NREKI] Model ${spec.name} not available, trying next...`);
             }
         }
 
         throw new Error(
-            "[TokenGuard] No embedding model could be loaded. Tried: " +
+            "[NREKI] No embedding model could be loaded. Tried: " +
             MODEL_PRIORITY.map(m => m.name).join(", ")
         );
     }
@@ -195,9 +195,10 @@ export class Embedder {
     }
 
     /**
-     * Estimate the approximate token count of a string.
-     * Uses a simple heuristic: ~4 chars per token for English text,
-     * ~3.5 for code (more symbols/short identifiers).
+     * Estimate token count from text length.
+     * Uses chars/3.5 for code and chars/4.0 for prose.
+     * NOTE: This is an approximation - actual BPE tokenization may differ by 20-40%
+     * for heavily symbolic code. Token savings in tool responses are estimates.
      */
     static estimateTokens(text: string, isCode: boolean = true): number {
         const charsPerToken = isCode ? 3.5 : 4.0;
@@ -213,6 +214,12 @@ let _instance: Embedder | null = null;
 export function getEmbedder(modelId?: string): Embedder {
     if (!_instance) {
         _instance = new Embedder(modelId);
+    } else if (modelId && modelId !== (_instance as any).pinnedModelId) {
+        console.error(
+            `[NREKI] Warning: getEmbedder() called with modelId "${modelId}" ` +
+            `but singleton already initialized with "${(_instance as any).pinnedModelId ?? 'default'}". ` +
+            `The original model will be used.`
+        );
     }
     return _instance;
 }

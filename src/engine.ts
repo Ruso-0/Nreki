@@ -1,12 +1,12 @@
 /**
- * engine.ts — Core search engine for TokenGuard.
+ * engine.ts - Core search engine for NREKI.
  *
  * Orchestrates the full indexing and retrieval pipeline:
  * 1. File watching via chokidar (real-time re-indexing)
  * 2. AST parsing via Tree-sitter WASM (semantic chunking)
  * 3. Local embeddings via Xenova/transformers (512-dim vectors)
  * 4. Hybrid RRF search: pure-JS VectorIndex (brute-force dot product)
- *    + KeywordIndex (BM25 with Porter stemmer) — no native extensions
+ *    + KeywordIndex (BM25 with Porter stemmer) - no native extensions
  * 5. Merkle-style file diffing (skip unchanged files)
  *
  * All processing is local. Zero cloud dependencies.
@@ -17,7 +17,7 @@ import path from "path";
 import chokidar, { type FSWatcher } from "chokidar";
 import picomatch from "picomatch";
 
-import { TokenGuardDB, type HybridSearchResult } from "./database.js";
+import { NrekiDB, type HybridSearchResult } from "./database.js";
 import { Embedder, getEmbedder } from "./embedder.js";
 import { ASTParser, type ParseResult } from "./parser.js";
 import { Compressor, type CompressionResult } from "./compressor.js";
@@ -62,7 +62,7 @@ export interface IndexStats {
 }
 
 export interface EngineConfig {
-    /** Path to the SQLite database. Default: .tokenguard.db */
+    /** Path to the SQLite database. Default: .nreki.db */
     dbPath?: string;
     /** Directories to watch for changes. Default: ['./src'] */
     watchPaths?: string[];
@@ -119,8 +119,8 @@ export interface SessionReport {
     autoContextInjections: number;
 }
 
-export class TokenGuardEngine {
-    private db: TokenGuardDB;
+export class NrekiEngine {
+    private db: NrekiDB;
     private embedder: Embedder;
     private parser: ASTParser;
     private compressor: Compressor;
@@ -146,7 +146,7 @@ export class TokenGuardEngine {
 
     constructor(config: EngineConfig = {}) {
         this.config = {
-            dbPath: config.dbPath ?? ".tokenguard.db",
+            dbPath: config.dbPath ?? ".nreki.db",
             watchPaths: config.watchPaths ?? ["./src"],
             extensions: config.extensions ?? DEFAULT_EXTENSIONS,
             ignorePaths: config.ignorePaths ?? DEFAULT_IGNORE,
@@ -154,7 +154,7 @@ export class TokenGuardEngine {
             enableEmbeddings: config.enableEmbeddings ?? false,
         };
 
-        this.db = new TokenGuardDB(this.config.dbPath);
+        this.db = new NrekiDB(this.config.dbPath);
         this.embedder = getEmbedder();
         this.parser = new ASTParser(
             this.config.wasmDir || undefined
@@ -168,7 +168,7 @@ export class TokenGuardEngine {
     /**
      * Fast initialization: SQLite + Tree-sitter only.
      * Completes in ~100ms. Does NOT load the ONNX embedding model.
-     * Safe to call from any tool — most tools don't need embeddings.
+     * Safe to call from any tool - most tools don't need embeddings.
      */
     async initialize(): Promise<void> {
         if (this.initialized) return;
@@ -233,7 +233,7 @@ export class TokenGuardEngine {
             return null; // File may have been deleted
         }
 
-        // Check extension support — unsupported files get plaintext fallback
+        // Check extension support - unsupported files get plaintext fallback
         const ext = path.extname(filePath).toLowerCase();
         if (!this.parser.isSupported(ext)) {
             // Plaintext fallback: index entire file as one chunk for BM25 keyword search.
@@ -354,7 +354,7 @@ export class TokenGuardEngine {
                 }
             } catch (err) {
                 console.error(
-                    `[TokenGuard] Error indexing ${file}: ${(err as Error).message}`
+                    `[NREKI] Error indexing ${file}: ${(err as Error).message}`
                 );
                 errors++;
             }
@@ -415,7 +415,7 @@ export class TokenGuardEngine {
     /**
      * Hybrid semantic + keyword search using RRF fusion.
      *
-     * This is the main search API — replaces grep/glob with a query
+     * This is the main search API - replaces grep/glob with a query
      * that understands code semantics. Returns ranked results with
      * shorthand signatures and full source code.
      *
@@ -488,7 +488,7 @@ export class TokenGuardEngine {
     ): Promise<AdvancedCompressionResult> {
         await this.initialize();
 
-        // Validate size ALWAYS — even with preloaded content (prevents bypass)
+        // Validate size ALWAYS - even with preloaded content (prevents bypass)
         let sizeInBytes: number;
         if (preloadedContent !== undefined) {
             sizeInBytes = Buffer.byteLength(preloadedContent, "utf8");
@@ -638,7 +638,7 @@ export class TokenGuardEngine {
 
     /**
      * Find ALL files whose code contains the given symbol name.
-     * Exhaustive scan — no limit, no ranking. For refactoring, not discovery.
+     * Exhaustive scan - no limit, no ranking. For refactoring, not discovery.
      */
     async searchFilesBySymbol(symbolName: string): Promise<string[]> {
         await this.initialize();
@@ -704,7 +704,7 @@ export class TokenGuardEngine {
                     if (res) madeChanges = true;
                 } catch (err) {
                     console.error(
-                        `[TokenGuard] Queue error for ${filePath}: ${(err as Error).message}`
+                        `[NREKI] Queue error for ${filePath}: ${(err as Error).message}`
                     );
                 }
             }
@@ -764,3 +764,7 @@ export class TokenGuardEngine {
         this.db.close();
     }
 }
+
+// Backward-compat aliases
+export { NrekiEngine as NREKIEngine };
+export { NrekiEngine as TokenGuardEngine };

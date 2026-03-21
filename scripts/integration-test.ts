@@ -1,5 +1,5 @@
 /**
- * integration-test.ts — End-to-end smoke test for TokenGuard.
+ * integration-test.ts — End-to-end smoke test for NREKI.
  *
  * Exercises all core modules: database, embedder, parser,
  * compressor, engine, and monitor. Produces screenshot-ready
@@ -12,7 +12,7 @@ import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
 
-import { TokenGuardEngine } from "../src/engine.js";
+import { NREKIEngine } from "../src/engine.js";
 import { TokenMonitor } from "../src/monitor.js";
 import { Embedder } from "../src/embedder.js";
 
@@ -51,7 +51,7 @@ async function main(): Promise<void> {
     const start = performance.now();
 
     console.log("");
-    console.log("  ⚡ TokenGuard Integration Test Suite");
+    console.log("  ⚡ NREKI Integration Test Suite");
     console.log("  ════════════════════════════════════════");
     console.log(`  Time:     ${new Date().toISOString()}`);
     console.log(`  Node:     ${process.version}`);
@@ -62,13 +62,13 @@ async function main(): Promise<void> {
 
     hr("TEST 1 — Engine Initialization");
 
-    const dbPath = path.join(ROOT, ".tokenguard-test.db");
+    const dbPath = path.join(ROOT, ".nreki-test.db");
     // Clean up previous test data
     for (const f of [dbPath, dbPath.replace(/\.db$/, ".vec")]) {
         if (fs.existsSync(f)) fs.unlinkSync(f);
     }
 
-    const engine = new TokenGuardEngine({
+    const engine = new NREKIEngine({
         dbPath,
         watchPaths: [path.join(ROOT, "src")],
         wasmDir: path.join(ROOT, "wasm"),
@@ -80,7 +80,7 @@ async function main(): Promise<void> {
     const initMs = Math.round(performance.now() - initStart);
     ok(`Engine initialized in ${initMs}ms`);
 
-    // ─── Test 2: Index TokenGuard's own src/ ─────────────────────
+    // ─── Test 2: Index NREKI's own src/ ─────────────────────
 
     hr("TEST 2 — Index src/ Directory");
 
@@ -103,9 +103,9 @@ async function main(): Promise<void> {
     metric("Shorthand chars:", stats.totalShorthandChars.toLocaleString());
     metric("Compression ratio:", `${(stats.compressionRatio * 100).toFixed(1)}%`);
 
-    // ─── Test 3: tg_search — "database initialization" ──────────
+    // ─── Test 3: nreki_search — "database initialization" ──────────
 
-    hr('TEST 3 — tg_search("database initialization")');
+    hr('TEST 3 — nreki_search("database initialization")');
 
     const searchStart = performance.now();
     const searchResults = await engine.search("database initialization", 5);
@@ -135,16 +135,16 @@ async function main(): Promise<void> {
         0
     );
     const searchSaved = grepTokens - searchTokens;
-    engine.logUsage("tg_search", searchTokens, searchTokens, searchSaved);
+    engine.logUsage("nreki_search", searchTokens, searchTokens, searchSaved);
 
     subhr("Token Savings");
     metric("grep would cost:", `~${grepTokens.toLocaleString()} tokens`);
-    metric("tg_search cost:", `~${searchTokens.toLocaleString()} tokens`);
+    metric("nreki_search cost:", `~${searchTokens.toLocaleString()} tokens`);
     metric("Saved:", `~${searchSaved.toLocaleString()} tokens (${Math.round((1 - searchTokens / grepTokens) * 100)}%)`);
 
-    // ─── Test 4: tg_audit ────────────────────────────────────────
+    // ─── Test 4: nreki_audit ────────────────────────────────────────
 
-    hr("TEST 4 — tg_audit (Session Token Consumption)");
+    hr("TEST 4 — nreki_audit (Session Token Consumption)");
 
     const usageStats = engine.getUsageStats();
     metric("Tool calls:", usageStats.tool_calls);
@@ -153,9 +153,9 @@ async function main(): Promise<void> {
     metric("Tokens saved:", usageStats.total_saved.toLocaleString());
     ok("Audit complete");
 
-    // ─── Test 5: tg_compress on largest file ─────────────────────
+    // ─── Test 5: nreki_compress on largest file ─────────────────────
 
-    hr("TEST 5 — tg_compress (Largest File)");
+    hr("TEST 5 — nreki_compress (Largest File)");
 
     // Find the largest .ts file in src/
     const srcFiles = fs.readdirSync(srcDir)
@@ -196,15 +196,15 @@ async function main(): Promise<void> {
     console.log("");
 
     engine.logUsage(
-        "tg_compress",
+        "nreki_compress",
         Embedder.estimateTokens(compressResult.compressed),
         Embedder.estimateTokens(compressResult.compressed),
         compressResult.tokensSaved
     );
 
-    // ─── Test 6: tg_status ───────────────────────────────────────
+    // ─── Test 6: nreki_status ───────────────────────────────────────
 
-    hr("TEST 6 — tg_status (Burn Rate Report)");
+    hr("TEST 6 — nreki_status (Burn Rate Report)");
 
     const monitor = new TokenMonitor();
     const report = monitor.generateReport();
@@ -225,7 +225,7 @@ async function main(): Promise<void> {
     metric("Compressions run:", "1");
     metric("Total tokens saved:", `~${finalStats.total_saved.toLocaleString()}`);
     console.log("");
-    console.log("  🛡️  TokenGuard is ready for production.");
+    console.log("  🛡️  NREKI is ready for production.");
     console.log("  ════════════════════════════════════════");
     console.log("");
 

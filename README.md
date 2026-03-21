@@ -1,449 +1,425 @@
-# TokenGuard v4.0.2 - 3 Tools. 480 Tests. Zero Cloud. Instant Startup.
+# NREKI - 3 Tools. 680 Tests. Pre-write validation for AI agents.
 
 <p align="center">
-  <img src="https://img.shields.io/badge/MCP-Plugin-blue?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0id2hpdGUiIGQ9Ik0xMiAyQzYuNDggMiAyIDYuNDggMiAxMnM0LjQ4IDEwIDEwIDEwIDEwLTQuNDggMTAtMTBTMTcuNTIgMiAxMiAyem0wIDE4Yy00LjQyIDAtOC0zLjU4LTgtOHMzLjU4LTggOC04IDggMy41OCA4IDgtMy41OCA0LTggOHoiLz48L3N2Zz4=" alt="MCP Plugin">
-  <img src="https://img.shields.io/badge/Tools-3-blue?style=for-the-badge" alt="3 Tools">
-  <img src="https://img.shields.io/badge/Token%20Savings-~80%25-green?style=for-the-badge" alt="~80% Savings">
-  <img src="https://img.shields.io/badge/Tests-480%20passed-brightgreen?style=for-the-badge" alt="480 Tests">
-  <img src="https://img.shields.io/badge/Cloud-Zero-red?style=for-the-badge" alt="Zero Cloud">
+  <img src="https://img.shields.io/badge/MCP-Plugin-blue?style=for-the-badge" alt="MCP Plugin">
+  <img src="https://img.shields.io/badge/Tools-3-blueviolet?style=for-the-badge" alt="3 Tools">
+  <img src="https://img.shields.io/badge/Tests-680-brightgreen?style=for-the-badge" alt="680 Tests">
+  <img src="https://img.shields.io/badge/Cloud-Zero-orange?style=for-the-badge" alt="Zero Cloud">
   <img src="https://img.shields.io/badge/License-MIT-yellow?style=for-the-badge" alt="MIT License">
-  <img src="https://img.shields.io/badge/TypeScript-5.7-blue?style=for-the-badge&logo=typescript" alt="TypeScript">
-  <img src="https://img.shields.io/badge/Node.js-≥20-339933?style=for-the-badge&logo=node.js" alt="Node.js">
+  <img src="https://img.shields.io/badge/TypeScript-5.9-3178C6?style=for-the-badge" alt="TypeScript 5.9">
+  <img src="https://img.shields.io/badge/Node-%3E%3D20-339933?style=for-the-badge" alt="Node >=20">
 </p>
 
 <p align="center">
-  <b>3 router tools. Invisible middleware. Lite mode (instant) or Pro mode (semantic). All local.</b>
+  <b>MCP server that validates AI agent edits in RAM before they reach disk. Cross-file semantic checks, auto-fixes for structural errors, and type regression detection.</b>
 </p>
 
 ---
 
-### What Changed in v4.0
+## What's New in v6.0: JIT Holography
 
-**Batch Edit, Architecture Map, Blast Radius, and Sniper Refactor.**
+When an LLM forgets an import, drops an `async` keyword, or leaves an interface incomplete, NREKI now **auto-corrects the error in RAM** using TypeScript's CodeFix API - the same engine behind VS Code's "Quick Fix" lightbulb. The LLM never sees the error. Zero tokens wasted on fix-retry loops.
 
-| Feature | What It Does |
-|---|---|
-| **`batch_edit`** | Atomically edit multiple symbols across multiple files. All-or-nothing: if any file fails validation, nothing is written. |
-| **Architecture Map** | `tg_navigate map` now shows dependency tiers (core/logic/leaf) based on import centrality. |
-| **Blast Radius** | When you change a function's signature, TokenGuard warns which files import it and suggests `batch_edit`. |
-| **`prepare_refactor`** | AST-based confidence classification for safe renaming. Classifies each occurrence as "high" or "review" (strings, comments, keys). |
-| **AST Symbol Names** | Parser uses tree-sitter `@_name` captures instead of ~10 fragile regexes. |
+```
+LLM proposes edit
+  |
+  v
+NREKI intercepts in RAM
+  |
+  v
+Triple Shield (Global -> Syntactic -> Semantic)
+  |
+  +-- No errors? --> Two-Phase Atomic Commit to disk
+  |
+  +-- Errors found?
+        |
+        v
+      Auto-Heal: getCodeFixesAtPosition()
+        |
+        +-- Apply 1 fix --> Recompile (~20ms) --> Errors decreased?
+        |     +-- Yes --> Accept fix, loop for next error
+        |     +-- No  --> Micro-rollback this fix, blacklist it
+        |
+        +-- All errors resolved? --> Commit to disk (safe: true)
+        +-- Some remain?         --> Full rollback, return errors to LLM (safe: false)
+```
 
-**v4.0.0 Bugfixes:** multi-line `console.log` stripping, Python `#` in strings, proper glob matching via picomatch, stale docstring.
+**8 structural fixes** in the whitelist: `import`, `fixMissingImport`, `fixAwaitInSyncFunction`, `fixPromiseResolve`, `fixMissingProperties`, `fixClassDoesntImplementInheritedAbstractMember`, `fixAddMissingMember`, `fixAddOverrideModifier`. Business logic is never mutated.
 
-**v4.0.1 Fix:** Corrected inflated `tokensAvoided` metric that double-counted file reads.
+See [CHANGELOG.md](CHANGELOG.md) for full details.
 
-**v4.0.2 Fixes (5 logic + 7 doc):** Blind Sniper (exhaustive SQL scan for `prepare_refactor`), batch edit race condition (two-phase file locking), indexOf wrong function (local window search), extractSignature string confusion (string-state tracking), silent plan amnesia (visible warning for oversized plans).
+### Performance Modes (v6.0)
 
----
+NREKI auto-selects validation depth based on project size. No configuration needed.
 
-### What Changed in v3.1
+| Mode | Files | What it checks | Boot | RAM |
+|------|-------|---------------|------|-----|
+| Syntax | < 50 | Syntax only (Tree-sitter) | < 100ms | ~30MB |
+| Project | 50-1000 | Full cross-file semantic validation | 1-10s | 200MB-1GB |
+| Hologram | > 1000 | Full cross-file via .d.ts shadows | ~1-2s | ~350MB |
 
-**Creative Circuit Breaker** — 3-level escalation that teaches Claude new strategies instead of just blocking:
+**Hologram mode (v6.0):** For large projects (>1000 files), NREKI replaces full `.ts` source files with lightweight `.d.ts` shadow stubs in the TypeScript compiler's VFS. Only the currently-edited file and its import subgraph are loaded. A symbiotic harvester replaces heuristic shadows with compiler-grade `.d.ts` during idle cycles.
 
-| Level | Strategy | What Claude Does |
-|---|---|---|
-| **Level 1** — Rewrite | Stop patching, start fresh | Reads uncompressed code, writes `symbol_v2` via `insert_after`, tests, then swaps |
-| **Level 2** — Decompose | Break into smaller pieces | Extracts 2-3 pure helpers, tests each, rewrites original as thin orchestrator |
-| **Level 3** — Hard Stop | Ask the human | Explains what failed, the error pattern, why strategies 1-2 didn't work |
+Override in package.json: `{ "nreki": { "mode": "project" } }`
 
-Each redirect includes `compress:false` so Claude sees actual code, not compressed placeholders.
+### VSCode Benchmark (5,584 files)
 
-**Other v3.1 additions:**
+| Metric | Project mode | File mode | Hologram (JIT) |
+|--------|-------------|-----------|----------------|
+| Boot | 111s | 91.6s | 1.94s |
+| First edit | 644ms | 55ms | 1384ms |
+| Total (boot + edit) | ~112s | ~92s | 3.32s |
+| RAM | OOM (16GB) | 4.5GB | ~350MB |
+| Files loaded | 5,584 | 5,584 | 642 on-demand |
+| Cross-file checking | Full cascade | Edited only | Via shadows |
+| VSCode files modified | 0 | 0 | 0 |
 
-- **Amnesia total** — `softReset()` purges ALL history for the tripped file, giving Claude 3 clean attempts with the new strategy
-- **Topological edits** — `insert_before` / `insert_after` modes for `tg_code edit` (add code without replacing)
-- **Smart auto-indent** — Relative rebase: strips Claude's indent, applies the target symbol's indent (works with tabs, spaces, Python, Go)
-- **Behavioral advisor** — Suggests compression when Claude reads large files raw
-- **Danger zones** — `tg_guard status` shows the 5 heaviest unread files so Claude avoids raw-reading them
-- **CLI hygiene** — `--help` / `--version` flags
-- **Cross-platform splice** — Verified byte indices with indexOf fallback for Linux/macOS/Windows consistency
+Hologram mode uses domain separation: the holographic kernel validates edits via shadows,
+while Layer 1 AST navigator handles reference queries and refactoring.
 
----
+### Type Regression Detection (v5.3)
 
-### What Changed in v3.0
+Detects when an agent weakens types silently. TypeScript approves `RetryConfig` changed
+to `any` because `any` accepts everything. NREKI catches it.
 
-TokenGuard v2 had 16 tools. That meant **~3,520 tokens of fixed overhead** just for tool definitions, plus wasted output tokens as the LLM reasoned about which of 16 tools to call. For small/medium projects, TokenGuard was **net-negative**.
-
-v3.0 fixes this by collapsing 16 tools into 3 routers and moving validation/safety into invisible middleware:
-
-| v2 (16 tools) | v3 (3 tools) | What Changed |
-|---|---|---|
-| `tg_search`, `tg_def`, `tg_refs`, `tg_outline`, `tg_map` | **`tg_navigate`** | One router, `action` parameter selects behavior |
-| `tg_read`, `tg_compress`, `tg_semantic_edit`, `tg_undo`, `tg_terminal` | **`tg_code`** | Edits auto-validated via AST before disk write |
-| `tg_pin`, `tg_status`, `tg_session_report` | **`tg_guard`** | Safety + monitoring unified |
-| `tg_validate` | *invisible middleware* | Runs automatically inside `tg_code edit` |
-| `tg_circuit_breaker` | *invisible middleware* | Monitors all calls, 3-level creative escalation |
-| `tg_audit` | *CLI only* | Removed from MCP, available via `npx @ruso-0/tokenguard --audit` |
-
-**Result:** ~660 tokens of tool definitions instead of ~3,520. **81% reduction in fixed overhead.**
-
-### Lite Mode vs Pro Mode
-
-| | Lite (Default) | Pro (Opt-in) |
-|---|---|---|
-| **Startup** | Instant (~100ms) | ~5-10s (ONNX model load) |
-| **Search** | BM25 keyword search | Hybrid semantic + BM25 with RRF |
-| **Dependencies** | Tree-sitter only | Tree-sitter + ONNX Runtime |
-| **Enable** | Default | `--enable-embeddings` flag |
-
-Lite mode is perfect for most projects. Pro mode adds semantic understanding for large codebases.
+Compares pre-edit and post-edit type signatures using toxicity scoring.
+Detects structural collapse (`Promise<any>` to `any`) and wrapper primitives
+(`string` to `String`).
 
 ---
 
 ## The Problem
 
-You're 90 minutes into a Claude Pro session. You've been exploring a codebase, reading files, running grep searches. Suddenly: **context limit reached**. Your session is over.
+AI coding agents (Claude Code, Cursor, Copilot Workspace) edit files autonomously. When they change a function signature in one file, they break every file that depends on it. You find out when tests fail - or worse, in production. The agent then burns thousands of tokens reading error output, guessing fixes, and retrying - a doom loop that wastes your context window.
 
-**Why?** Because every `grep` reads entire files. Every `Read` dumps thousands of tokens. Every broken code write causes a fix-retry loop that burns your remaining context.
-
-**Best for:** Medium-to-large codebases (50+ files) where reading every file would exhaust Claude's context window. For small projects (<20 files), native Claude Code tools may be sufficient.
+---
 
 ## The Solution
 
-TokenGuard sits between you and token waste with 3 smart tools:
+| What you do now | What NREKI does | Savings |
+|-----------------|-----------------|---------|
+| `cat file.ts` (full file read) | `nreki_code action:"read"` (smart compression) | ~60-80% fewer tokens |
+| Native `edit_file` (blind write) | `nreki_code action:"edit"` (symbol-targeted + ACID validation) | Zero broken writes |
+| Read error → fix → retry → repeat | Auto-Healing L3.3 fixes structural errors in RAM | Zero doom loop tokens |
+| Manual `find_references` per file | `nreki_navigate action:"prepare_refactor"` (blast radius) | Prevents cascade breaks |
+| Agent manages 16 tool definitions | 3 tools, 19 actions | 81% less tool definition overhead |
 
-| What You Do Now | What TokenGuard Does | Savings |
-|---|---|---|
-| `grep "auth" ./src` reads 50 files | `tg_navigate action:"search" query:"authentication"` returns 5 relevant chunks | **~97% (estimated)** |
-| `Read src/engine.ts` dumps 5,502 tokens | `tg_code action:"compress" path:"src/engine.ts"` sends 1,753 tokens | **~68% (estimated)** |
-| Read file + skim for function | `tg_navigate action:"definition" symbol:"AuthService"` jumps straight there | **300x faster** |
-| Copy-paste 500 lines of npm errors | `tg_code action:"filter_output"` extracts the 3 actual errors | **~89% (estimated)** |
-| Rewrite entire file to change one function | `tg_code action:"edit"` patches only the AST node | **~98% output saved (estimated)** |
-| Write broken code → see error → retry loop | Automatic AST validation blocks bad writes before disk | **Prevents loop** |
-| Claude gets stuck in write-test-fail loops | Creative circuit breaker teaches new strategies | **Saves session** |
-| Claude forgets "always use fetch, not axios" | `tg_guard action:"pin"` keeps rules in every response | **Never forgotten** |
-
-> **Note on compression:** Medium compression keeps function signatures + key body lines (return, throw, await, assignments). If you're debugging a specific function's internals, use `compress:false` or `level:"light"` to see the full code. The Creative Circuit Breaker automatically instructs `compress:false` when it redirects you to rewrite a function.
+---
 
 ## The 3 Tools
 
-### `tg_navigate` — Search & Navigate
+### `nreki_navigate` - Find and understand code
 
-| Action | Description |
-|---|---|
-| `search` | Hybrid semantic + BM25 search (Pro) or keyword search (Lite). Returns compressed AST chunks. |
-| `definition` | Go-to-definition by symbol name. 100% precise AST lookup. |
-| `references` | Find all references to a symbol across the project. |
-| `outline` | List all symbols in a file with signatures and line ranges. |
-| `map` | Static repo map with pinned rules and architecture tiers (core/logic/leaf). Prompt-cache-friendly. |
-| `prepare_refactor` | AST-based confidence classification for safe renaming. Classifies each occurrence as "high" or "review". |
+| Action | What It Does |
+|--------|-------------|
+| `search` | Hybrid BM25 + semantic search (Pro) or keyword search (Lite) |
+| `definition` | Go-to-definition by symbol name |
+| `references` | Find all references cross-project |
+| `outline` | List symbols in a file with signatures |
+| `map` | Static repo map with PageRank scoring and pinned rules |
+| `prepare_refactor` | Shows which files depend on a symbol before you edit it |
 
-### `tg_code` — Read, Compress & Edit
+### `nreki_code` - Read, write, and validate code
 
-| Action | Description |
-|---|---|
-| `read` | Smart file reader with behavioral advisor (suggests compression for large files). |
-| `compress` | Full-control compression. 3 levels (light/medium/aggressive) or 6 tiers. |
-| `edit` | Surgically edit a function/class by name. Supports `replace`, `insert_before`, `insert_after`. **Auto-validated via AST.** |
-| `batch_edit` | Atomically edit multiple symbols across multiple files. All-or-nothing with reverse splice ordering. |
-| `undo` | Revert the last edit. One-shot backup restore. |
-| `filter_output` | Filter noisy terminal output. Strips ANSI, deduplicates, extracts errors. |
+| Action | What It Does |
+|--------|-------------|
+| `read` | Smart file reading with auto-compression |
+| `compress` | 3 levels (light/medium/aggressive) or 6 granular tiers |
+| `edit` | Surgical edit by symbol name. Validated by Tree-sitter AST + NREKI Kernel |
+| `batch_edit` | Multi-file atomic edit with two-phase file locking. All-or-nothing |
+| `undo` | Restore last edit from backup |
+| `filter_output` | Filter and compress terminal output |
 
-### `tg_guard` — Safety & Memory
+### `nreki_guard` - Safety controls and session management
 
-| Action | Description |
-|---|---|
-| `pin` | Pin a rule Claude should never forget. Injected into every map response. |
-| `unpin` | Remove a pinned rule. |
-| `status` | Token burn rate, exhaustion prediction, danger zones (heaviest unread files), and alert levels. |
-| `report` | Full session savings receipt with per-file-type breakdown and USD estimates. |
-| `reset` | Clear circuit breaker state to let Claude retry with a fresh approach. |
-| `set_plan` | Anchor a master plan file for heartbeat re-injection (~15 tool calls). Bankruptcy Shield rejects plans >4000 tokens. |
-| `memorize` | Write progress notes to persistent scratchpad. Re-injected during heartbeat to survive context compaction. |
+| Action | What It Does |
+|--------|-------------|
+| `pin` | Add persistent rules injected into every map response |
+| `unpin` | Remove a pinned rule |
+| `status` | Token burn rate and depletion prediction |
+| `report` | Session receipt with USD cost estimates |
+| `reset` | Reset session counters |
+| `set_plan` | Store a plan file for context heartbeat |
+| `memorize` | Store scratchpad notes for context survival |
 
-## Supported Languages
+**3 tools, 19 actions.** ~660 tokens of tool definitions instead of ~3,520. 81% reduction in fixed overhead.
 
-TokenGuard's features have different levels of support depending on the language:
-
-| Feature | TS/JS | Python | Go | Other (Rust, Java, C++, etc.) |
-|---------|-------|--------|----|-------------------------------|
-| BM25 keyword search | ✅ | ✅ | ✅ | ✅ |
-| Compression (Stage 1-2: comments, whitespace, token filtering) | ✅ | ✅ | ✅ | ✅ |
-| Compression (Stage 3: AST body stripping) | ✅ | ✅ | ✅ | ❌ |
-| AST validation before write | ✅ | ✅ | ✅ | ❌ |
-| Semantic edit (replace/insert) | ✅ | ✅ | ✅ | ❌ |
-| Go-to-definition / references | ✅ | ✅ | ✅ | ❌ |
-| Semantic search (Pro mode) | ✅ | ✅ | ✅ | ✅ |
-
-For unsupported languages, TokenGuard still works as a keyword search engine and text-level compressor. AST features (validation, structural compression, surgical edits) require a Tree-sitter grammar — contributions for additional languages are welcome.
+---
 
 ## Invisible Middleware
 
-These run automatically — you never call them directly:
+These layers run automatically on every edit. You never call them directly.
 
-- **AST Validation**: Every `tg_code action:"edit"` validates syntax via tree-sitter before writing to disk. Invalid code is blocked with exact line/column error details and fix suggestions.
-- **Creative Circuit Breaker**: Monitors all tool calls for destructive patterns (same error 3x, same file 5x). Instead of just blocking, it escalates through 3 creative strategies: Rewrite → Decompose → Hard Stop. Each level includes `compress:false` file reads and concrete step-by-step instructions. Auto-resets with amnesia total on strategy change.
-- **File Lock**: File-level mutex prevents concurrent edit corruption. When `tg_code action:"edit"` or `batch_edit` targets a file, it acquires an exclusive lock. Stale locks auto-expire after 30 seconds.
-- **Behavioral Advisor**: When Claude reads a large file raw (without compression), advises using `tg_code action:"compress"` next time. Teaches efficient patterns without blocking.
+| Layer | What It Does |
+|-------|-------------|
+| **AST Validation** | Tree-sitter parses the proposed code before any write. Catches syntax errors in sub-millisecond time. Works for TS, JS, Python, Go. |
+| **Circuit Breaker** | Detects doom loops (repeated failures on the same file). 3-level escalation: Rewrite strategy → Decompose → Hard Stop. |
+| **NREKI Kernel (L2)** | Cross-file semantic validation in RAM via TypeScript Compiler API. Triple Shield: Global → Syntactic → Semantic. ACID rollback on failure. |
+| **Auto-Healing** | When the kernel detects structural errors, attempts repair using `ts.LanguageService.getCodeFixesAtPosition()`. Each fix must reduce error count or it is reverted. |
 
-## Auto-Context Inlining (X-Ray Vision)
+---
 
-When Claude asks for a function definition, it often needs to understand the dependencies
-that function calls. Without Auto-Context, Claude makes N additional tool calls to look up
-each dependency — burning tokens and time.
+## Architecture
 
-TokenGuard solves this by automatically resolving imported dependencies and injecting their
-signatures in the same response:
-
-| Without Auto-Context | With Auto-Context |
-|---------------------|-------------------|
-| 1. `tg_navigate definition "validateToken"` | 1. `tg_navigate definition "validateToken"` |
-| 2. `tg_navigate definition "HashUtils"` | *(signatures auto-injected)* |
-| 3. `tg_navigate definition "TokenStore"` | |
-| **3 tool calls, ~1,800 tokens** | **1 tool call, ~700 tokens** |
-
-**Security**: Signatures containing passwords, API keys, or auth tokens are automatically
-excluded. JSDoc comments are stripped to prevent prompt injection.
-
-**Disable**: Pass `auto_context: false` if you want pure output without injected signatures.
-
-## Context Heartbeat (Anti-Amnesia Protocol)
-
-Claude Code compacts context after extended sessions, destroying plans, schemas, and
-architectural decisions. Context Heartbeat solves this by silently re-injecting your
-critical constraints every ~15 tool calls.
-
-**Setup:**
-```bash
-# Anchor your plan at the start of a session
-tg_guard action:"set_plan" text:"PLAN.md"
-
-# Leave notes as you progress
-tg_guard action:"memorize" text:"Finished auth module. Starting on payments. Using Stripe SDK."
+```
++---------------------------------------------------------+
+|                    Claude Code Agent                     |
+|          (nreki_navigate, nreki_code, nreki_guard)       |
++----------------------------+----------------------------+
+                             |
+                             v
++---------------------------------------------------------+
+|               NREKI Router (src/router.ts)               |
+|   Context Heartbeat | Circuit Breaker | File Lock        |
++----------------------------+----------------------------+
+                             |
+                   +---------+-----------+
+                   v                     v
++------------------+     +-------------------------------+
+|    Layer 1       |     |    Layer 2                     |
+|    Tree-sitter   |     |    NREKI Kernel                |
+|    (syntax)      |     |    (cross-file semantics)      |
+|                  |     |                                |
+|    Sub-ms AST    |     |    TypeScript Compiler API     |
+|    validation    |     |    hijacked with VFS in RAM    |
+|                  |     |                                |
+|    All languages |     |    TS/JS only (tsconfig.json)  |
++------------------+     |                                |
+                         |    * Global + syntax + semantic  |
+                         |      diagnostics                 |
+                         |    * Auto-fix via CodeFix API    |
+                         |      (8 structural fix types)    |
+                         |    * ACID transactions           |
+                         |    * Two-phase atomic commit     |
+                         |    * Reference analysis          |
+                         |    * Import graph scoring        |
+                         |    * ~50ms rollback              |
+                         |    * Performance modes           |
+                         |      (syntax/file/project)       |
+                         +-------------------------------+
 ```
 
-**How it works:**
-- Counts tool calls deterministically (no async lag)
-- Only injects during safe operations (read, search, definition) — never during edits
-- Places memory ABOVE the tool response (Attention Sandwich pattern)
-- Detects server restarts and resets the counter automatically
-- Rejects plans >4,000 tokens to prevent accelerating compaction
-
-**What gets re-injected:**
-1. Your master plan (schemas, constraints, architecture)
-2. Your scratchpad notes (progress, decisions)
-3. Pinned rules
-4. Recent successful edits (spatial awareness)
-5. Circuit Breaker state (if active)
+---
 
 ## Installation
 
 ```bash
-# One command — runs directly from npm:
-npx @ruso-0/tokenguard
+# Quick start
+npx @ruso-0/nreki
+
+# Or install globally
+npm install -g @ruso-0/nreki
 ```
 
-Or install globally:
+### Claude Code CLI
 
 ```bash
-npm install -g @ruso-0/tokenguard
+# Lite mode (default - instant startup, BM25 search)
+claude mcp add nreki -- npx @ruso-0/nreki
+
+# Pro mode (hybrid semantic + BM25 search, ~5-10s startup)
+claude mcp add nreki -- npx @ruso-0/nreki --enable-embeddings
 ```
 
-### CLI
+### Manual Configuration
 
-```bash
-tokenguard --help       # Show usage and options
-tokenguard --version    # Show version (4.0.2)
-tokenguard init         # Generate optimal CLAUDE.md instructions
-tokenguard --audit      # Run security audit (CLI only)
-```
-
-### Claude Code Configuration
-
-**Option A — CLI (recommended):**
-
-```bash
-# Lite mode (instant startup, keyword search):
-claude mcp add tokenguard -- npx @ruso-0/tokenguard
-
-# Pro mode (semantic search, requires ONNX model download on first run):
-claude mcp add tokenguard -- npx @ruso-0/tokenguard --enable-embeddings
-```
-
-**Option B — Manual config** in `.claude.json` or `claude_desktop_config.json`:
+Add to `.claude/settings.json`:
 
 ```json
 {
   "mcpServers": {
-    "tokenguard": {
+    "nreki": {
       "command": "npx",
-      "args": ["-y", "@ruso-0/tokenguard"]
+      "args": ["@ruso-0/nreki"]
     }
   }
 }
 ```
 
-For Pro mode, add `"--enable-embeddings"` to the args array.
+### Modes
 
-### Cleanup
+| | Lite (Default) | Pro (Opt-in) |
+|---|---|---|
+| **Startup** | Instant (~100ms) | ~5-10s (ONNX model load) |
+| **Search** | BM25 keyword search | Hybrid semantic + BM25 with RRF |
+| **Layer 2** | Active if tsconfig.json present | Active if tsconfig.json present |
+| **Enable** | Default | `--enable-embeddings` flag |
 
-TokenGuard creates `.tokenguard.db` and `.tokenguard/backups/` in your project root. These are automatically excluded from git via standard `.gitignore` patterns. To remove them:
-```bash
-rm -rf .tokenguard.db .tokenguard/ CLAUDE.md
-```
+Layer 2 (NREKI Kernel) activates automatically in any TypeScript/JavaScript project with a `tsconfig.json`. Non-TypeScript projects operate with Layer 1 (Tree-sitter syntax validation) only.
 
-### Benchmark
-
-We're running reproducible benchmarks on real-world refactors (Express.js, Axios).
-Results with full methodology and API billing logs will be published here.
-
-**Star the repo to get notified when benchmarks drop.**
+---
 
 ## Quick Start
 
 ```bash
-# TokenGuard runs as an MCP server — just use the tools:
+# Search for a function
+nreki_navigate action:"search" query:"getUserId"
 
-# 1. Pin your project rules (they'll never be forgotten)
-tg_guard action:"pin" text:"Always use fetch, not axios"
-tg_guard action:"pin" text:"API base URL is /api/v2"
+# Read a file with compression
+nreki_code action:"read" file:"src/auth.ts"
 
-# 2. Get the repo map (cached by Anthropic prompt cache, includes pinned rules)
-tg_navigate action:"map"
+# Surgically edit a function (NREKI validates before writing)
+nreki_code action:"edit" file:"src/auth.ts" symbol:"getUserId" new_code:"..."
 
-# 3. Search semantically (replaces grep)
-tg_navigate action:"search" query:"authentication middleware"
+# Atomic multi-file edit
+nreki_code action:"batch_edit" edits:[{path:"src/auth.ts", symbol:"getUserId", new_code:"..."}, ...]
 
-# 4. Jump to a definition (replaces Read + Ctrl+F)
-tg_navigate action:"definition" symbol:"AuthService"
+# Check blast radius before refactoring
+nreki_navigate action:"prepare_refactor" file:"src/auth.ts" symbol:"getUserId"
 
-# 5. Surgically edit a function (auto-validated, no file rewrite needed)
-tg_code action:"edit" path:"src/auth.ts" symbol:"validateToken" new_code:"..."
+# Pin a persistent rule
+nreki_guard action:"pin" name:"no-any" rule:"Never use 'any' type in this project"
 
-# 6. Add a new function after an existing one (topological edit)
-tg_code action:"edit" path:"src/auth.ts" symbol:"validateToken" mode:"insert_after" new_code:"..."
-
-# 7. Filter noisy terminal output
-tg_code action:"filter_output" output:"<paste error output>"
-
-# 8. Check danger zones + burn rate
-tg_guard action:"status"
-
-# 9. Full session report with receipt
-tg_guard action:"report"
+# Check token budget
+nreki_guard action:"status"
 ```
-
-## Architecture
-
-```
-+-------------------------------------------------------------+
-|                  Claude Code (MCP Client)                    |
-+----------------------------+--------------------------------+
-                             | stdio (JSON-RPC)
-+----------------------------v--------------------------------+
-|          TokenGuard MCP Server (3 router tools)              |
-|                                                              |
-|  +--------------------------------------------------------+  |
-|  |  Middleware Layer (invisible)                            |  |
-|  |  +------------------+ +---------------------+          |  |
-|  |  | AST Validator    | | Creative Circuit    |          |  |
-|  |  | (pre-edit check) | | Breaker (3 levels)  |          |  |
-|  |  +------------------+ +---------------------+          |  |
-|  |  +------------------+ +---------------------+          |  |
-|  |  | File Lock        | | Behavioral          |          |  |
-|  |  | (edit mutex)     | | Advisor (reads)     |          |  |
-|  |  +------------------+ +---------------------+          |  |
-|  +--------------------------------------------------------+  |
-|                                                              |
-|  +------------------+------------------+------------------+  |
-|  | tg_navigate      | tg_code          | tg_guard         |  |
-|  | search           | read             | pin / unpin      |  |
-|  | definition       | compress         | status           |  |
-|  | references       | edit (validated) | report           |  |
-|  | outline          | batch_edit       | set_plan         |  |
-|  | map              | undo             | memorize         |  |
-|  | prepare_refactor | filter_output    | reset            |  |
-|  +--------+---------+--------+---------+--------+---------+  |
-|           |                  |                  |            |
-|  +--------v------------------v------------------v---------+  |
-|  |                    Core Layer                           |  |
-|  |  +----------+ +----------+ +----------+ +----------+  |  |
-|  |  | Embedder | |  Parser  | | Database | | Sandbox  |  |  |
-|  |  |(jina v2) | |(TreeSit.)| | (SQLite) | |(Validate)|  |  |
-|  |  +----------+ +----------+ +----------+ +----------+  |  |
-|  +---------------------------------------------------------+  |
-+--------------------------------------------------------------+
-```
-
-## Stress Tested
-
-**480 tests. 0 failures. 22 test suites.** Cross-platform CI on Ubuntu, Windows, and macOS.
-
-| Scenario | What We Tested | Result |
-|---|---|---|
-| Router dispatch | All 19 {tool, action} combinations | Pass |
-| Middleware wrap | Creative circuit breaker 3-level escalation, amnesia total | Pass |
-| AST validation | Valid/invalid code, error formatting | Pass |
-| Backward compat | All 16 original tool behaviors preserved | Pass |
-| Empty files | 0-byte input through every pipeline stage | Pass |
-| 500KB TypeScript | ~3,500 generated functions | Pass |
-| Binary data | Random bytes, null bytes, non-UTF-8 | Pass |
-| Unicode / CJK / Emoji | Japanese identifiers, emoji in strings | Pass |
-| Minified 50KB JS | Single-line, no whitespace, 2000 functions | Pass |
-| 20-level nesting | Deeply nested function chains | Pass |
-| 50-file concurrent batch | Batch insert + hybrid search | Pass |
-| Surgical edits | Replace, insert_before, insert_after with auto-indent | Pass |
-| Pin memory | Add/remove/persist/limits/deterministic output | Pass |
-| E2E circuit breaker | 3 failures → Level 1 redirect → amnesia → recovery | Pass |
-| Batch edit ACID | Multi-file atomic edits, rollback on syntax error | Pass |
-| Architecture map | Import centrality, percentile tiers, FastLookup | Pass |
-| Blast radius | Signature change detection, dependent file warnings | Pass |
-| Prepare refactor | AST confidence classification (high/review) | Pass |
-| Cross-platform splice | Verified byte indices on Linux, Windows, macOS | Pass |
-| Auto-Context Inlining | Import extraction, security filters, Go namespace inference | Pass |
-| Context Heartbeat | Anti-amnesia re-injection, restart detection, bankruptcy shield | Pass |
-| v4.0.2 bugfix regression | Exhaustive symbol search, duplicate functions, signature strings | Pass |
-| Plaintext fallback | BM25 search for unsupported languages (.rs, .java, .cpp) | Pass |
-
-### Real-World Validation
-Tested against a 57-file production Next.js + Supabase app (SICAEP):
-- **~94% token reduction (estimated)** (tier 1 compression)
-- **10,532 tokens saved** on a single search query
-- **480/480 tests passed** across 3 operating systems
-- Surgically fixed a real `.single()` → `.maybeSingle()` bug via `tg_code action:"edit"`
-- Creative circuit breaker correctly detected and redirected repeated error patterns
-- Path traversal attack (`../../../../etc/passwd`) → **BLOCKED**
-
-> **Methodology note:** Token savings are estimated using a chars/4 heuristic
-> (±30% vs actual tokenizer). Comparisons are against raw file reads, not against
-> other AI coding tools. These numbers represent the upper bound of savings.
-
-> **Note:** TokenGuard is most effective on projects with 50+ files. For very small projects (<20 files), the overhead may not justify the savings.
-
-## Security
-
-- **Zero cloud**: All processing is local. No API keys, no telemetry, no network calls.
-- **No data leaves your machine**: Embeddings computed locally via ONNX Runtime.
-- **Path traversal protection**: All file paths validated with `safePath()`.
-- **Symlink resolution**: All file paths resolved via `realpathSync()` to prevent symlink escapes.
-- **Sensitive file blocklist**: `.env`, `.ssh`, `.git/credentials`, `.pem`, `.key` files are blocked automatically.
-- **Pin sanitization**: Pinned rules are sanitized to block URLs, shell commands, and path traversal.
-- **File-level mutex**: Concurrent edits to the same file are blocked to prevent corruption.
-- **SQLite storage**: Your code index stays in `.tokenguard.db` in your project root.
-- **WASM memory safety**: All tree-sitter parsing wrapped in `safeParse()` with guaranteed cleanup.
-- **MIT licensed**: Fully open source, audit the code yourself.
-
-## Contributing
-
-PRs welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) before submitting.
-
-```bash
-# Development
-git clone https://github.com/Ruso-0/TokenGuard.git
-cd TokenGuard
-npm install
-npm run build
-npm test
-```
-
-## License
-
-MIT
 
 ---
 
-<p align="center">
-  <b>Stop burning tokens. Start guarding them.</b><br>
-  <sub>Built with frustration, shipped with hope. Now with anti-amnesia protocol.</sub>
-</p>
+## Tests
+
+**680 tests across 42 suites. Zero failures.**
+
+| Suite | Tests | What It Covers |
+|-------|-------|---------------|
+| nreki-kernel | 28 | Boot, semantic validation, syntactic shield, baseline tolerance, file operations, ACID, concurrency, edge cases, precision |
+| auto-healing | 6 | Missing import heal, await/async heal, cascade micro-rollback, business logic rejection, healingStats, clean code passthrough |
+| nreki-integration | 8 | Zero-disk-touch path, type-breaking block, batch dryRun, atomic commit, path traversal rejection |
+| router | 32 | All 19 actions across 3 tools, error handling, parameter validation |
+| security | 48 | Path traversal, symlink escape, injection, sensitive file blocking, circuit breaker, pin sanitization |
+| circuit-breaker | 45 | 3-level escalation, reset behavior, threshold detection |
+| stress | 37 | Concurrent operations, large file handling, memory pressure |
+| semantic-edit | 24 | Symbol targeting, mode switching, edge cases |
+| audit-fixes | 54 | All 30 audit findings verified resolved |
+| repo-map | 22 | PageRank scoring, import graph, classification |
+| Other suites | 261 | Engine, middleware, terminal filter, pin memory, compressor, AST, batch edit, backward compat, heartbeat, file lock, auto-context, v4 bugfixes, e2e breaker, parser-pool, mutex, document-registry, tsbuildinfo-cache |
+| mode-detection | 20 | Mode auto-detection, syntax/file/project behavior, elastic threshold, early exit recovery |
+| ttrd-silent-crime | 1 | Silent type degradation caught by TTRD |
+| ttrd | 19 | Type regression detection, toxicity scoring, barrel guards |
+| chronos-memory | 16 | Cross-session friction tracking, health score |
+| hologram | 45 | Shadow generation, VFS integration, lazy subgraph, domain separation, harvester, full cycle |
+| jit-holography | 15 | JIT on-demand classification, cache, rollback, interceptAtomicBatch |
+
+---
+
+## Real-World Benchmark: OpenDota (148 files, 1,600+ stars)
+
+| Test | Result | Latency | Details |
+|------|--------|---------|---------|
+| Boot | SUCCESS | 10.68s | 148 files tracked, 0 baseline errors |
+| Valid edit | PASS | 2,725ms | Appending a comment - no false positive |
+| Type break | **CAUGHT** | 12,607ms | Changed `getPGroup()` return type - caught 10 cross-file errors across 3 files |
+| Syntax break | **CAUGHT** | 11,423ms | `return const let;` - blocked |
+| File delete | PASS | 7,401ms | Leaf file deletion - correctly allowed |
+| Non-TS file | PASS | 8,825ms | README.md - correctly ignored |
+
+**6/6 correct verdicts** against a real TypeScript project. Zero false positives. Zero false negatives.
+
+---
+
+## Security
+
+- **Zero cloud, zero telemetry, zero network calls** - everything runs locally
+- **Embeddings computed locally** via ONNX Runtime (optional `@xenova/transformers`)
+- **Path traversal protection** - `safePath()` in middleware + kernel-level path jail in `interceptAtomicBatch()`
+- **Sensitive file blocking** - `.env`, `.pem`, `.key`, `id_rsa`, `id_ed25519` rejected by VFS hijack
+- **SQLite storage** - all data in local `.nreki.db`, no external services
+- **WASM memory safety** - `safeParse()` with cleanup for Tree-sitter parsers
+- **30/30 audit findings resolved** in v5.0.0 (see `tests/audit-fixes.test.ts`)
+
+---
+
+## Numbers
+
+| Metric | Value |
+|--------|-------|
+| Tests | 680 (42 suites) |
+| Failure modes sealed | 32 (P1-P32) |
+| Audit findings resolved | 30/30 |
+| OpenDota benchmark | 6/6 correct verdicts |
+| Auto-Healing safe fixes | 8 CodeFix types |
+| Boot time (148 files) | ~10s |
+| Warm-path rollback | ~50ms |
+| Blast radius query | ~20ms |
+| PageRank convergence (1,000 files) | < 50ms |
+| Tool definition overhead | ~660 tokens (81% reduction from v2) |
+| VSCode benchmark (5,584 files) | JIT boot 1.94s, total 3.32s, 642 files on-demand |
+| Mode detection | 85ms for 5,584 files |
+
+---
+
+## Honest Limitations
+
+### Small Projects Don't Need the Kernel
+
+NREKI auto-detects project size. Projects under 50 files run in syntax mode (Tree-sitter only, no compiler). The kernel only boots for projects with 50+ files where cross-file validation matters.
+
+### TypeScript Compiler API Dependency
+
+The NREKI Kernel depends on `ts.createEmitAndSemanticDiagnosticsBuilderProgram` and `ts.LanguageService`. These are public APIs but Microsoft modifies them between major TypeScript versions. NREKI pins `typescript@^5.9.3` and tests against each release. If TypeScript 6.0 introduces breaking changes, NREKI will require updates.
+
+### Auto-Healing Is Conservative
+
+The healer only applies 8 structural fix types from a strict whitelist. It will not fix business logic errors, type mismatches, or architectural mistakes. If the healer cannot resolve ALL errors, it rolls back completely and returns the original errors to the LLM. This is by design - partial healing could mask bugs.
+
+### Token Savings Are Estimates
+
+Token savings reported in tool responses use a `characters / 3.5` heuristic, not actual BPE tokenization. Real savings may differ by 20-40% depending on code density. The savings are real - the exact numbers are approximate.
+
+### Language Coverage
+
+| Language | Layer 1 (Syntax) | Layer 2 (Semantics) | Auto-Healing (L3.3) |
+|----------|:-:|:-:|:-:|
+| TypeScript | Yes | Yes | Yes |
+| JavaScript | Yes | Yes | Yes |
+| Python | Yes | No | No |
+| Go | Yes | No | No |
+
+Layer 2 and Auto-Healing require `tsconfig.json`. Python and Go projects operate with Layer 1 syntax validation only.
+
+---
+
+## Technical Deep Dive
+
+### The Intercept Cycle
+
+1. **Inject** - All edits enter VFS staging simultaneously (atomic batch)
+2. **Compile** - Incremental builder evaluates proposed future state
+3. **Shield 1** - Global diagnostics (TS6053, TS2307)
+4. **Shield 2** - Syntactic diagnostics on edited files only
+5. **Shield 3** - Semantic diagnostics on all affected files (cross-file blast radius)
+6. **Auto-Heal** - If errors found, attempt structural repair via CodeFix API (L3.3)
+7. **Verdict** - Errors resolved by healer → SAFE. Errors remain → BLOCK + full rollback
+8. **Commit** - Two-phase atomic write (backup → temp+rename → cleanup)
+
+### Known Failure Modes (P1-P32)
+
+| Category | Problems |
+|----------|----------|
+| Compiler Cache | P8 (monotonic clock), P11 (periodic GC), P17 (zombie AST) |
+| Error Tracking | P9 (topological cardinality), P15 (path sanitization), P28 (syntactic blindness) |
+| Concurrency | P10 (FIFO mutex), P21 (multi-file deadlock), P25 (idempotent undo-log) |
+| File Operations | P4 (dynamic rootNames), P5 (tombstone deletion), P27 (recursive mkdir), P29 (TS6053 ghost), P30 (non-TS filter) |
+| Path Handling | P26 (POSIX normalization), P31 (virtual directories) |
+| Physical I/O | P2 (atomic commit), P18 (destruction & resurrection), P32 (physical rollback) |
+| Security | A1 (path jail), A5 (node_modules regex), A10 (sensitive file filter) |
+
+### How Auto-Healing Decides
+
+Each fix must reduce the total error count. If applying a fix leaves the same number of errors or more, the fix is reverted and blacklisted. If all errors are resolved, the edit is committed. If some remain, everything is rolled back and the original errors are returned to the agent.
+
+---
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## License
+
+MIT - see [LICENSE](LICENSE).
+
+## Author
+
+**Jherson Eddie Tintaya Holguin** ([@Ruso-0](https://github.com/Ruso-0))
+
+Cusco, Peru.

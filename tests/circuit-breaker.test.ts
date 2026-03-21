@@ -1,5 +1,5 @@
 /**
- * circuit-breaker.test.ts — Tests for infinite loop detection.
+ * circuit-breaker.test.ts - Tests for infinite loop detection.
  *
  * Covers:
  * - Same error 3x → trips
@@ -29,8 +29,8 @@ describe("hashError", () => {
     });
 
     it("should produce the same hash for errors differing only in line numbers", () => {
-        const a = hashError("Error at src/foo.ts:42:10 — something broke");
-        const b = hashError("Error at src/foo.ts:99:3 — something broke");
+        const a = hashError("Error at src/foo.ts:42:10 - something broke");
+        const b = hashError("Error at src/foo.ts:99:3 - something broke");
         expect(a).toBe(b);
     });
 
@@ -369,7 +369,7 @@ describe("CircuitBreaker", () => {
         it("first trip should set escalation level to 1", () => {
             const cb = new CircuitBreaker();
             for (let i = 0; i < 3; i++) {
-                cb.recordToolCall("tg_code:edit", "TypeError: x is not defined", "src/foo.ts", "myFunction");
+                cb.recordToolCall("nreki_code:edit", "TypeError: x is not defined", "src/foo.ts", "myFunction");
             }
             const state = cb.getState();
             expect(state.escalationLevel).toBe(1);
@@ -380,13 +380,13 @@ describe("CircuitBreaker", () => {
         it("second trip after soft reset escalates to level 2", () => {
             const cb = new CircuitBreaker();
             for (let i = 0; i < 3; i++) {
-                cb.recordToolCall("tg_code:edit", "TypeError: x is not defined", "src/foo.ts");
+                cb.recordToolCall("nreki_code:edit", "TypeError: x is not defined", "src/foo.ts");
             }
             expect(cb.getState().escalationLevel).toBe(1);
             cb.softReset();
 
             for (let i = 0; i < 3; i++) {
-                cb.recordToolCall("tg_code:edit", "SyntaxError: unexpected token", "src/foo.ts");
+                cb.recordToolCall("nreki_code:edit", "SyntaxError: unexpected token", "src/foo.ts");
             }
             expect(cb.getState().escalationLevel).toBe(2);
         });
@@ -396,7 +396,7 @@ describe("CircuitBreaker", () => {
             const errors = ["TypeError: fail A", "TypeError: fail B", "TypeError: fail C", "TypeError: fail D"];
             for (let round = 0; round < 4; round++) {
                 for (let i = 0; i < 3; i++) {
-                    cb.recordToolCall("tg_code:edit", errors[round], "src/foo.ts");
+                    cb.recordToolCall("nreki_code:edit", errors[round], "src/foo.ts");
                 }
                 if (round < 3) cb.softReset();
             }
@@ -406,7 +406,7 @@ describe("CircuitBreaker", () => {
         it("full reset clears escalation level to 0", () => {
             const cb = new CircuitBreaker();
             for (let i = 0; i < 3; i++) {
-                cb.recordToolCall("tg_code:edit", "TypeError: fail", "src/foo.ts");
+                cb.recordToolCall("nreki_code:edit", "TypeError: fail", "src/foo.ts");
             }
             expect(cb.getState().escalationLevel).toBe(1);
             cb.reset();
@@ -419,7 +419,7 @@ describe("CircuitBreaker", () => {
         it("soft reset preserves escalation level", () => {
             const cb = new CircuitBreaker();
             for (let i = 0; i < 3; i++) {
-                cb.recordToolCall("tg_code:edit", "TypeError: fail", "src/foo.ts");
+                cb.recordToolCall("nreki_code:edit", "TypeError: fail", "src/foo.ts");
             }
             cb.softReset();
             expect(cb.getState().escalationLevel).toBe(1);
@@ -428,7 +428,7 @@ describe("CircuitBreaker", () => {
 
         it("symbolName is stored in ToolCallRecord", () => {
             const cb = new CircuitBreaker();
-            cb.recordToolCall("tg_code:edit", "", "src/foo.ts", "validateToken");
+            cb.recordToolCall("nreki_code:edit", "", "src/foo.ts", "validateToken");
             const state = cb.getState();
             expect(state.history[0].symbolName).toBe("validateToken");
         });
@@ -437,7 +437,7 @@ describe("CircuitBreaker", () => {
             const cb = new CircuitBreaker();
             let result;
             for (let i = 0; i < 3; i++) {
-                result = cb.recordToolCall("tg_code:edit", "TypeError: fail", "src/foo.ts");
+                result = cb.recordToolCall("nreki_code:edit", "TypeError: fail", "src/foo.ts");
             }
             expect(result!.tripped).toBe(true);
             expect(result!.level).toBe(1);
@@ -445,7 +445,7 @@ describe("CircuitBreaker", () => {
 
         it("LoopCheckResult level is 0 when not tripped", () => {
             const cb = new CircuitBreaker();
-            const result = cb.recordToolCall("tg_code:edit", "", "src/foo.ts");
+            const result = cb.recordToolCall("nreki_code:edit", "", "src/foo.ts");
             expect(result.tripped).toBe(false);
             expect(result.level).toBe(0);
         });
@@ -453,7 +453,7 @@ describe("CircuitBreaker", () => {
         it("lastErrorPattern captures the trip reason", () => {
             const cb = new CircuitBreaker();
             for (let i = 0; i < 3; i++) {
-                cb.recordToolCall("tg_code:edit", "TypeError: x is not defined", "src/foo.ts");
+                cb.recordToolCall("nreki_code:edit", "TypeError: x is not defined", "src/foo.ts");
             }
             const state = cb.getState();
             expect(state.lastErrorPattern).toContain("Same error repeated");
@@ -462,12 +462,12 @@ describe("CircuitBreaker", () => {
         it("redirectsIssued increments on each trip", () => {
             const cb = new CircuitBreaker();
             for (let i = 0; i < 3; i++) {
-                cb.recordToolCall("tg_code:edit", "TypeError: fail", "src/foo.ts");
+                cb.recordToolCall("nreki_code:edit", "TypeError: fail", "src/foo.ts");
             }
             expect(cb.getStats().redirectsIssued).toBe(1);
             cb.softReset();
             for (let i = 0; i < 3; i++) {
-                cb.recordToolCall("tg_code:edit", "SyntaxError: fail", "src/foo.ts");
+                cb.recordToolCall("nreki_code:edit", "SyntaxError: fail", "src/foo.ts");
             }
             expect(cb.getStats().redirectsIssued).toBe(2);
         });
@@ -475,11 +475,11 @@ describe("CircuitBreaker", () => {
         it("redirectsSuccessful increments on success after escalation", () => {
             const cb = new CircuitBreaker();
             for (let i = 0; i < 3; i++) {
-                cb.recordToolCall("tg_code:edit", "TypeError: fail", "src/foo.ts");
+                cb.recordToolCall("nreki_code:edit", "TypeError: fail", "src/foo.ts");
             }
             cb.softReset();
             // Success on next call while escalationLevel > 0
-            cb.recordToolCall("tg_code:edit", "", "src/foo.ts");
+            cb.recordToolCall("nreki_code:edit", "", "src/foo.ts");
             expect(cb.getStats().redirectsSuccessful).toBe(1);
         });
     });

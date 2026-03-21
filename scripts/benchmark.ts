@@ -1,11 +1,11 @@
 /**
- * benchmark.ts — Self-benchmark: run TokenGuard against its own source code.
+ * benchmark.ts — Self-benchmark: run NREKI against its own source code.
  * Outputs structured results for README documentation.
  */
 
 import path from "path";
 import fs from "fs";
-import { TokenGuardEngine } from "../src/engine.js";
+import { NREKIEngine } from "../src/engine.js";
 import { Embedder } from "../src/embedder.js";
 import { filterTerminalOutput } from "../src/terminal-filter.js";
 import { findDefinition, findReferences, getFileSymbols } from "../src/ast-navigator.js";
@@ -14,15 +14,15 @@ import { AstSandbox } from "../src/ast-sandbox.js";
 const ROOT = path.resolve(".");
 
 async function main() {
-    const engine = new TokenGuardEngine({
-        dbPath: path.join(ROOT, ".tokenguard-bench.db"),
+    const engine = new NREKIEngine({
+        dbPath: path.join(ROOT, ".nreki-bench.db"),
         watchPaths: [ROOT],
     });
 
     await engine.initialize();
 
     console.log("═══════════════════════════════════════════════════");
-    console.log("  TokenGuard Self-Benchmark");
+    console.log("  NREKI Self-Benchmark");
     console.log("═══════════════════════════════════════════════════\n");
 
     // 1. Index
@@ -32,8 +32,8 @@ async function main() {
     const idxTime = performance.now() - idxStart;
     console.log(`Indexed: ${idxResult.indexed} files, ${idxResult.skipped} skipped, ${idxResult.errors} errors (${idxTime.toFixed(0)}ms)`);
 
-    // 1. tg_map
-    console.log("\n--- 1. tg_map ---");
+    // 1. nreki_map
+    console.log("\n--- 1. nreki_map ---");
     const mapStart = performance.now();
     const { text: mapText, fromCache } = await engine.getRepoMap(true);
     const mapTime = performance.now() - mapStart;
@@ -47,8 +47,8 @@ async function main() {
     console.log(`Map size: ${mapTokens.toLocaleString()} tokens`);
     console.log(`Time: ${mapTime.toFixed(0)}ms (cache: ${fromCache})`);
 
-    // 2. tg_search "compression"
-    console.log("\n--- 2. tg_search 'compression' ---");
+    // 2. nreki_search "compression"
+    console.log("\n--- 2. nreki_search 'compression' ---");
     const searchStart = performance.now();
     const searchResults = await engine.search("compression", 10);
     const searchTime = performance.now() - searchStart;
@@ -61,11 +61,11 @@ async function main() {
         console.log(`    ${r.shorthand.split("\n")[0].slice(0, 100)}`);
     }
 
-    // 3. tg_def "TokenGuardEngine"
-    console.log("\n--- 3. tg_def 'TokenGuardEngine' ---");
+    // 3. nreki_def "NREKIEngine"
+    console.log("\n--- 3. nreki_def 'NREKIEngine' ---");
     const parser = engine.getParser();
     const defStart = performance.now();
-    const defResults = await findDefinition(ROOT, parser, "TokenGuardEngine");
+    const defResults = await findDefinition(ROOT, parser, "NREKIEngine");
     const defTime = performance.now() - defStart;
     console.log(`Found: ${defResults.length} definition(s)`);
     for (const d of defResults) {
@@ -73,8 +73,8 @@ async function main() {
     }
     console.log(`Time: ${defTime.toFixed(0)}ms`);
 
-    // 4. tg_refs "safePath"
-    console.log("\n--- 4. tg_refs 'safePath' ---");
+    // 4. nreki_refs "safePath"
+    console.log("\n--- 4. nreki_refs 'safePath' ---");
     const refsStart = performance.now();
     const refsResults = await findReferences(ROOT, parser, "safePath");
     const refsTime = performance.now() - refsStart;
@@ -83,8 +83,8 @@ async function main() {
     console.log(`Files: ${[...refsFiles].join(", ")}`);
     console.log(`Time: ${refsTime.toFixed(0)}ms`);
 
-    // 5. tg_outline for src/engine.ts
-    console.log("\n--- 5. tg_outline 'src/engine.ts' ---");
+    // 5. nreki_outline for src/engine.ts
+    console.log("\n--- 5. nreki_outline 'src/engine.ts' ---");
     const outlinePath = path.join(ROOT, "src/engine.ts");
     const outStart = performance.now();
     const symbols = await getFileSymbols(outlinePath, parser, ROOT);
@@ -96,8 +96,8 @@ async function main() {
     if (symbols.length > 10) console.log(`  ... and ${symbols.length - 10} more`);
     console.log(`Time: ${outTime.toFixed(0)}ms`);
 
-    // 6. tg_compress src/engine.ts at all 3 levels
-    console.log("\n--- 6. tg_compress 'src/engine.ts' (3 levels) ---");
+    // 6. nreki_compress src/engine.ts at all 3 levels
+    console.log("\n--- 6. nreki_compress 'src/engine.ts' (3 levels) ---");
     const engineContent = fs.readFileSync(outlinePath, "utf-8");
     const originalTokens = Embedder.estimateTokens(engineContent);
     console.log(`Original: ${originalTokens.toLocaleString()} tokens`);
@@ -110,8 +110,8 @@ async function main() {
         console.log(`${level.padEnd(10)}: ${compTokens.toLocaleString()} tokens (${(cResult.ratio * 100).toFixed(1)}% reduction) ${cTime.toFixed(0)}ms`);
     }
 
-    // 7. tg_terminal with fake 500-line error output
-    console.log("\n--- 7. tg_terminal (500-line fake error) ---");
+    // 7. nreki_terminal with fake 500-line error output
+    console.log("\n--- 7. nreki_terminal (500-line fake error) ---");
     const fakeLines: string[] = [];
     for (let i = 0; i < 500; i++) {
         if (i % 50 === 0) {
@@ -130,8 +130,8 @@ async function main() {
     console.log(`Filtered: ${termResult.filtered_tokens.toLocaleString()} tokens`);
     console.log(`Reduction: ${termResult.reduction_percent}%`);
 
-    // 8. tg_validate
-    console.log("\n--- 8. tg_validate ---");
+    // 8. nreki_validate
+    console.log("\n--- 8. nreki_validate ---");
     const sandbox = new AstSandbox();
     await sandbox.initialize();
 
@@ -146,15 +146,15 @@ async function main() {
         console.log(`  Line ${e.line}, Col ${e.column}: ${e.nodeType} — ${e.context.trim().slice(0, 60)}`);
     }
 
-    // 9. tg_audit
-    console.log("\n--- 9. tg_audit ---");
+    // 9. nreki_audit
+    console.log("\n--- 9. nreki_audit ---");
     const usageStats = engine.getUsageStats();
     console.log(`Tool calls: ${usageStats.tool_calls}`);
     console.log(`Tokens saved: ${usageStats.total_saved.toLocaleString()}`);
     console.log(`Input routed: ${usageStats.total_input.toLocaleString()}`);
 
-    // 10. tg_session_report
-    console.log("\n--- 10. tg_session_report ---");
+    // 10. nreki_session_report
+    console.log("\n--- 10. nreki_session_report ---");
     const session = engine.getSessionReport();
     console.log(`Duration: ${session.durationMinutes} min`);
     console.log(`Total tokens saved: ${session.totalTokensSaved.toLocaleString()}`);
@@ -169,7 +169,7 @@ async function main() {
 
     // Cleanup
     engine.shutdown();
-    try { fs.unlinkSync(path.join(ROOT, ".tokenguard-bench.db")); } catch {}
+    try { fs.unlinkSync(path.join(ROOT, ".nreki-bench.db")); } catch {}
 }
 
 main().catch((err) => {

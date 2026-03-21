@@ -46,17 +46,17 @@ describe("E2E: Creative Circuit Breaker Flow", () => {
             new_code: "export function target() { broken",
         }, deps);
 
-        // 1. Fail 3 times — triggers Pattern 1
-        await wrapWithCircuitBreaker(deps.circuitBreaker, "tg_code", "edit", badCall, testFile, "target");
-        await wrapWithCircuitBreaker(deps.circuitBreaker, "tg_code", "edit", badCall, testFile, "target");
-        const tripRes = await wrapWithCircuitBreaker(deps.circuitBreaker, "tg_code", "edit", badCall, testFile, "target");
+        // 1. Fail 3 times - triggers Pattern 1
+        await wrapWithCircuitBreaker(deps.circuitBreaker, "nreki_code", "edit", badCall, testFile, "target");
+        await wrapWithCircuitBreaker(deps.circuitBreaker, "nreki_code", "edit", badCall, testFile, "target");
+        const tripRes = await wrapWithCircuitBreaker(deps.circuitBreaker, "nreki_code", "edit", badCall, testFile, "target");
 
         // Should get Level 1 redirect
         expect(tripRes.isError).toBe(true);
         expect(tripRes.content[0].text).toContain("LEVEL 1");
         expect(tripRes.content[0].text).toContain("compress:false");
 
-        // 2. One more failure with new strategy — should NOT escalate to Level 2
+        // 2. One more failure with new strategy - should NOT escalate to Level 2
         // (amnesia total cleared the history for this file)
         const badInsertCall = async () => handleCode("edit", {
             action: "edit", path: testFile, symbol: "target",
@@ -64,7 +64,7 @@ describe("E2E: Creative Circuit Breaker Flow", () => {
             mode: "insert_after",
         }, deps);
         const graceRes = await wrapWithCircuitBreaker(
-            deps.circuitBreaker, "tg_code", "edit", badInsertCall, testFile, "target"
+            deps.circuitBreaker, "nreki_code", "edit", badInsertCall, testFile, "target"
         );
 
         // Should be a syntax error, NOT a Level 2 trip
@@ -77,7 +77,7 @@ describe("E2E: Creative Circuit Breaker Flow", () => {
             mode: "insert_after",
         }, deps);
         const successRes = await wrapWithCircuitBreaker(
-            deps.circuitBreaker, "tg_code", "edit", goodInsertCall, testFile, "target"
+            deps.circuitBreaker, "nreki_code", "edit", goodInsertCall, testFile, "target"
         );
 
         expect(successRes.isError).toBeFalsy();

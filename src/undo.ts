@@ -1,11 +1,11 @@
 /**
- * undo.ts — Auto-rollback for tg_semantic_edit.
+ * undo.ts - Auto-rollback for nreki_code action:"edit".
  *
  * Before any semantic edit writes a file, we save a backup to
- * .tokenguard/backups/<base64-encoded-filepath>. Only the LAST
+ * .nreki/backups/<base64-encoded-filepath>. Only the LAST
  * backup per file is kept (not a full history).
  *
- * tg_undo restores the file to its state before the last edit.
+ * nreki_undo restores the file to its state before the last edit.
  */
 
 import fs from "fs";
@@ -19,7 +19,7 @@ function encodeFilePath(filePath: string): string {
 }
 
 function getBackupsDir(projectRoot: string): string {
-    return path.join(projectRoot, ".tokenguard", "backups");
+    return path.join(projectRoot, ".nreki", "backups");
 }
 
 function getBackupPath(projectRoot: string, filePath: string): string {
@@ -55,7 +55,7 @@ export function restoreBackup(projectRoot: string, filePath: string): string {
     if (!fs.existsSync(backupPath)) {
         throw new Error(
             `No backup found for "${filePath}". ` +
-            `tg_undo only works after tg_semantic_edit has modified a file.`
+            `nreki_undo only works after nreki_code action:"edit" has modified a file.`
         );
     }
 
@@ -66,5 +66,5 @@ export function restoreBackup(projectRoot: string, filePath: string): string {
     // Remove the backup after restore (one-shot undo)
     fs.unlinkSync(backupPath);
 
-    return `Restored "${filePath}" to its state before the last tg_semantic_edit.`;
+    return `Restored "${filePath}" to its state before the last nreki_code action:"edit".`;
 }

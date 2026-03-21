@@ -1,5 +1,5 @@
 /**
- * code-tokenizer.ts — Code-aware identifier tokenizer for TokenGuard.
+ * code-tokenizer.ts - Code-aware identifier tokenizer for NREKI.
  *
  * Splits code identifiers (camelCase, PascalCase, snake_case, SCREAMING_CASE,
  * dot-separated, $-prefixed, _-prefixed) into sub-tokens for keyword search.

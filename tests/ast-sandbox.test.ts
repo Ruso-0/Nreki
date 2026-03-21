@@ -1,5 +1,5 @@
 /**
- * ast-sandbox.test.ts — Tests for AST sandbox validator.
+ * ast-sandbox.test.ts - Tests for AST sandbox validator.
  *
  * Covers:
  * - Valid code in multiple languages (TS, JS, Python)

@@ -1,5 +1,5 @@
 /**
- * semantic-edit.test.ts — Tests for zero-read surgical AST patching.
+ * semantic-edit.test.ts - Tests for zero-read surgical AST patching.
  *
  * Covers:
  * - Edit a function → only that function changes

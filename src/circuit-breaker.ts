@@ -1,5 +1,5 @@
 /**
- * circuit-breaker.ts — Detects and stops infinite failure loops.
+ * circuit-breaker.ts - Detects and stops infinite failure loops.
  *
  * Claude Code often enters loops: write bad code → test → fail → fix →
  * test → fail, repeating 20+ times and burning $5+ in tokens.
@@ -96,16 +96,11 @@ export function hashError(errorText: string): string {
  * Returns true if the text looks like an error output.
  */
 export function containsError(text: string): boolean {
-    const ERROR_PATTERNS = [
+    // High-confidence patterns: a single match is sufficient
+    const STRONG_PATTERNS = [
         /error\s+TS\d+/i,
-        /^\w*Error:/m,
         /npm\s+(?:ERR!|error)/im,
         /(?:FAIL|✕|×|✗)\s+/,
-        /SyntaxError:/,
-        /TypeError:/,
-        /ReferenceError:/,
-        /Cannot find module/,
-        /ENOENT/,
         /ExitCode:\s*[1-9]/,
         /Process exited with code [1-9]/,
         /Command failed/i,
@@ -113,7 +108,20 @@ export function containsError(text: string): boolean {
         /Tests?\s+failed/i,
     ];
 
-    return ERROR_PATTERNS.some((re) => re.test(text));
+    if (STRONG_PATTERNS.some((re) => re.test(text))) return true;
+
+    // Weak patterns: may appear in comments, strings, or docs - require 2+ matches
+    const WEAK_PATTERNS = [
+        /^\w*Error:/m,
+        /SyntaxError:/,
+        /TypeError:/,
+        /ReferenceError:/,
+        /Cannot find module/,
+        /ENOENT/,
+    ];
+
+    const weakMatches = WEAK_PATTERNS.filter((re) => re.test(text)).length;
+    return weakMatches >= 2;
 }
 
 // ─── Circuit Breaker ────────────────────────────────────────────────
@@ -155,7 +163,7 @@ export class CircuitBreaker {
         const hasError = isError ?? containsError(result);
         const errorHash = hasError ? hashError(result) : null;
 
-        // Normalize path to absolute + forward slashes — prevents split counters
+        // Normalize path to absolute + forward slashes - prevents split counters
         // when the same file arrives as "src/app.ts" vs "/Users/.../src/app.ts"
         const normalizedPath = filePath
             ? path.resolve(process.cwd(), filePath).replace(/\\/g, "/")
@@ -320,7 +328,7 @@ export class CircuitBreaker {
      * Heuristic: does this tool call look like a test/build invocation?
      */
     private isTestLikeCall(record: ToolCallRecord): boolean {
-        const testTools = ["bash", "terminal", "tg_terminal", "run_command"];
+        const testTools = ["bash", "terminal", "nreki_terminal", "run_command"];
         return testTools.includes(record.toolName.toLowerCase()) || record.errorHash !== null;
     }
 
@@ -387,7 +395,7 @@ export class CircuitBreaker {
             this.state.perFileFailures.delete(this.state.lastTrippedFile);
             this.state.consecutiveFailures = 0;
         }
-        // NOTE: Do NOT clear escalationLevel — it must persist so the next
+        // NOTE: Do NOT clear escalationLevel - it must persist so the next
         // failure escalates to the next level instead of restarting from 1.
     }
 

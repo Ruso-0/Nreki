@@ -1,5 +1,5 @@
 /**
- * path-jail.ts — Path traversal protection for TokenGuard.
+ * path-jail.ts - Path traversal protection for NREKI.
  *
  * Ensures all file paths resolve within the workspace root,
  * preventing directory traversal attacks (e.g., ../../etc/passwd),
@@ -24,6 +24,14 @@ const SENSITIVE_PATTERNS: RegExp[] = [
     /[/\\]\.pypirc$/i,                  // PyPI auth tokens
     /[/\\]\.git[/\\]credentials$/i,     // Git credential store
     /[/\\]\.git[/\\]config$/i,          // Git config (may contain tokens)
+    /[/\\]\.docker[/\\]config\.json$/i, // Docker auth
+    /[/\\]credentials\.json$/i,         // GCP / generic credentials
+    /[/\\]\.netrc$/i,                   // FTP/HTTP auth tokens
+    /[/\\]\.htpasswd$/i,               // Apache password file
+    /[/\\]\.git-credentials$/i,         // Git credential file
+    /[/\\]\.kube[/\\]config$/i,         // Kubernetes config
+    /[/\\]wp-config\.php$/i,            // WordPress secrets
+    /[/\\]settings\.py$/i,              // Django secrets
 ];
 
 /**
@@ -54,8 +62,13 @@ export function safePath(workspaceRoot: string, inputPath: string): string {
     const resolved = path.resolve(workspaceRoot, normalized);
     const resolvedRoot = path.resolve(workspaceRoot);
 
-    if (!resolved.startsWith(resolvedRoot)) {
+    if (!resolved.startsWith(resolvedRoot + path.sep) && resolved !== resolvedRoot) {
         throw new Error(`Path traversal blocked: ${inputPath}`);
+    }
+
+    // H-02: Block operating on the workspace root itself
+    if (resolved === resolvedRoot) {
+        throw new Error(`Cannot operate on workspace root directly: ${inputPath}`);
     }
 
     // Resolve symlinks to detect symlink escapes.
@@ -70,11 +83,11 @@ export function safePath(workspaceRoot: string, inputPath: string): string {
         } catch {
             realRoot = resolvedRoot;
         }
-        if (!realPath.startsWith(realRoot)) {
+        if (!realPath.startsWith(realRoot + path.sep) && realPath !== realRoot) {
             throw new Error(`Symlink escape blocked: ${inputPath} resolves outside workspace`);
         }
     } catch (err) {
-        // File doesn't exist yet (e.g., new file creation) — skip symlink check
+        // File doesn't exist yet (e.g., new file creation) - skip symlink check
         if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
             throw err;
         }

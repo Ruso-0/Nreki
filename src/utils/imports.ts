@@ -1,15 +1,15 @@
 /**
- * imports.ts — Dependency extraction and security filters for Auto-Context.
+ * imports.ts - Dependency extraction and security filters for Auto-Context.
  * Anchors searches to explicit import declarations instead of blind regex on code bodies.
  * Supports: ESM named/default, CommonJS require, Python from-import, Go namespace inference.
  */
 
 export interface ImportDependency {
-    /** Original exported name — used for BM25 search in SQLite */
+    /** Original exported name - used for BM25 search in SQLite */
     symbol: string;
-    /** Name used in THIS file (may differ due to alias) — used for the Gold Filter */
+    /** Name used in THIS file (may differ due to alias) - used for the Gold Filter */
     localName: string;
-    /** Last segment of the import path — used for homonym disambiguation */
+    /** Last segment of the import path - used for homonym disambiguation */
     pathHint: string;
 }
 
@@ -25,7 +25,7 @@ export function isSensitiveSignature(sig: string): boolean {
     return SENSITIVE_PATTERNS.some(p => p.test(sig));
 }
 
-/** Escape special regex characters — prevents ReDoS with symbols like $store */
+/** Escape special regex characters - prevents ReDoS with symbols like $store */
 export function escapeRegExp(str: string): string {
     return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -33,15 +33,15 @@ export function escapeRegExp(str: string): string {
 /**
  * Clean a shorthand signature for safe injection.
  * - Strips JS/TS block and line comments
- * - Strips ONLY TokenGuard-specific Python stubs (not legitimate # comments)
+ * - Strips ONLY NREKI-specific Python stubs (not legitimate # comments)
  * - Collapses multiline signatures into one line
  * - Falls back to first line if cleanup produces empty string
  */
 export function cleanSignature(shorthand: string): string {
     const sig = shorthand
-        .replace(/\/\*[\s\S]*?\*\//g, "")              // JS/TS block comments & /*[tg:4L]*/ stubs
+        .replace(/\/\*[\s\S]*?\*\//g, "")              // JS/TS block comments & /*[nreki:4L]*/ stubs
         .replace(/\/\/.*/g, "")                         // JS/TS line comments
-        .replace(/#\s*(?:\[TG\]|TG:L\d+).*$/gm, "")   // Strip ONLY TokenGuard stubs in Python
+        .replace(/#\s*(?:\[NREKI\]|TG:L\d+).*$/gm, "")   // Strip ONLY NREKI stubs in Python
         .replace(/\{\s*$/, "")                          // Remove trailing open brace
         .replace(/\s+/g, " ")                           // Collapse whitespace
         .trim();
@@ -79,9 +79,10 @@ export function extractDependencies(code: string, ext: string): ImportDependency
             }
         }
 
-        // ── Default ESM: import Foo from "../services/auth" ──
+        // ── Default ESM: import Foo from "..." or import Foo, { bar } from "..." ──
+        // A-05: Allow optional ", { ... }" between default identifier and "from"
         const defaultRe =
-            /import\s+(?!\s*\{)(?:\*\s+as\s+)?([a-zA-Z0-9_$]+)\s+from\s+['"]([^'"]+)['"]/g;
+            /import\s+(?!\s*\{)(?:\*\s+as\s+)?([a-zA-Z0-9_$]+)\s*(?:,\s*\{[^}]*\})?\s+from\s+['"]([^'"]+)['"]/g;
         while ((match = defaultRe.exec(code)) !== null) {
             if (!isLocalPath(match[2])) continue;
             const pathHint =

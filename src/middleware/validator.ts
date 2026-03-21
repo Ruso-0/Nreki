@@ -1,12 +1,12 @@
 /**
- * middleware/validator.ts — AST validation middleware for TokenGuard v3.0.
+ * middleware/validator.ts - AST validation middleware for NREKI v3.0.
  *
  * Wraps edit operations with automatic pre-write syntax validation.
  * If the edited code has syntax errors, the write is blocked and the
  * caller gets the exact error with line/column and fix suggestions.
  *
- * This is the former tg_validate tool, now running automatically
- * as invisible middleware inside tg_code action:"edit".
+ * This is the former nreki_validate tool, now running automatically
+ * as invisible middleware inside nreki_code action:"edit".
  */
 
 import { AstSandbox, type ValidationResult } from "../ast-sandbox.js";
@@ -46,7 +46,7 @@ export function formatValidationErrors(result: ValidationResult): string {
     );
 
     return (
-        `## Validation: FAILED — ${result.errors.length} syntax error(s)\n\n` +
+        `## Validation: FAILED - ${result.errors.length} syntax error(s)\n\n` +
         `### Errors\n${errorLines.join("\n")}\n\n` +
         `### Suggestions\n${result.suggestion}\n\n` +
         `Fix these errors before writing the file.`

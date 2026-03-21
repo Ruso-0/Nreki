@@ -1,5 +1,5 @@
 /**
- * compressor-advanced.ts — LLMLingua-2-inspired token-level compression.
+ * compressor-advanced.ts - LLMLingua-2-inspired token-level compression.
  *
  * Three-stage pipeline:
  *   Stage 1: Preprocessing (strip comments, console.log, whitespace)
@@ -11,7 +11,7 @@
  *   - medium:     Stage 1 + 2 + key body lines (~75%)
  *   - aggressive: Stage 1 + 2 + 3 body stripping (~90-95%)
  *
- * Pure TypeScript — zero native dependencies, zero Python.
+ * Pure TypeScript - zero native dependencies, zero Python.
  */
 
 import { ASTParser } from "./parser.js";
@@ -138,14 +138,14 @@ function preprocess(content: string, filePath: string): { cleaned: string; remov
         const pyStrings: string[] = [];
         text = text.replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g, (m) => {
             pyStrings.push(m);
-            return `__TG_STR${pyStrings.length - 1}__`;
+            return `__NREKI_STR${pyStrings.length - 1}__`;
         });
 
         // Now safe to strip # comments
         text = text.replace(/#[^\n]*/gm, "");
 
         // Restore strings and shebang
-        text = text.replace(/__TG_STR(\d+)__/g, (_, i) => pyStrings[parseInt(i)]);
+        text = text.replace(/__NREKI_STR(\d+)__/g, (_, i) => pyStrings[parseInt(i)]);
         text = text.replace(/___SHEBANG___/g, "");
     } else {
         // JS/TS/Go: // comments
@@ -182,7 +182,7 @@ function preprocess(content: string, filePath: string): { cleaned: string; remov
 // ─── Stage 2: Self-Information Token Filtering ──────────────────────
 
 /**
- * Unigram frequency table — ~300 most common English + code tokens.
+ * Unigram frequency table - ~300 most common English + code tokens.
  * Tokens NOT in this table default to probability 0.0001 (rare = keep).
  */
 const UNIGRAM_FREQ = new Map<string, number>([
@@ -471,7 +471,7 @@ async function structuralCompress(
         const lines = originalContent.split("\n");
         const parts: string[] = [];
 
-        parts.push(`// [TG] ${filePath} | aggressive | ${parseResult.chunks.length} chunks`);
+        parts.push(`// [NREKI] ${filePath} | aggressive | ${parseResult.chunks.length} chunks`);
 
         // Collect import/export/type lines from the top
         const firstChunkLine = Math.min(...parseResult.chunks.map(c => c.startLine));
@@ -499,7 +499,7 @@ async function structuralCompress(
             const refsStr = refs.length > 0 ? ` refs:${refs.join(",")}` : "";
 
             // Compact stub format (vs verbose ~120+ char original)
-            const compactStub = `/*[tg:${bodyLineCount}L${refsStr}]*/`;
+            const compactStub = `/*[nreki:${bodyLineCount}L${refsStr}]*/`;
 
             // Conservation law: shorthand + stub must be strictly smaller than raw code
             const stubTotal = chunk.shorthand.length + 1 + compactStub.length;
@@ -507,7 +507,7 @@ async function structuralCompress(
                 parts.push(chunk.shorthand);
                 parts.push(compactStub);
             } else {
-                // Stub would bloat — shorthand alone (already has TG line range)
+                // Stub would bloat - shorthand alone (already has TG line range)
                 parts.push(chunk.shorthand);
             }
         }
@@ -520,7 +520,7 @@ async function structuralCompress(
         const parts: string[] = [];
         const lines = originalContent.split("\n");
 
-        parts.push(`// [TG] ${filePath} | medium | ${parseResult.chunks.length} chunks`);
+        parts.push(`// [NREKI] ${filePath} | medium | ${parseResult.chunks.length} chunks`);
 
         // Keep imports
         const firstChunkLine = Math.min(...parseResult.chunks.map(c => c.startLine));

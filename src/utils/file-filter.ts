@@ -1,5 +1,5 @@
 /**
- * file-filter.ts — File size and extension filtering for TokenGuard.
+ * file-filter.ts - File size and extension filtering for NREKI.
  *
  * Prevents processing of binary files, minified bundles, lock files,
  * and oversized files that would waste resources.

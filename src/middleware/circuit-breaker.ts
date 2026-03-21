@@ -1,14 +1,14 @@
 /**
- * middleware/circuit-breaker.ts — Creative circuit breaker middleware for TokenGuard.
+ * middleware/circuit-breaker.ts - Creative circuit breaker middleware for NREKI.
  *
  * Wraps all router tool handlers with automatic loop detection.
  * Records every tool call result and trips the breaker when it detects
  * destructive patterns (repeated errors, excessive edits, doom loops).
  *
  * v3.1.0: 3-level escalation system ("Break & Build"):
- *   Level 1 — Rewrite: stop patching, rewrite the symbol from scratch
- *   Level 2 — Decompose: break into smaller helper functions
- *   Level 3 — Hard Stop: ask the human for guidance
+ *   Level 1 - Rewrite: stop patching, rewrite the symbol from scratch
+ *   Level 2 - Decompose: break into smaller helper functions
+ *   Level 3 - Hard Stop: ask the human for guidance
  */
 
 import { CircuitBreaker, containsError } from "../circuit-breaker.js";
@@ -33,17 +33,17 @@ function generateLevel1Redirect(
     const sym = symbol ?? "the failing symbol";
     const fil = file ?? "the current file";
     return (
-        `🔄 **[TOKENGUARD: BREAK & BUILD — LEVEL 1]**\n\n` +
+        `🔄 **[NREKI: BREAK & BUILD - LEVEL 1]**\n\n` +
         `You are stuck in a syntax/error loop attempting to patch \`${sym}\` in \`${fil}\`.\n` +
         `Repeated fixes to the same code are failing with the same pattern:\n` +
         `> ${error}\n\n` +
         `**STRATEGY SHIFT: Stop patching. Rewrite from scratch.**\n\n` +
-        `1. Use \`tg_code action:"read" compress:false path:"${fil}"\` to read the UNCOMPRESSED code. You CANNOT rewrite the logic if you read it compressed.\n` +
+        `1. Use \`nreki_code action:"read" compress:false path:"${fil}"\` to read the UNCOMPRESSED code. You CANNOT rewrite the logic if you read it compressed.\n` +
         `2. DO NOT use the native Write tool (it bypasses AST validation).\n` +
-        `3. Use \`tg_code action:"edit" mode:"insert_after" symbol:"${sym}"\` to safely append a NEW function \`${sym}_v2\` below the original. TokenGuard will validate it.\n` +
+        `3. Use \`nreki_code action:"edit" mode:"insert_after" symbol:"${sym}"\` to safely append a NEW function \`${sym}_v2\` below the original. NREKI will validate it.\n` +
         `4. Implement the intended behavior cleanly from zero in \`${sym}_v2\`.\n` +
         `5. Once it compiles (test with Bash), update callers to use \`${sym}_v2\`.\n` +
-        `6. Then remove the old \`${sym}\` with \`tg_code action:"edit"\`.\n\n` +
+        `6. Then remove the old \`${sym}\` with \`nreki_code action:"edit"\`.\n\n` +
         `Acknowledge this and start building \`${sym}_v2\`.`
     );
 }
@@ -56,17 +56,17 @@ function generateLevel2Redirect(
     const sym = symbol ?? "the failing symbol";
     const fil = file ?? "the current file";
     return (
-        `🔄 **[TOKENGUARD: BREAK & BUILD — LEVEL 2: DECOMPOSE]**\n\n` +
+        `🔄 **[NREKI: BREAK & BUILD - LEVEL 2: DECOMPOSE]**\n\n` +
         `Rewriting \`${sym}\` in \`${fil}\` as a single function also failed.\n` +
         `The complexity is too high for monolithic code. Time to divide and conquer.\n` +
         `> ${error}\n\n` +
         `**MANDATORY STRATEGY: Break the logic into smaller pieces.**\n\n` +
-        `1. Use \`tg_code action:"read" compress:false path:"${fil}"\` to read the full uncompressed code of \`${sym}\` and understand its responsibilities.\n` +
+        `1. Use \`nreki_code action:"read" compress:false path:"${fil}"\` to read the full uncompressed code of \`${sym}\` and understand its responsibilities.\n` +
         `2. Identify 2-3 distinct responsibilities inside \`${sym}\`.\n` +
         `3. DO NOT use the native Write tool (it bypasses AST validation).\n` +
-        `4. Use \`tg_code action:"edit" mode:"insert_before" symbol:"${sym}"\` to add small, pure helper functions above \`${sym}\` (data in → data out). TokenGuard will validate them.\n` +
+        `4. Use \`nreki_code action:"edit" mode:"insert_before" symbol:"${sym}"\` to add small, pure helper functions above \`${sym}\` (data in → data out). NREKI will validate them.\n` +
         `5. Test each helper individually with Bash before moving on.\n` +
-        `6. Only after all helpers compile, use \`tg_code action:"edit"\` to rewrite \`${sym}\` as a thin orchestrator.\n\n` +
+        `6. Only after all helpers compile, use \`nreki_code action:"edit"\` to rewrite \`${sym}\` as a thin orchestrator.\n\n` +
         `Acknowledge this and start with the first helper function.`
     );
 }
@@ -79,16 +79,16 @@ function generateLevel3HardStop(
     const sym = symbol ?? "the failing symbol";
     const fil = file ?? "the current file";
     return (
-        `🛑 **[TOKENGUARD: CIRCUIT BREAKER — HARD STOP]**\n\n` +
-        `TokenGuard has tried redirecting you twice and you are still stuck on \`${sym}\` in \`${fil}\`.\n` +
+        `🛑 **[NREKI: CIRCUIT BREAKER - HARD STOP]**\n\n` +
+        `NREKI has tried redirecting you twice and you are still stuck on \`${sym}\` in \`${fil}\`.\n` +
         `> ${error}\n\n` +
         `**STOP. Ask the human how to proceed.**\n\n` +
         `Tell them:\n` +
         `- What you were trying to do\n` +
         `- The error pattern you cannot resolve\n` +
-        `- The two strategies TokenGuard suggested (rewrite + decompose) and why they failed\n\n` +
+        `- The two strategies NREKI suggested (rewrite + decompose) and why they failed\n\n` +
         `Do not attempt another edit until the human responds.\n\n` +
-        `Use \`tg_guard action:"reset"\` after the human provides guidance to clear this breaker.`
+        `Use \`nreki_guard action:"reset"\` after the human provides guidance to clear this breaker.`
     );
 }
 
@@ -136,6 +136,7 @@ export function wrapWithCircuitBreaker(
     handler: () => Promise<McpToolResponse>,
     filePath?: string,
     symbolName?: string,
+    chronos?: { recordTrip: (file: string, reason: string) => void },
 ): Promise<McpToolResponse> {
     return (async () => {
         const toolAction = `${toolName}:${action}`;
@@ -193,6 +194,11 @@ export function wrapWithCircuitBreaker(
             );
 
             if (loopCheck.tripped) {
+                // Record circuit breaker trip in file fragility tracker
+                if (chronos && filePath) {
+                    chronos.recordTrip(filePath, loopCheck.reason);
+                }
+
                 // For levels 1-2, soft-reset to allow retry after redirect
                 if (loopCheck.level < 3) {
                     cb.softReset();

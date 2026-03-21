@@ -1,5 +1,5 @@
 /**
- * compressor-advanced.test.ts — Tests for the LLMLingua-2-inspired compressor.
+ * compressor-advanced.test.ts - Tests for the LLMLingua-2-inspired compressor.
  *
  * Tests cover:
  * - Stage 1: Preprocessing (comments, console.log, whitespace)
@@ -72,7 +72,7 @@ export function createMiddleware(service: AuthService) {
 `;
 
 const SAMPLE_PROSE = `
-The TokenGuard system is a comprehensive tool that provides various features
+The NREKI system is a comprehensive tool that provides various features
 for optimizing token consumption in large language model interactions. It uses
 a combination of semantic search, AST-based compression, and proactive monitoring
 to reduce the number of tokens consumed during a coding session. The system
@@ -214,7 +214,7 @@ describe("Token Scoring (Stage 2)", () => {
     });
 
     it("should assign high scores to rare identifiers", () => {
-        const scored = scoreTokens("calculateMerkleHash TokenGuardEngine", 0.7);
+        const scored = scoreTokens("calculateMerkleHash NrekiEngine", 0.7);
         const nonBreak = scored.filter(t => !t.lineBreak);
         // Rare tokens default to 0.0001 probability -> high self-info
         for (const t of nonBreak) {
@@ -325,7 +325,7 @@ describe("Natural Text Compression", () => {
         // Should be shorter than original
         expect(filtered.length).toBeLessThan(SAMPLE_PROSE.length);
         // Should still contain important terms
-        expect(filtered).toContain("TokenGuard");
+        expect(filtered).toContain("NREKI");
         expect(filtered).toContain("BM25");
     });
 

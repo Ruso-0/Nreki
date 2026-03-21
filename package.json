@@ -1,11 +1,11 @@
 {
-  "name": "@ruso-0/tokenguard",
-  "version": "4.0.2",
-  "description": "MCP plugin for Claude Code — 3 router tools with invisible middleware for token-optimized code navigation, compression, and safety. Lite mode (instant) or Pro mode (semantic search).",
+  "name": "@ruso-0/nreki",
+  "version": "6.0.0",
+  "description": "MCP server that validates AI agent edits in RAM before they reach disk. Cross-file semantic checks via TypeScript Compiler API. Auto-fixes structural errors. Zero cloud dependencies.",
   "main": "dist/index.js",
   "type": "module",
   "bin": {
-    "tokenguard": "dist/index.js"
+    "nreki": "dist/index.js"
   },
   "scripts": {
     "build": "tsc",
@@ -17,18 +17,26 @@
     "lint": "tsc --noEmit"
   },
   "keywords": [
+    "nreki",
     "mcp",
     "claude-code",
-    "code-safety",
+    "ai-safety",
     "ast-validation",
+    "semantic-verification",
+    "acid-transactions",
+    "vfs",
+    "typescript-compiler",
     "circuit-breaker",
     "tree-sitter",
-    "defensive-coding",
+    "pagerank",
+    "blast-radius",
+    "code-safety",
     "surgical-edit",
-    "ai-safety",
-    "semantic-search"
+    "auto-healing",
+    "zero-token",
+    "codefix"
   ],
-  "author": "Ruso-0 (https://github.com/Ruso-0)",
+  "author": "Jherson Eddie Tintaya Holguin (https://github.com/Ruso-0)",
   "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",
@@ -37,17 +45,16 @@
     "sql.js": "^1.12.0",
     "tree-sitter-wasms": "^0.1.13",
     "web-tree-sitter": "^0.24.7",
+    "typescript": "^5.9.3",
     "zod": "^3.24.2"
   },
   "optionalDependencies": {
-    "@xenova/transformers": "^2.17.2",
-    "sharp": "^0.34.5"
+    "@xenova/transformers": "^2.17.2"
   },
   "devDependencies": {
     "@types/node": "^22.13.10",
     "@types/picomatch": "^4.0.2",
     "tsx": "^4.19.3",
-    "typescript": "^5.7.3",
     "vitest": "^3.0.7"
   },
   "files": [
@@ -63,6 +70,6 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/Ruso-0/TokenGuard"
+    "url": "https://github.com/Ruso-0/nreki"
   }
 }

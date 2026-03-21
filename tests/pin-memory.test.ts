@@ -1,5 +1,5 @@
 /**
- * pin-memory.test.ts — Tests for persistent pinned rules.
+ * pin-memory.test.ts - Tests for persistent pinned rules.
  *
  * Covers:
  * - Add pin → appears in list
@@ -8,7 +8,7 @@
  * - Max 10 pins → rejects 11th with message
  * - Max 200 chars → rejects longer with message
  * - getPinnedText() is deterministic
- * - Pins appear in tg_map output
+ * - Pins appear in nreki_map output
  * - Pins persist to disk (write and re-read)
  */
 
@@ -50,7 +50,7 @@ beforeAll(async () => {
 
 beforeEach(() => {
     // Clear pins before each test
-    const pinsPath = path.join(testDir, ".tokenguard", "pins.json");
+    const pinsPath = path.join(testDir, ".nreki", "pins.json");
     if (fs.existsSync(pinsPath)) {
         fs.unlinkSync(pinsPath);
     }
@@ -62,7 +62,7 @@ afterAll(() => {
 
 // ─── Tests ──────────────────────────────────────────────────────────
 
-describe("Pin Memory — Add & List", () => {
+describe("Pin Memory - Add & List", () => {
     it("should add a pin and return it in the list", () => {
         const result = addPin(testDir, "Always use fetch, not axios", "user");
         expect(result.success).toBe(true);
@@ -108,7 +108,7 @@ describe("Pin Memory — Add & List", () => {
     });
 });
 
-describe("Pin Memory — Remove", () => {
+describe("Pin Memory - Remove", () => {
     it("should remove a pin by id", () => {
         addPin(testDir, "Rule to remove", "user");
         addPin(testDir, "Rule to keep", "user");
@@ -132,7 +132,7 @@ describe("Pin Memory — Remove", () => {
     });
 });
 
-describe("Pin Memory — Limits", () => {
+describe("Pin Memory - Limits", () => {
     it("should reject pin text exceeding 200 characters", () => {
         const longText = "x".repeat(201);
         const result = addPin(testDir, longText, "user");
@@ -174,7 +174,7 @@ describe("Pin Memory — Limits", () => {
     });
 });
 
-describe("Pin Memory — getPinnedText()", () => {
+describe("Pin Memory - getPinnedText()", () => {
     it("should return empty string when no pins exist", () => {
         const text = getPinnedText(testDir);
         expect(text).toBe("");
@@ -210,7 +210,7 @@ describe("Pin Memory — getPinnedText()", () => {
     });
 });
 
-describe("Pin Memory — tg_map Integration", () => {
+describe("Pin Memory - nreki_map Integration", () => {
     it("should append pinned rules after repo map text", async () => {
         addPin(testDir, "Always use fetch", "user");
         addPin(testDir, "Use Tailwind, not CSS modules", "claude");
@@ -239,16 +239,16 @@ describe("Pin Memory — tg_map Integration", () => {
     });
 });
 
-describe("Pin Memory — Disk Persistence", () => {
+describe("Pin Memory - Disk Persistence", () => {
     it("should persist pins to disk and re-read them", () => {
         addPin(testDir, "Persisted rule 1", "user");
         addPin(testDir, "Persisted rule 2", "claude");
 
         // Verify file exists on disk
-        const pinsPath = path.join(testDir, ".tokenguard", "pins.json");
+        const pinsPath = path.join(testDir, ".nreki", "pins.json");
         expect(fs.existsSync(pinsPath)).toBe(true);
 
-        // Read directly from disk — simulates a fresh process
+        // Read directly from disk - simulates a fresh process
         const rawData = JSON.parse(fs.readFileSync(pinsPath, "utf-8"));
         expect(rawData).toHaveLength(2);
         expect(rawData[0].text).toBe("Persisted rule 1");
@@ -262,7 +262,7 @@ describe("Pin Memory — Disk Persistence", () => {
     });
 
     it("should handle corrupted pins.json gracefully", () => {
-        const dir = path.join(testDir, ".tokenguard");
+        const dir = path.join(testDir, ".nreki");
         fs.mkdirSync(dir, { recursive: true });
         fs.writeFileSync(path.join(dir, "pins.json"), "not valid json{{{");
 

@@ -1,5 +1,5 @@
 /**
- * ast-navigator.test.ts — Tests for AST-based navigation tools.
+ * ast-navigator.test.ts - Tests for AST-based navigation tools.
  *
  * Covers:
  * - findDefinition: exact match, kind filtering, not found

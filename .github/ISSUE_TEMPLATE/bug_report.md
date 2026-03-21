@@ -21,7 +21,7 @@ A clear description of what you expected to happen.
 ## Environment
 - OS: [e.g., macOS 14, Windows 11, Ubuntu 22.04]
 - Node.js version: [e.g., 20.10.0]
-- TokenGuard version: [e.g., 1.2.0]
+- NREKI version: [e.g., 1.2.0]
 
 ## Error Output
 ```

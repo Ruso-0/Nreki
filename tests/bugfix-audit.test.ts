@@ -12,20 +12,20 @@ describe("Bug 1: Path normalization in Circuit Breaker", () => {
         const absolutePath = path.resolve(cwd, relativePath);
 
         // Simulate 3 failures with mixed path formats
-        cb.recordToolCall("tg_code:edit", "TypeError: fail", relativePath);
-        cb.recordToolCall("tg_code:edit", "TypeError: fail", absolutePath);
-        cb.recordToolCall("tg_code:edit", "TypeError: fail", "src/app.ts");
+        cb.recordToolCall("nreki_code:edit", "TypeError: fail", relativePath);
+        cb.recordToolCall("nreki_code:edit", "TypeError: fail", absolutePath);
+        cb.recordToolCall("nreki_code:edit", "TypeError: fail", "src/app.ts");
 
         const state = cb.getState();
-        // Should be tripped — all 3 failures are on the SAME normalized file
+        // Should be tripped - all 3 failures are on the SAME normalized file
         expect(state.tripped).toBe(true);
     });
 
     it("should normalize Windows backslashes", () => {
         const cb = new CircuitBreaker();
 
-        cb.recordToolCall("tg_code:edit", "TypeError: fail", "src\\app.ts");
-        cb.recordToolCall("tg_code:edit", "TypeError: fail", "src/app.ts");
+        cb.recordToolCall("nreki_code:edit", "TypeError: fail", "src\\app.ts");
+        cb.recordToolCall("nreki_code:edit", "TypeError: fail", "src/app.ts");
 
         const state = cb.getState();
         // Both should map to the same key
@@ -51,7 +51,7 @@ describe("Bug 3: Plaintext fallback for unsupported languages", () => {
 
         const result = await engine.indexFile(rustFile);
 
-        // Should NOT be null — should have indexed as plaintext
+        // Should NOT be null - should have indexed as plaintext
         expect(result).not.toBeNull();
         expect(result!.chunks.length).toBeGreaterThan(0);
         expect(result!.chunks[0].nodeType).toBe("file");

@@ -1,5 +1,5 @@
 /**
- * read-source.ts — BOM-safe source file reader for TokenGuard.
+ * read-source.ts - BOM-safe source file reader for NREKI.
  *
  * Windows editors often prepend an invisible BOM character (U+FEFF)
  * to UTF-8 files. Tree-sitter counts this as a byte offset, causing

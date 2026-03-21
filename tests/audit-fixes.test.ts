@@ -1,5 +1,5 @@
 /**
- * audit-fixes.test.ts — Tests for all audit fixes.
+ * audit-fixes.test.ts - Tests for all audit fixes.
  *
  * Covers:
  * - FIX 1: Path traversal protection (safePath)
@@ -30,7 +30,7 @@ import { generateRepoMap, repoMapToText } from "../src/repo-map.js";
 
 // ─── FIX 1: Path Traversal Tests ────────────────────────────────────
 
-describe("FIX 1: safePath — Path Traversal Protection", () => {
+describe("FIX 1: safePath - Path Traversal Protection", () => {
     const workspaceRoot = path.join(os.tmpdir(), `tg-jail-test-${Date.now()}`);
 
     beforeAll(() => {
@@ -64,9 +64,8 @@ describe("FIX 1: safePath — Path Traversal Protection", () => {
         expect(() => safePath(workspaceRoot, outsidePath)).toThrow("Path traversal blocked");
     });
 
-    it("should allow workspace root itself", () => {
-        const result = safePath(workspaceRoot, ".");
-        expect(result).toBe(path.resolve(workspaceRoot));
+    it("should block workspace root itself (H-02)", () => {
+        expect(() => safePath(workspaceRoot, ".")).toThrow("Cannot operate on workspace root directly");
     });
 
     it("should block sneaky path traversal with backslashes", () => {
@@ -76,7 +75,7 @@ describe("FIX 1: safePath — Path Traversal Protection", () => {
 
 // ─── FIX 5: Code-Aware Tokenizer Tests ─────────────────────────────
 
-describe("FIX 5: codeTokenize — Code-Aware Tokenizer", () => {
+describe("FIX 5: codeTokenize - Code-Aware Tokenizer", () => {
     it("should split camelCase", () => {
         const tokens = codeTokenize("authMiddleware");
         expect(tokens).toContain("auth");
@@ -193,7 +192,7 @@ describe("FIX 5: codeTokenize — Code-Aware Tokenizer", () => {
 
 // ─── FIX 7: File Filter Tests ───────────────────────────────────────
 
-describe("FIX 7: shouldProcess — File Size and Extension Filter", () => {
+describe("FIX 7: shouldProcess - File Size and Extension Filter", () => {
     it("should allow regular TypeScript files", () => {
         const result = shouldProcess("src/index.ts", 5000);
         expect(result.process).toBe(true);
@@ -279,7 +278,7 @@ describe("FIX 8+9: VectorIndex Optimization and RRF Scoring", () => {
         db.insertChunk("/test/vec1.ts", "[func] exact()", "function exact() {}", "func", 1, 1, v1);
         db.insertChunk("/test/vec2.ts", "[func] partial()", "function partial() {}", "func", 1, 1, v2);
 
-        // Query with v1 — should rank v1 higher (higher rrf_score = better match)
+        // Query with v1 - should rank v1 higher (higher rrf_score = better match)
         const results = db.searchVector(v1, 5);
         expect(results.length).toBe(2);
         // v1 should match itself perfectly (highest score)
@@ -346,7 +345,7 @@ describe("FIX 5 Integration: Code-aware search matching", () => {
 
 // ─── v2.2 FIX 1: BOM Stripping Tests ────────────────────────────────
 
-describe("v2.2 FIX 1: readSource — BOM Stripping", () => {
+describe("v2.2 FIX 1: readSource - BOM Stripping", () => {
     const testDir = path.join(os.tmpdir(), `tg-bom-test-${Date.now()}`);
 
     beforeAll(() => {
@@ -393,7 +392,7 @@ describe("v2.2 FIX 2: Pin XML Escaping", () => {
     const testDir = path.join(os.tmpdir(), `tg-pin-xml-test-${Date.now()}`);
 
     beforeAll(() => {
-        fs.mkdirSync(path.join(testDir, ".tokenguard"), { recursive: true });
+        fs.mkdirSync(path.join(testDir, ".nreki"), { recursive: true });
     });
 
     afterAll(() => {
@@ -408,31 +407,31 @@ describe("v2.2 FIX 2: Pin XML Escaping", () => {
         expect(result.pin.text).toContain("&lt;/repo-map&gt;");
     });
 
-    it("escapes ampersands", () => {
+    it("preserves ampersands (A-06: only angle brackets are escaped)", () => {
         // Clear pins first
-        const pinsPath = path.join(testDir, ".tokenguard", "pins.json");
+        const pinsPath = path.join(testDir, ".nreki", "pins.json");
         if (fs.existsSync(pinsPath)) fs.unlinkSync(pinsPath);
 
         const result = addPin(testDir, "Use AT&T API", "user");
         expect(result.success).toBe(true);
         if (!result.success) return;
-        expect(result.pin.text).toContain("AT&amp;T");
+        expect(result.pin.text).toContain("AT&T");
     });
 
-    it("escapes quotes", () => {
-        const pinsPath = path.join(testDir, ".tokenguard", "pins.json");
+    it("preserves quotes (A-06: only angle brackets are escaped)", () => {
+        const pinsPath = path.join(testDir, ".nreki", "pins.json");
         if (fs.existsSync(pinsPath)) fs.unlinkSync(pinsPath);
 
         const result = addPin(testDir, 'Use "strict" mode', "user");
         expect(result.success).toBe(true);
         if (!result.success) return;
-        expect(result.pin.text).toContain("&quot;strict&quot;");
+        expect(result.pin.text).toContain('"strict"');
     });
 });
 
 // ─── v2.2 FIX 4: Fast Dot Product Tests ────────────────────────────
 
-describe("v2.2 FIX 4: fastSimilarity — Dot Product", () => {
+describe("v2.2 FIX 4: fastSimilarity - Dot Product", () => {
     it("dot product matches cosine for normalized vectors", () => {
         // Create two normalized vectors
         const a = new Float32Array([0.6, 0.8]);
@@ -505,7 +504,7 @@ describe("v2.2 FIX 5: saveBackup / restoreBackup", () => {
         saveBackup(testDir, filePath);
         fs.writeFileSync(filePath, "modified");
         restoreBackup(testDir, filePath);
-        // Second restore should fail — backup was consumed
+        // Second restore should fail - backup was consumed
         expect(() => restoreBackup(testDir, filePath)).toThrow("No backup found");
     });
 });
@@ -536,7 +535,7 @@ describe("v2.2 FIX 6: Repo map appears before pins", () => {
         const mapText = repoMapToText(map);
         const pinnedText = getPinnedText(testDir);
 
-        // Simulate the tg_map output order (FIX 6: map first, pins after)
+        // Simulate the nreki_map output order (FIX 6: map first, pins after)
         const fullText = mapText + (pinnedText ? "\n" + pinnedText : "");
 
         const mapIndex = fullText.indexOf("=== Repo Map");

@@ -1,5 +1,5 @@
 /**
- * backward-compat.test.ts — Backward compatibility tests for v3.0.1.
+ * backward-compat.test.ts - Backward compatibility tests for v3.0.1.
  *
  * For each of the 16 original tools, verifies that the equivalent
  * router call produces a valid response structure. This ensures
@@ -104,68 +104,68 @@ function createMockDeps(): RouterDependencies {
     };
 }
 
-// ─── Original tg_navigate tools ─────────────────────────────────────
+// ─── Original nreki_navigate tools ─────────────────────────────────────
 
-describe("Backward Compatibility: tg_navigate tools", () => {
+describe("Backward Compatibility: nreki_navigate tools", () => {
     let deps: RouterDependencies;
 
     beforeEach(() => {
         deps = createMockDeps();
     });
 
-    it("tg_search → tg_navigate action:'search'", async () => {
+    it("nreki_search → nreki_navigate action:'search'", async () => {
         const result = await handleNavigate("search", { action: "search", query: "database initialization", limit: 5 }, deps);
         expect(result.content[0].text).toContain("Search");
-        expect(result.content[0].text).toContain("TokenGuard");
+        expect(result.content[0].text).toContain("NREKI");
         expect(result.isError).toBeUndefined();
     });
 
-    it("tg_def → tg_navigate action:'definition'", async () => {
+    it("nreki_def → nreki_navigate action:'definition'", async () => {
         const result = await handleNavigate("definition", { action: "definition", symbol: "CircuitBreaker", kind: "class" }, deps);
         expect(result.content).toBeDefined();
         expect(result.content[0].type).toBe("text");
     });
 
-    it("tg_refs → tg_navigate action:'references'", async () => {
+    it("nreki_refs → nreki_navigate action:'references'", async () => {
         const result = await handleNavigate("references", { action: "references", symbol: "handleSearch" }, deps);
         expect(result.content).toBeDefined();
         expect(result.content[0].type).toBe("text");
     });
 
-    it("tg_outline → tg_navigate action:'outline'", async () => {
+    it("nreki_outline → nreki_navigate action:'outline'", async () => {
         const result = await handleNavigate("outline", { action: "outline", path: "src/router.ts" }, deps);
         expect(result.content).toBeDefined();
         expect(result.content[0].type).toBe("text");
     });
 
-    it("tg_map → tg_navigate action:'map'", async () => {
+    it("nreki_map → nreki_navigate action:'map'", async () => {
         const result = await handleNavigate("map", { action: "map", refresh: false }, deps);
         expect(result.content[0].text).toContain("Repo Map");
         expect(result.content[0].text).toContain("prompt-cacheable");
     });
 });
 
-// ─── Original tg_code tools ─────────────────────────────────────────
+// ─── Original nreki_code tools ─────────────────────────────────────────
 
-describe("Backward Compatibility: tg_code tools", () => {
+describe("Backward Compatibility: nreki_code tools", () => {
     let deps: RouterDependencies;
 
     beforeEach(() => {
         deps = createMockDeps();
     });
 
-    it("tg_read → tg_code action:'read'", async () => {
+    it("nreki_read → nreki_code action:'read'", async () => {
         // Read with a non-existent file should return an error
         const result = await handleCode("read", { action: "read", path: "nonexistent.ts" }, deps);
         expect(result.content[0].type).toBe("text");
     });
 
-    it("tg_compress → tg_code action:'compress'", async () => {
+    it("nreki_compress → nreki_code action:'compress'", async () => {
         const result = await handleCode("compress", { action: "compress", path: "nonexistent.ts", level: "medium" }, deps);
         expect(result.content[0].type).toBe("text");
     });
 
-    it("tg_semantic_edit → tg_code action:'edit'", async () => {
+    it("nreki_semantic_edit → nreki_code action:'edit'", async () => {
         const result = await handleCode("edit", {
             action: "edit",
             path: "test.ts",
@@ -175,12 +175,12 @@ describe("Backward Compatibility: tg_code tools", () => {
         expect(result.content[0].type).toBe("text");
     });
 
-    it("tg_undo → tg_code action:'undo'", async () => {
+    it("nreki_undo → nreki_code action:'undo'", async () => {
         const result = await handleCode("undo", { action: "undo", path: "no-backup.ts" }, deps);
-        expect(result.content[0].text).toContain("tg_undo");
+        expect(result.content[0].text).toContain("nreki_undo");
     });
 
-    it("tg_terminal → tg_code action:'filter_output' (renamed in v3.0.1)", async () => {
+    it("nreki_terminal → nreki_code action:'filter_output' (renamed in v3.0.1)", async () => {
         const noisy = "npm ERR! code ELIFECYCLE\nerror TS2345: Argument mismatch\n" +
             "  at Module._compile (internal/modules/cjs/loader.js:1063:30)\n" +
             "  at node_modules/ts-node/src/index.ts:1618:12\n";
@@ -198,37 +198,37 @@ describe("Backward Compatibility: tg_code tools", () => {
     });
 });
 
-// ─── Original tg_guard tools ────────────────────────────────────────
+// ─── Original nreki_guard tools ────────────────────────────────────────
 
-describe("Backward Compatibility: tg_guard tools", () => {
+describe("Backward Compatibility: nreki_guard tools", () => {
     let deps: RouterDependencies;
 
     beforeEach(() => {
         deps = createMockDeps();
     });
 
-    it("tg_pin → tg_guard action:'pin'", async () => {
+    it("nreki_pin → nreki_guard action:'pin'", async () => {
         const result = await handleGuard("pin", { action: "pin", text: "Always use strict null checks" }, deps);
         expect(result.content[0].text).toContain("Pin");
         // Could be ADDED or FAILED (max pins) depending on existing state
         expect(result.content[0].type).toBe("text");
     });
 
-    it("tg_pin (remove) → tg_guard action:'unpin'", async () => {
+    it("nreki_pin (remove) → nreki_guard action:'unpin'", async () => {
         // Pin first, then try to unpin
         await handleGuard("pin", { action: "pin", text: "Test rule to remove" }, deps);
         const result = await handleGuard("unpin", { action: "unpin", id: "pin_001" }, deps);
         expect(result.content[0].type).toBe("text");
     });
 
-    it("tg_status → tg_guard action:'status'", async () => {
+    it("nreki_status → nreki_guard action:'status'", async () => {
         const result = await handleGuard("status", { action: "status" }, deps);
         expect(result.content[0].text).toContain("Index Status");
         expect(result.content[0].text).toContain("Files");
         expect(result.content[0].text).toContain("Chunks");
     });
 
-    it("tg_session_report → tg_guard action:'report'", async () => {
+    it("nreki_session_report → nreki_guard action:'report'", async () => {
         const result = await handleGuard("report", { action: "report" }, deps);
         expect(result.content[0].text).toContain("Session Report");
         expect(result.content[0].text).toContain("RECEIPT");
@@ -245,12 +245,12 @@ describe("Removed tools are correctly integrated", () => {
         deps = createMockDeps();
     });
 
-    it("tg_validate is now automatic inside tg_code edit — edit with missing symbol reports error", async () => {
+    it("nreki_validate is now automatic inside nreki_code edit - edit with missing symbol reports error", async () => {
         const result = await handleCode("edit", { action: "edit", path: "test.ts", symbol: "", new_code: "" }, deps);
         expect(result.content[0].text).toContain("symbol");
     });
 
-    it("tg_circuit_breaker is now passive middleware — breaker accessible via guard status", async () => {
+    it("nreki_circuit_breaker is now passive middleware - breaker accessible via guard status", async () => {
         const result = await handleGuard("status", { action: "status" }, deps);
         expect(result.content[0].type).toBe("text");
     });

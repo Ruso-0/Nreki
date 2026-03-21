@@ -1,5 +1,5 @@
 /**
- * middleware.test.ts — Tests for v3.0 middleware layer.
+ * middleware.test.ts - Tests for v3.0 middleware layer.
  *
  * Covers:
  * - Validator: valid code passes, invalid code blocked with details
@@ -100,7 +100,7 @@ describe("Circuit Breaker Middleware", () => {
             content: [{ type: "text", text: "Success!" }],
         });
 
-        const result = await wrapWithCircuitBreaker(cb, "tg_navigate", "search", handler);
+        const result = await wrapWithCircuitBreaker(cb, "nreki_navigate", "search", handler);
         expect(result.content[0].text).toBe("Success!");
         expect(result.isError).toBeUndefined();
     });
@@ -111,7 +111,7 @@ describe("Circuit Breaker Middleware", () => {
             isError: true,
         });
 
-        const result = await wrapWithCircuitBreaker(cb, "tg_code", "edit", handler);
+        const result = await wrapWithCircuitBreaker(cb, "nreki_code", "edit", handler);
         expect(result.isError).toBe(true);
         // First error should not trip the breaker
         expect(result.content[0].text).toContain("TypeError");
@@ -124,9 +124,9 @@ describe("Circuit Breaker Middleware", () => {
             isError: true,
         });
 
-        await wrapWithCircuitBreaker(cb, "tg_code", "edit", handler, "src/foo.ts");
-        await wrapWithCircuitBreaker(cb, "tg_code", "edit", handler, "src/foo.ts");
-        const result = await wrapWithCircuitBreaker(cb, "tg_code", "edit", handler, "src/foo.ts");
+        await wrapWithCircuitBreaker(cb, "nreki_code", "edit", handler, "src/foo.ts");
+        await wrapWithCircuitBreaker(cb, "nreki_code", "edit", handler, "src/foo.ts");
+        const result = await wrapWithCircuitBreaker(cb, "nreki_code", "edit", handler, "src/foo.ts");
 
         expect(result.isError).toBe(true);
         expect(result.content[0].text).toContain("BREAK & BUILD");
@@ -140,7 +140,7 @@ describe("Circuit Breaker Middleware", () => {
         });
 
         for (let i = 0; i < 3; i++) {
-            await wrapWithCircuitBreaker(cb, "tg_code", "edit", handler, "src/foo.ts");
+            await wrapWithCircuitBreaker(cb, "nreki_code", "edit", handler, "src/foo.ts");
         }
 
         // Level 1 trip: soft-resets to allow retry, but still returns redirect
@@ -158,7 +158,7 @@ describe("Circuit Breaker Middleware", () => {
 
         // Trip the breaker
         for (let i = 0; i < 3; i++) {
-            await wrapWithCircuitBreaker(cb, "tg_code", "edit", errorHandler, "src/foo.ts");
+            await wrapWithCircuitBreaker(cb, "nreki_code", "edit", errorHandler, "src/foo.ts");
         }
 
         expect(cb.getState().escalationLevel).toBe(1);
@@ -168,7 +168,7 @@ describe("Circuit Breaker Middleware", () => {
             content: [{ type: "text", text: "Search result" }],
         });
 
-        const result = await wrapWithCircuitBreaker(cb, "tg_navigate", "search", successHandler);
+        const result = await wrapWithCircuitBreaker(cb, "nreki_navigate", "search", successHandler);
         expect(result.content[0].text).toBe("Search result");
     });
 
@@ -177,8 +177,8 @@ describe("Circuit Breaker Middleware", () => {
             content: [{ type: "text", text: "Edit successful" }],
         });
 
-        await wrapWithCircuitBreaker(cb, "tg_code", "edit", handler, "src/foo.ts");
-        await wrapWithCircuitBreaker(cb, "tg_code", "edit", handler, "src/foo.ts");
+        await wrapWithCircuitBreaker(cb, "nreki_code", "edit", handler, "src/foo.ts");
+        await wrapWithCircuitBreaker(cb, "nreki_code", "edit", handler, "src/foo.ts");
 
         const stats = cb.getStats();
         expect(stats.totalToolCalls).toBeGreaterThanOrEqual(2);
@@ -203,7 +203,7 @@ describe("Circuit Breaker Middleware", () => {
         // Trip to level 1
         let result;
         for (let i = 0; i < 3; i++) {
-            result = await wrapWithCircuitBreaker(cb, "tg_code", "edit", handler, "src/foo.ts", "myFunc");
+            result = await wrapWithCircuitBreaker(cb, "nreki_code", "edit", handler, "src/foo.ts", "myFunc");
         }
 
         expect(result!.isError).toBe(true);
@@ -220,7 +220,7 @@ describe("Circuit Breaker Middleware", () => {
 
         // Trip to level 1 (3 errors)
         for (let i = 0; i < 3; i++) {
-            await wrapWithCircuitBreaker(cb, "tg_code", "edit", handler, "src/foo.ts");
+            await wrapWithCircuitBreaker(cb, "nreki_code", "edit", handler, "src/foo.ts");
         }
         expect(cb.getState().escalationLevel).toBe(1);
 
@@ -228,7 +228,7 @@ describe("Circuit Breaker Middleware", () => {
         // need 3 more errors to re-trip and escalate to level 2.
         let result;
         for (let i = 0; i < 3; i++) {
-            result = await wrapWithCircuitBreaker(cb, "tg_code", "edit", handler, "src/foo.ts");
+            result = await wrapWithCircuitBreaker(cb, "nreki_code", "edit", handler, "src/foo.ts");
         }
         expect(result!.isError).toBe(true);
         expect(result!.content[0].text).toContain("LEVEL 2");
@@ -244,24 +244,24 @@ describe("Circuit Breaker Middleware", () => {
 
         // Trip to level 1 (3 errors)
         for (let i = 0; i < 3; i++) {
-            await wrapWithCircuitBreaker(cb, "tg_code", "edit", handler, "src/foo.ts");
+            await wrapWithCircuitBreaker(cb, "nreki_code", "edit", handler, "src/foo.ts");
         }
         expect(cb.getState().escalationLevel).toBe(1);
 
         // Escalate to level 2 (amnesia total: need 3 more errors)
         for (let i = 0; i < 3; i++) {
-            await wrapWithCircuitBreaker(cb, "tg_code", "edit", handler, "src/foo.ts");
+            await wrapWithCircuitBreaker(cb, "nreki_code", "edit", handler, "src/foo.ts");
         }
         expect(cb.getState().escalationLevel).toBe(2);
 
         // Escalate to level 3 (amnesia total: need 3 more errors)
         for (let i = 0; i < 3; i++) {
-            await wrapWithCircuitBreaker(cb, "tg_code", "edit", handler, "src/foo.ts");
+            await wrapWithCircuitBreaker(cb, "nreki_code", "edit", handler, "src/foo.ts");
         }
         expect(cb.getState().escalationLevel).toBe(3);
 
         // Level 3 does NOT soft-reset, so next call returns hard stop from pre-check
-        const result = await wrapWithCircuitBreaker(cb, "tg_code", "edit", handler, "src/foo.ts");
+        const result = await wrapWithCircuitBreaker(cb, "nreki_code", "edit", handler, "src/foo.ts");
         expect(result.isError).toBe(true);
         expect(result.content[0].text).toContain("HARD STOP");
         expect(result.content[0].text).toContain("Ask the human");
@@ -272,7 +272,7 @@ describe("Circuit Breaker Middleware", () => {
             content: [{ type: "text", text: "Success" }],
         });
 
-        await wrapWithCircuitBreaker(cb, "tg_code", "edit", handler, "src/foo.ts", "validateToken");
+        await wrapWithCircuitBreaker(cb, "nreki_code", "edit", handler, "src/foo.ts", "validateToken");
         const state = cb.getState();
         expect(state.history[0].symbolName).toBe("validateToken");
     });

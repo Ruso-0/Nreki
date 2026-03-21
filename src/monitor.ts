@@ -1,5 +1,5 @@
 /**
- * monitor.ts — Token consumption monitor for TokenGuard.
+ * monitor.ts - Token consumption monitor for NREKI.
  *
  * Tracks Claude's token usage by reading JSONL session logs,
  * computes real-time burn rate, and predicts when the context
@@ -68,12 +68,22 @@ export interface MonitorConfig {
     warningThreshold?: number;
     /** Critical threshold as fraction of budget. Default: 0.9 */
     criticalThreshold?: number;
+    /**
+     * Approximate pricing per 1M tokens. Update if Anthropic changes pricing.
+     * Defaults reflect Claude Sonnet 4 pricing as of 2025-05.
+     */
+    pricing?: {
+        input?: number;
+        output?: number;
+        cacheRead?: number;
+        cacheWrite?: number;
+    };
 }
 
 // ─── Constants ───────────────────────────────────────────────────────
 
-/** Default Claude pricing (per 1M tokens) */
-const PRICING = {
+/** Default Claude pricing (per 1M tokens). Approximate - update if Anthropic changes pricing. */
+const DEFAULT_PRICING = {
     input: 3.0, // $3.00 per 1M input tokens
     output: 15.0, // $15.00 per 1M output tokens
     cacheRead: 0.3, // $0.30 per 1M cache read tokens
@@ -82,9 +92,13 @@ const PRICING = {
 
 // ─── Monitor ─────────────────────────────────────────────────────────
 
+type ResolvedMonitorConfig = Omit<Required<MonitorConfig>, "pricing"> & {
+    pricing: Required<NonNullable<MonitorConfig["pricing"]>>;
+};
+
 export class TokenMonitor {
     private entries: UsageEntry[] = [];
-    private config: Required<MonitorConfig>;
+    private config: ResolvedMonitorConfig;
     private lastReadPosition = 0;
 
     constructor(config: MonitorConfig = {}) {
@@ -93,6 +107,7 @@ export class TokenMonitor {
             budgetTokens: config.budgetTokens ?? 1_000_000,
             warningThreshold: config.warningThreshold ?? 0.7,
             criticalThreshold: config.criticalThreshold ?? 0.9,
+            pricing: { ...DEFAULT_PRICING, ...config.pricing },
         };
     }
 
@@ -122,7 +137,7 @@ export class TokenMonitor {
             }
         }
 
-        // Default fallback — will be created if Claude generates it
+        // Default fallback - will be created if Claude generates it
         return path.join(home, ".claude", "usage.jsonl");
     }
 
@@ -130,7 +145,7 @@ export class TokenMonitor {
 
     /**
      * Read and parse the JSONL usage log.
-     * Uses incremental reading — only processes new lines since last read.
+     * Uses incremental reading - only processes new lines since last read.
      */
     readUsageLog(): UsageEntry[] {
         if (!fs.existsSync(this.config.logPath)) {
@@ -160,7 +175,7 @@ export class TokenMonitor {
             this.lastReadPosition = content.length;
         } catch (err) {
             console.error(
-                `[TokenGuard] Failed to read usage log: ${(err as Error).message}`
+                `[NREKI] Failed to read usage log: ${(err as Error).message}`
             );
         }
 
@@ -211,12 +226,13 @@ export class TokenMonitor {
 
         const tokensPerMinute = totalConsumed / durationMinutes;
 
-        // Estimate cost
+        // Estimate cost (approximate - configurable via MonitorConfig.pricing)
+        const p = this.config.pricing;
         const estimatedCostUsd =
-            (inputTokens / 1_000_000) * PRICING.input +
-            (outputTokens / 1_000_000) * PRICING.output +
-            (cacheReadTokens / 1_000_000) * PRICING.cacheRead +
-            (cacheWriteTokens / 1_000_000) * PRICING.cacheWrite;
+            (inputTokens / 1_000_000) * p.input +
+            (outputTokens / 1_000_000) * p.output +
+            (cacheReadTokens / 1_000_000) * p.cacheRead +
+            (cacheWriteTokens / 1_000_000) * p.cacheWrite;
 
         return {
             tokensPerMinute: Math.round(tokensPerMinute),
@@ -240,7 +256,7 @@ export class TokenMonitor {
         if (burnRate.tokensPerMinute === 0) {
             return {
                 minutesRemaining: Infinity,
-                exhaustionTime: "N/A — no usage detected",
+                exhaustionTime: "N/A - no usage detected",
                 usageFraction: 0,
                 shouldAlert: false,
                 alertLevel: "none",
@@ -270,7 +286,7 @@ export class TokenMonitor {
         } else if (usageFraction >= this.config.warningThreshold) {
             alertLevel = "warning";
             shouldAlert = true;
-            message = `🟡 WARNING: ${Math.round(usageFraction * 100)}% of budget consumed. ~${Math.round(minutesRemaining)} min remaining. Consider using tg_compress for large files.`;
+            message = `🟡 WARNING: ${Math.round(usageFraction * 100)}% of budget consumed. ~${Math.round(minutesRemaining)} min remaining. Consider using nreki_compress for large files.`;
         } else if (usageFraction >= 0.5) {
             alertLevel = "info";
             shouldAlert = false;
@@ -293,14 +309,14 @@ export class TokenMonitor {
 
     // ─── Formatted Report ─────────────────────────────────────────
 
-    /** Generate a formatted status report for the tg_status tool. */
+    /** Generate a formatted status report for the nreki_status tool. */
     generateReport(): string {
         const burnRate = this.computeBurnRate();
         const prediction = this.predictExhaustion();
 
         const lines = [
             "===========================================",
-            "  TokenGuard -- Session Status Report",
+            "  NREKI -- Session Status Report",
             "===========================================",
             "",
             `  Burn Rate:     ${burnRate.tokensPerMinute.toLocaleString()} tok/min (${burnRate.tokensPerHour.toLocaleString()} tok/hr)`,

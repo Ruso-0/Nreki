@@ -1,5 +1,5 @@
 /**
- * auto-context.test.ts — Tests for Import-Anchored Auto-Context injection.
+ * auto-context.test.ts - Tests for Import-Anchored Auto-Context injection.
  */
 
 import { describe, it, expect } from "vitest";
@@ -98,7 +98,7 @@ describe("Auto-Context: Security Filters", () => {
 
         // These must NOT be filtered
         expect(isSensitiveSignature("function tokenize(text: string)")).toBe(false);
-        expect(isSensitiveSignature("class TokenGuardEngine")).toBe(false);
+        expect(isSensitiveSignature("class NrekiEngine")).toBe(false);
         expect(isSensitiveSignature("function parseTokenStream()")).toBe(false);
     });
 
@@ -106,10 +106,10 @@ describe("Auto-Context: Security Filters", () => {
         const tsSig = `export function foo(\n  a: string\n) /* TG:L1-L3 */`;
         expect(cleanSignature(tsSig)).toBe("export function foo( a: string )");
 
-        const pySig = `def hex_color(): # returns color like #FF0000\n # [TG] compressed`;
+        const pySig = `def hex_color(): # returns color like #FF0000\n # [NREKI] compressed`;
         const cleaned = cleanSignature(pySig);
         expect(cleaned).toContain("def hex_color()");
-        expect(cleaned).not.toContain("[TG]");
+        expect(cleaned).not.toContain("[NREKI]");
     });
 
     it("cleanSignature handles empty input", () => {

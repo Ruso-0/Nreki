@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * TokenGuard v2.1.1 × SICAEP — JSON-RPC Integration Test Script
- * Tests all 16 MCP tools against d:\SICAEP\sicaep-panel
+ * NREKI v5.1.0 × SICAEP — JSON-RPC Integration Test Script
+ * Tests 3 unified MCP tools against d:\SICAEP\sicaep-panel
  *
  * MCP SDK uses newline-delimited JSON (NDJSON), NOT Content-Length framing.
  *
@@ -14,9 +14,9 @@ import fs from "fs";
 import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const TOKEN_GUARD_ROOT = path.resolve(__dirname, "..");
+const NREKI_ROOT = path.resolve(__dirname, "..");
 const SICAEP_ROOT = "d:\\SICAEP\\sicaep-panel";
-const RESULTS_FILE = path.join(TOKEN_GUARD_ROOT, "test-results-sicaep.json");
+const RESULTS_FILE = path.join(NREKI_ROOT, "test-results-sicaep.json");
 
 // ─── Colors ─────────────────────────────────────────────────────────
 const C = {
@@ -35,7 +35,7 @@ class McpTestClient {
 
     async start() {
         return new Promise((resolve, reject) => {
-            this.proc = spawn("node", [path.join(TOKEN_GUARD_ROOT, "dist", "index.js")], {
+            this.proc = spawn("node", [path.join(NREKI_ROOT, "dist", "index.js")], {
                 cwd: SICAEP_ROOT,
                 env: { ...process.env, PROJECT_ROOT: SICAEP_ROOT },
                 stdio: ["pipe", "pipe", "pipe"],
@@ -165,10 +165,10 @@ async function call(client, tool, args = {}) {
 // ─── Main ───────────────────────────────────────────────────────────
 async function main() {
     console.log(`\n${C.bold}${C.cyan}╔═══════════════════════════════════════════════════════╗${C.reset}`);
-    console.log(`${C.bold}${C.cyan}║   TokenGuard v2.1.1 × SICAEP — Integration Tests     ║${C.reset}`);
+    console.log(`${C.bold}${C.cyan}║   NREKI v5.1.0 × SICAEP — Integration Tests     ║${C.reset}`);
     console.log(`${C.bold}${C.cyan}╚═══════════════════════════════════════════════════════╝${C.reset}\n`);
     console.log(`${C.dim}SICAEP: ${SICAEP_ROOT}${C.reset}`);
-    console.log(`${C.dim}TokenGuard: ${TOKEN_GUARD_ROOT}${C.reset}\n`);
+    console.log(`${C.dim}NREKI: ${NREKI_ROOT}${C.reset}\n`);
 
     const client = new McpTestClient();
 
@@ -193,35 +193,35 @@ async function main() {
         // ═══ PHASE 1 ════════════════════════════════════════════════
         console.log(`\n${C.bold}━━━ PHASE 1: Reconnaissance ━━━${C.reset}`);
 
-        // tg_status
+        // nreki_status
         {
-            const { text, timeMs } = await call(client, "tg_status");
-            const ok = text.includes("TokenGuard") || text.includes("Files:");
-            record("Phase 1", "tg_status", ok ? "PASS" : "FAIL", {
+            const { text, timeMs } = await call(client, "nreki_status");
+            const ok = text.includes("NREKI") || text.includes("Files:");
+            record("Phase 1", "nreki_status", ok ? "PASS" : "FAIL", {
                 timeMs,
                 note: text.match(/Files:\s+(\d+)/)?.[0] ?? "index building…",
             });
         }
 
-        // tg_map (this triggers indexing on first call — can be slow)
+        // nreki_map (this triggers indexing on first call — can be slow)
         {
-            const { text, timeMs } = await call(client, "tg_map", { refresh: true });
+            const { text, timeMs } = await call(client, "nreki_map", { refresh: true });
             const hasTree = text.includes("src/") || text.includes("src\\") || text.includes("app");
             const tokenMatch = text.match(/([\d,]+)\s*tokens/);
-            record("Phase 1", "tg_map", hasTree ? "PASS" : "FAIL", {
+            record("Phase 1", "nreki_map", hasTree ? "PASS" : "FAIL", {
                 timeMs,
                 note: `Tree visible: ${hasTree}, tokens: ${tokenMatch?.[1] ?? "?"}`,
             });
         }
 
-        // tg_outline
+        // nreki_outline
         {
-            const { text, timeMs } = await call(client, "tg_outline", {
+            const { text, timeMs } = await call(client, "nreki_outline", {
                 file: "src/app/api/empresas/route.ts",
             });
             const hasSymbols = text.includes("function") || text.includes("Outline") || text.includes("symbol");
             const hasGET = text.includes("GET");
-            record("Phase 1", "tg_outline", hasSymbols ? "PASS" : "FAIL", {
+            record("Phase 1", "nreki_outline", hasSymbols ? "PASS" : "FAIL", {
                 timeMs,
                 note: `GET: ${hasGET}, symbols found: ${hasSymbols}`,
             });
@@ -230,46 +230,46 @@ async function main() {
         // ═══ PHASE 2 ════════════════════════════════════════════════
         console.log(`\n${C.bold}━━━ PHASE 2: Reading & Analysis ━━━${C.reset}`);
 
-        // tg_read (small file — raw)
+        // nreki_read (small file — raw)
         {
-            const { text, timeMs } = await call(client, "tg_read", {
+            const { text, timeMs } = await call(client, "nreki_read", {
                 file_path: "src/lib/supabase/cliente.ts",
                 level: "medium",
             });
             const ok = text.includes("crearClienteNavegador") || text.includes("createBrowserClient") || text.includes("raw");
-            record("Phase 2", "tg_read (small file)", ok ? "PASS" : "FAIL", { timeMs });
+            record("Phase 2", "nreki_read (small file)", ok ? "PASS" : "FAIL", { timeMs });
         }
 
-        // tg_read (larger file — compressed)
+        // nreki_read (larger file — compressed)
         {
-            const { text, timeMs } = await call(client, "tg_read", {
+            const { text, timeMs } = await call(client, "nreki_read", {
                 file_path: "src/app/api/empresas/route.ts",
                 level: "medium",
             });
             const hasReduction = text.includes("reduction") || text.includes("compression");
             const savedMatch = text.match(/saved ~([\d,]+) tokens/);
-            record("Phase 2", "tg_read (compressed)", hasReduction ? "PASS" : "FAIL", {
+            record("Phase 2", "nreki_read (compressed)", hasReduction ? "PASS" : "FAIL", {
                 timeMs, note: `Saved: ${savedMatch?.[1] ?? "?"} tokens`,
             });
         }
 
-        // tg_def
+        // nreki_def
         {
-            const { text, timeMs } = await call(client, "tg_def", {
+            const { text, timeMs } = await call(client, "nreki_def", {
                 symbol: "GET",
                 kind: "function",
             });
             const ok = text.includes("Definition") || text.includes("function");
-            record("Phase 2", "tg_def (GET)", ok ? "PASS" : "FAIL", { timeMs });
+            record("Phase 2", "nreki_def (GET)", ok ? "PASS" : "FAIL", { timeMs });
         }
 
-        // tg_refs
+        // nreki_refs
         {
-            const { text, timeMs } = await call(client, "tg_refs", {
+            const { text, timeMs } = await call(client, "nreki_refs", {
                 symbol: "crearClienteServidor",
             });
             const refMatch = text.match(/Found (\d+) reference/);
-            record("Phase 2", "tg_refs (crearClienteServidor)", refMatch ? "PASS" : "FAIL", {
+            record("Phase 2", "nreki_refs (crearClienteServidor)", refMatch ? "PASS" : "FAIL", {
                 timeMs, note: `${refMatch?.[1] ?? "?"} references`,
             });
         }
@@ -279,92 +279,92 @@ async function main() {
 
         // Search .single()
         {
-            const { text, timeMs } = await call(client, "tg_search", {
+            const { text, timeMs } = await call(client, "nreki_search", {
                 query: ".single()",
                 limit: 10,
             });
             const ok = text.includes("result") || text.includes("Score:");
             const savedMatch = text.match(/saved ~([\d,]+) tokens/);
-            record("Phase 3", 'tg_search (".single()")', ok ? "PASS" : "FAIL", {
+            record("Phase 3", 'nreki_search (".single()")', ok ? "PASS" : "FAIL", {
                 timeMs, note: `Saved: ${savedMatch?.[1] ?? "0"} tokens`,
             });
         }
 
         // Search auth
         {
-            const { text, timeMs } = await call(client, "tg_search", {
+            const { text, timeMs } = await call(client, "nreki_search", {
                 query: "session validation middleware",
                 limit: 10,
             });
             const ok = text.includes("result") || text.includes("Score:");
-            record("Phase 3", "tg_search (middleware auth)", ok ? "PASS" : "FAIL", { timeMs });
+            record("Phase 3", "nreki_search (middleware auth)", ok ? "PASS" : "FAIL", { timeMs });
         }
 
         // Search RLS
         {
-            const { text, timeMs } = await call(client, "tg_search", {
+            const { text, timeMs } = await call(client, "nreki_search", {
                 query: "anon RLS policies supabase",
                 limit: 5,
             });
             const ok = text.includes("result") || text.includes("Score:") || text.includes("No results");
-            record("Phase 3", "tg_search (RLS policies)", ok ? "PASS" : "FAIL", { timeMs });
+            record("Phase 3", "nreki_search (RLS policies)", ok ? "PASS" : "FAIL", { timeMs });
         }
 
         // ═══ PHASE 4 ════════════════════════════════════════════════
         console.log(`\n${C.bold}━━━ PHASE 4: Audit & Validation ━━━${C.reset}`);
 
-        // tg_audit
+        // nreki_audit
         {
-            const { text, timeMs } = await call(client, "tg_audit");
-            const ok = text.includes("Token Consumption Audit") || text.includes("TokenGuard");
+            const { text, timeMs } = await call(client, "nreki_audit");
+            const ok = text.includes("Token Consumption Audit") || text.includes("NREKI");
             const filesMatch = text.match(/Files indexed:\s+(\d+)/);
             const chunksMatch = text.match(/AST chunks:\s+(\d+)/);
-            record("Phase 4", "tg_audit", ok ? "PASS" : "FAIL", {
+            record("Phase 4", "nreki_audit", ok ? "PASS" : "FAIL", {
                 timeMs, note: `Files: ${filesMatch?.[1] ?? "?"}, Chunks: ${chunksMatch?.[1] ?? "?"}`,
             });
         }
 
-        // tg_validate (valid)
+        // nreki_validate (valid)
         {
-            const { text, timeMs } = await call(client, "tg_validate", {
+            const { text, timeMs } = await call(client, "nreki_validate", {
                 code: 'export function hello(): string {\n  return "world";\n}',
                 language: "typescript",
             });
-            record("Phase 4", "tg_validate (valid TS)", text.includes("PASSED") ? "PASS" : "FAIL", { timeMs });
+            record("Phase 4", "nreki_validate (valid TS)", text.includes("PASSED") ? "PASS" : "FAIL", { timeMs });
         }
 
-        // tg_validate (invalid)
+        // nreki_validate (invalid)
         {
-            const { text, timeMs } = await call(client, "tg_validate", {
+            const { text, timeMs } = await call(client, "nreki_validate", {
                 code: 'export function hello(): string { return "world" ',
                 language: "typescript",
             });
-            record("Phase 4", "tg_validate (broken TS)", text.includes("FAILED") || text.includes("error") ? "PASS" : "FAIL", { timeMs });
+            record("Phase 4", "nreki_validate (broken TS)", text.includes("FAILED") || text.includes("error") ? "PASS" : "FAIL", { timeMs });
         }
 
         // ═══ PHASE 5 ════════════════════════════════════════════════
         console.log(`\n${C.bold}━━━ PHASE 5: Compression ━━━${C.reset}`);
 
-        // tg_compress tier 1
+        // nreki_compress tier 1
         {
-            const { text, timeMs } = await call(client, "tg_compress", {
+            const { text, timeMs } = await call(client, "nreki_compress", {
                 file_path: "src/app/api/trabajadores/route.ts",
                 tier: 1,
             });
             const ratioMatch = text.match(/([\d.]+)%\s*reduction/);
-            record("Phase 5", "tg_compress (tier 1)", ratioMatch ? "PASS" : "FAIL", {
+            record("Phase 5", "nreki_compress (tier 1)", ratioMatch ? "PASS" : "FAIL", {
                 timeMs, note: `Reduction: ${ratioMatch?.[1] ?? "?"}%`,
             });
         }
 
-        // tg_compress aggressive
+        // nreki_compress aggressive
         {
-            const { text, timeMs } = await call(client, "tg_compress", {
+            const { text, timeMs } = await call(client, "nreki_compress", {
                 file_path: "src/app/api/fotochecks/generar-pdf/route.ts",
-                compression_level: "aggressive",
+                level: "aggressive",
             });
             const ratioMatch = text.match(/([\d.]+)%\s*reduction/);
-            record("Phase 5", "tg_compress (aggressive)", text.includes("reduction") || text.includes("Advanced") ? "PASS" : "FAIL", {
+            record("Phase 5", "nreki_compress (aggressive)", text.includes("reduction") || text.includes("Advanced") ? "PASS" : "FAIL", {
                 timeMs, note: `Reduction: ${ratioMatch?.[1] ?? "?"}%`,
             });
         }
@@ -372,44 +372,44 @@ async function main() {
         // ═══ PHASE 6 ════════════════════════════════════════════════
         console.log(`\n${C.bold}━━━ PHASE 6: Unique Features ━━━${C.reset}`);
 
-        // tg_circuit_breaker stats
+        // nreki_circuit_breaker stats
         {
-            const { text, timeMs } = await call(client, "tg_circuit_breaker", {
+            const { text, timeMs } = await call(client, "nreki_circuit_breaker", {
                 last_error: "test", action: "stats",
             });
-            record("Phase 6", "tg_circuit_breaker (stats)", text.includes("Stats") ? "PASS" : "FAIL", { timeMs });
+            record("Phase 6", "nreki_circuit_breaker (stats)", text.includes("Stats") ? "PASS" : "FAIL", { timeMs });
         }
 
-        // tg_circuit_breaker check (no loop)
+        // nreki_circuit_breaker check (no loop)
         {
-            const { text, timeMs } = await call(client, "tg_circuit_breaker", {
+            const { text, timeMs } = await call(client, "nreki_circuit_breaker", {
                 last_error: "TypeError: Cannot read property 'x' of undefined",
                 file_path: "src/test.ts", action: "check",
             });
-            record("Phase 6", "tg_circuit_breaker (check)", text.includes("OK") ? "PASS" : "FAIL", { timeMs });
+            record("Phase 6", "nreki_circuit_breaker (check)", text.includes("OK") ? "PASS" : "FAIL", { timeMs });
         }
 
-        // tg_circuit_breaker loop detection
+        // nreki_circuit_breaker loop detection
         {
             const sameError = "Error: ENOENT: no such file or directory 'test.ts'";
             let tripped = false;
             for (let i = 0; i < 8; i++) {
-                const { text } = await call(client, "tg_circuit_breaker", {
+                const { text } = await call(client, "nreki_circuit_breaker", {
                     last_error: sameError, file_path: "src/test.ts", action: "check",
                 });
                 if (text.includes("TRIPPED")) { tripped = true; break; }
             }
-            record("Phase 6", "tg_circuit_breaker (loop detect)", tripped ? "PASS" : "FAIL", {
+            record("Phase 6", "nreki_circuit_breaker (loop detect)", tripped ? "PASS" : "FAIL", {
                 note: tripped ? "Loop detected!" : "Loop NOT detected",
             });
             // Reset
-            await call(client, "tg_circuit_breaker", { last_error: "reset", action: "reset" });
+            await call(client, "nreki_circuit_breaker", { last_error: "reset", action: "reset" });
         }
 
-        // tg_semantic_edit on TEMP COPY
+        // nreki_semantic_edit on TEMP COPY
         {
             const srcFile = path.join(SICAEP_ROOT, "src", "app", "api", "empresas", "route.ts");
-            const tempDir = path.join(SICAEP_ROOT, "__tg_test_temp__");
+            const tempDir = path.join(SICAEP_ROOT, "__nreki_test_temp__");
             const tempFile = path.join(tempDir, "route.ts");
 
             fs.mkdirSync(tempDir, { recursive: true });
@@ -423,8 +423,8 @@ async function main() {
                 if (postMatch) {
                     const newCode = postMatch[1].replace(".single()", ".maybeSingle()");
 
-                    const { text, timeMs } = await call(client, "tg_semantic_edit", {
-                        file: "__tg_test_temp__/route.ts",
+                    const { text, timeMs } = await call(client, "nreki_semantic_edit", {
+                        file: "__nreki_test_temp__/route.ts",
                         symbol: "POST",
                         new_code: newCode,
                     });
@@ -432,27 +432,27 @@ async function main() {
                     let editedContent = "";
                     try { editedContent = fs.readFileSync(tempFile, "utf-8"); } catch { /* ignore */ }
                     const hasMaybeSingle = editedContent.includes(".maybeSingle()");
-                    record("Phase 6", "tg_semantic_edit (.single→.maybeSingle)", success ? "PASS" : "FAIL", {
+                    record("Phase 6", "nreki_semantic_edit (.single→.maybeSingle)", success ? "PASS" : "FAIL", {
                         timeMs, note: success ? `File modified, .maybeSingle: ${hasMaybeSingle}` : text.slice(0, 100),
                     });
 
-                    // tg_undo
+                    // nreki_undo
                     if (success) {
-                        const { text: undoText, timeMs: undoTime } = await call(client, "tg_undo", {
-                            file: "__tg_test_temp__/route.ts",
+                        const { text: undoText, timeMs: undoTime } = await call(client, "nreki_undo", {
+                            file: "__nreki_test_temp__/route.ts",
                         });
                         const restored = (undoText.includes("SUCCESS") || undoText.includes("restored"));
                         let restoredContent = "";
                         try { restoredContent = fs.readFileSync(tempFile, "utf-8"); } catch { /* ignore */ }
-                        record("Phase 6", "tg_undo (revert)", restored ? "PASS" : "FAIL", {
+                        record("Phase 6", "nreki_undo (revert)", restored ? "PASS" : "FAIL", {
                             timeMs: undoTime, note: `.single() back: ${restoredContent.includes(".single()")}`,
                         });
                     } else {
-                        record("Phase 6", "tg_undo (revert)", "SKIP", { note: "semantic_edit failed" });
+                        record("Phase 6", "nreki_undo (revert)", "SKIP", { note: "semantic_edit failed" });
                     }
                 } else {
-                    record("Phase 6", "tg_semantic_edit", "SKIP", { note: "Could not extract POST" });
-                    record("Phase 6", "tg_undo", "SKIP", { note: "Skipped" });
+                    record("Phase 6", "nreki_semantic_edit", "SKIP", { note: "Could not extract POST" });
+                    record("Phase 6", "nreki_undo", "SKIP", { note: "Skipped" });
                 }
             } finally {
                 try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch { /* ignore */ }
@@ -462,21 +462,21 @@ async function main() {
         // ═══ PHASE 7 ════════════════════════════════════════════════
         console.log(`\n${C.bold}━━━ PHASE 7: Session Management ━━━${C.reset}`);
 
-        // tg_pin add
+        // nreki_pin add
         {
-            const { text, timeMs } = await call(client, "tg_pin", {
+            const { text, timeMs } = await call(client, "nreki_pin", {
                 action: "add", text: "Always use .maybeSingle() instead of .single()",
             });
-            record("Phase 7", "tg_pin (add)", text.includes("ADDED") ? "PASS" : "FAIL", { timeMs });
+            record("Phase 7", "nreki_pin (add)", text.includes("ADDED") ? "PASS" : "FAIL", { timeMs });
         }
 
-        // tg_pin list
+        // nreki_pin list
         {
-            const { text, timeMs } = await call(client, "tg_pin", { action: "list" });
-            record("Phase 7", "tg_pin (list)", text.includes("maybeSingle") ? "PASS" : "FAIL", { timeMs });
+            const { text, timeMs } = await call(client, "nreki_pin", { action: "list" });
+            record("Phase 7", "nreki_pin (list)", text.includes("maybeSingle") ? "PASS" : "FAIL", { timeMs });
         }
 
-        // tg_terminal
+        // nreki_terminal
         {
             const fakeOutput = [
                 "npm ERR! code ELIFECYCLE",
@@ -495,20 +495,20 @@ async function main() {
                 "Type error: Property 'children' is missing",
             ].join("\n");
 
-            const { text, timeMs } = await call(client, "tg_terminal", {
+            const { text, timeMs } = await call(client, "nreki_terminal", {
                 output: fakeOutput, max_lines: 50,
             });
             const hasReduction = text.includes("reduction") || text.includes("Filter");
-            record("Phase 7", "tg_terminal (filter)", hasReduction ? "PASS" : "FAIL", {
+            record("Phase 7", "nreki_terminal (filter)", hasReduction ? "PASS" : "FAIL", {
                 timeMs, note: text.match(/([\d.]+)%\s*reduction/)?.[0] ?? "",
             });
         }
 
-        // tg_session_report
+        // nreki_session_report
         {
-            const { text, timeMs } = await call(client, "tg_session_report");
+            const { text, timeMs } = await call(client, "nreki_session_report");
             const ok = text.includes("SESSION RECEIPT") || text.includes("Session Report");
-            record("Phase 7", "tg_session_report", ok ? "PASS" : "FAIL", {
+            record("Phase 7", "nreki_session_report", ok ? "PASS" : "FAIL", {
                 timeMs, note: ok ? "ASCII receipt generated" : "",
             });
         }
@@ -518,65 +518,65 @@ async function main() {
 
         // Nonexistent file
         {
-            const { text, timeMs } = await call(client, "tg_read", {
+            const { text, timeMs } = await call(client, "nreki_read", {
                 file_path: "src/esto/no/existe.ts", level: "medium",
             });
             const graceful = text.toLowerCase().includes("error") || text.includes("not");
-            record("Phase 8", "tg_read (nonexistent)", graceful ? "PASS" : "FAIL", {
+            record("Phase 8", "nreki_read (nonexistent)", graceful ? "PASS" : "FAIL", {
                 timeMs, note: "Graceful error handling",
             });
         }
 
         // Binary file
         {
-            const { text, timeMs } = await call(client, "tg_read", {
+            const { text, timeMs } = await call(client, "nreki_read", {
                 file_path: "public/logo-sicaep.png", level: "medium",
             });
             const handled = text.toLowerCase().includes("skip") || text.toLowerCase().includes("binary")
                 || text.toLowerCase().includes("error") || text.toLowerCase().includes("not");
-            record("Phase 8", "tg_read (binary PNG)", handled ? "PASS" : "FAIL", {
+            record("Phase 8", "nreki_read (binary PNG)", handled ? "PASS" : "FAIL", {
                 timeMs, note: "Binary detection",
             });
         }
 
         // Path traversal
         {
-            const { text, timeMs } = await call(client, "tg_read", {
+            const { text, timeMs } = await call(client, "nreki_read", {
                 file_path: "../../../etc/passwd", level: "medium",
             });
             const blocked = text.toLowerCase().includes("security") || text.toLowerCase().includes("error")
                 || text.toLowerCase().includes("traversal");
-            record("Phase 8", "tg_read (path traversal)", blocked ? "PASS" : "FAIL", {
+            record("Phase 8", "nreki_read (path traversal)", blocked ? "PASS" : "FAIL", {
                 timeMs, note: blocked ? "Blocked!" : "NOT blocked!",
             });
         }
 
         // Large file outline
         {
-            const { text, timeMs } = await call(client, "tg_outline", {
+            const { text, timeMs } = await call(client, "nreki_outline", {
                 file: "src/app/api/trabajadores/route.ts",
             });
             const ok = text.includes("Outline") || text.includes("function") || text.includes("symbol");
-            record("Phase 8", "tg_outline (large file)", ok ? "PASS" : "FAIL", {
+            record("Phase 8", "nreki_outline (large file)", ok ? "PASS" : "FAIL", {
                 timeMs, note: `${timeMs}ms`,
             });
         }
 
         // ─── Cleanup ──────────────────────────────────────────────
         // Remove pins
-        const { text: pinText } = await call(client, "tg_pin", { action: "list" });
+        const { text: pinText } = await call(client, "nreki_pin", { action: "list" });
         const pinIds = [...pinText.matchAll(/\*\*(pin_\d+)\*\*/g)].map(m => m[1]);
         for (const pinId of pinIds) {
-            await call(client, "tg_pin", { action: "remove", id: pinId });
+            await call(client, "nreki_pin", { action: "remove", id: pinId });
         }
 
         client.stop();
 
-        // Cleanup .tokenguard artifacts from SICAEP
-        for (const f of [".tokenguard.db", ".tokenguard.db-journal"]) {
+        // Cleanup .nreki artifacts from SICAEP
+        for (const f of [".nreki.db", ".nreki.db-journal"]) {
             try { fs.unlinkSync(path.join(SICAEP_ROOT, f)); } catch { /* ignore */ }
         }
-        try { fs.rmSync(path.join(SICAEP_ROOT, ".tokenguard"), { recursive: true, force: true }); } catch { /* ignore */ }
+        try { fs.rmSync(path.join(SICAEP_ROOT, ".nreki"), { recursive: true, force: true }); } catch { /* ignore */ }
 
     } catch (err) {
         console.error(`\n${C.red}FATAL ERROR: ${err.message}${C.reset}`);
@@ -610,7 +610,7 @@ async function main() {
     // Save JSON
     const output = {
         timestamp: new Date().toISOString(),
-        tokenguardVersion: "2.1.1",
+        nrekiVersion: "5.1.0",
         sicaepRoot: SICAEP_ROOT,
         summary: { total: totalTests, passed, failed, skipped },
         results: allResults,

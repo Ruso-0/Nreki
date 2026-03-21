@@ -1,23 +1,23 @@
 /**
- * router.ts — Central dispatcher for TokenGuard v4.0.2 router tools.
+ * router.ts - Central dispatcher for NREKI router tools.
  *
  * Maps {toolName, action} pairs to existing handler functions.
- * All business logic remains in the original modules — this file
+ * All business logic remains in the original modules - this file
  * only wires up the routing and formats MCP responses.
  *
  * v3.0.1: Flat parameter schemas (no more generic `options` bag),
  * file-level mutex on edits, terminal renamed to filter_output.
  *
  * 3 router tools replace 16 individual tools:
- *   tg_navigate → search, definition, references, outline, map, prepare_refactor
- *   tg_code     → read, compress, edit, batch_edit, undo, filter_output
- *   tg_guard    → pin, unpin, status, report, reset, set_plan, memorize
+ *   nreki_navigate → search, definition, references, outline, map, prepare_refactor
+ *   nreki_code     → read, compress, edit, batch_edit, undo, filter_output
+ *   nreki_guard    → pin, unpin, status, report, reset, set_plan, memorize
  */
 
 import fs from "fs";
 import path from "path";
 
-import { TokenGuardEngine } from "./engine.js";
+import { NrekiEngine } from "./engine.js";
 import { TokenMonitor } from "./monitor.js";
 import { Embedder } from "./embedder.js";
 import { safePath } from "./utils/path-jail.js";
@@ -35,34 +35,68 @@ import { CircuitBreaker } from "./circuit-breaker.js";
 import { semanticEdit, batchSemanticEdit, detectSignatureChange, type EditMode, type BatchEditOp } from "./semantic-edit.js";
 import { addPin, removePin, listPins, getPinnedText } from "./pin-memory.js";
 import { readSource } from "./utils/read-source.js";
-import { restoreBackup } from "./undo.js";
+import { restoreBackup, saveBackup } from "./undo.js";
 import { validateBeforeWrite } from "./middleware/validator.js";
 import { wrapWithCircuitBreaker } from "./middleware/circuit-breaker.js";
+import { NrekiKernel, type NrekiInterceptResult, type TypeRegression } from "./kernel/nreki-kernel.js";
 import { acquireFileLock, releaseFileLock } from "./middleware/file-lock.js";
 import { PreToolUseHook } from "./hooks/preToolUse.js";
+import { ChronosMemory } from "./chronos-memory.js";
 import { extractDependencies, cleanSignature, isSensitiveSignature, escapeRegExp } from "./utils/imports.js";
 import type { CompressionLevel } from "./compressor-advanced.js";
 
-// ─── Neural State Consolidation ─────────────────────────────────────
+
+// ─── JIT Holography Helper ──────────────────────────────────────────
+/**
+ * Ensure hologram mode is ready (JIT or eager fallback).
+ * Called before kernel.boot() when no pre-computed shadows exist.
+ */
+async function ensureHologramReady(kernel: NrekiKernel, nrekiMode: string): Promise<void> {
+    if (nrekiMode !== "hologram" || kernel.hasShadows() || kernel.hasJitHologram()) return;
+    try {
+        const Parser = (await import("web-tree-sitter")).default;
+        await Parser.init();
+        const jitParser = new Parser();
+        const wasmDir = path.join(
+            path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Z]:)/i, "$1")),
+            "..", "wasm",
+        );
+        const tsLangPath = path.join(wasmDir, "tree-sitter-typescript.wasm").replace(/\\/g, "/");
+        const tsLanguage = await Parser.Language.load(tsLangPath);
+        jitParser.setLanguage(tsLanguage);
+        const { classifyAndGenerateShadow } = await import("./hologram/shadow-generator.js");
+        kernel.setJitParser(jitParser, tsLanguage);
+        kernel.setJitClassifier(classifyAndGenerateShadow);
+        console.error("[NREKI] JIT Holography: parser loaded on-demand.");
+    } catch (err) {
+        console.error(`[NREKI] JIT init failed: ${(err as Error).message}. Falling back to eager scan.`);
+        const { ParserPool } = await import("./parser-pool.js");
+        const { scanProject } = await import("./hologram/shadow-generator.js");
+        const pool = new ParserPool(4);
+        const scanResult = await scanProject(process.cwd(), pool);
+        kernel.setShadows(scanResult.prunable, scanResult.unprunable, scanResult.ambientFiles);
+    }
+}
+
+// ─── Context Heartbeat ──────────────────────────────────────────────
 
 /**
- * Neural State Consolidation — Adaptive Anti-Amnesia Heartbeat.
+ * Context Heartbeat - Session State Re-injection.
  *
- * Re-injects a 4-layer cognitive state every ~15 tool calls to survive
- * Claude Code's context compaction. Uses the "Attention Sandwich" pattern:
- * memory ABOVE, tool result BELOW (respects U-shaped attention curve).
+ * Re-injects a 4-layer session state every ~15 tool calls to survive
+ * Claude Code's context compaction. Injects memory ABOVE the tool result
+ * (respects U-shaped attention curve in transformer models).
  *
- * Psychological Filter: Only fires during context-gathering actions
- * (read, search, map, status, definition, references, outline).
- * Never fires during edit, undo, or filter_output.
+ * Only fires during read-only actions (read, search, map, status,
+ * definition, references, outline). Never during edit, undo, or filter_output.
  *
  * Layers:
- * 1. Cortex — Master Plan (PLAN.md, schemas, constraints)
- * 2. Working Memory — Claude's scratchpad notes
- * 3. Hippocampus — Recent successful edits (spatial awareness)
- * 4. Executive Attention — Circuit Breaker emergencies
+ * 1. Plan File - Anchored plan document (PLAN.md, schemas, constraints)
+ * 2. Scratchpad - Claude's progress notes
+ * 3. Recent Edits - Files modified in this session
+ * 4. Circuit Breaker - Active escalation alerts
  */
-function applyAntiAmnesiaHeartbeat(
+export function applyContextHeartbeat(
     action: string,
     response: McpToolResponse,
     deps: RouterDependencies,
@@ -71,17 +105,22 @@ function applyAntiAmnesiaHeartbeat(
         return response;
     }
 
+    // C4: Don't inject heartbeat during active circuit breaker escalation
+    if (deps.circuitBreaker.getState().escalationLevel >= 2) {
+        return response;
+    }
+
     try {
         const currentCalls = deps.circuitBreaker.getStats().totalToolCalls;
         let lastInjectCalls = parseInt(
-            deps.engine.getMetadata("tg_plan_last_inject") || "0",
+            deps.engine.getMetadata("nreki_plan_last_inject") || "0",
             10,
         );
 
-        // FIX: Session restart detection — if counter reset, reset the injection marker
+        // FIX: Session restart detection - if counter reset, reset the injection marker
         if (currentCalls < lastInjectCalls) {
             lastInjectCalls = 0;
-            deps.engine.setMetadata("tg_plan_last_inject", "0");
+            deps.engine.setMetadata("nreki_plan_last_inject", "0");
         }
 
         if (currentCalls - lastInjectCalls >= 15) {
@@ -93,29 +132,29 @@ function applyAntiAmnesiaHeartbeat(
             if (safeActions.includes(action)) {
                 let memoryPayload = "";
 
-                // LAYER 1: Cortex — Master Plan
-                const planPath = deps.engine.getMetadata("tg_master_plan");
+                // LAYER 1: Plan File
+                const planPath = deps.engine.getMetadata("nreki_master_plan");
                 if (planPath && fs.existsSync(planPath)) {
                     const planContent = readSource(planPath);
                     if (planContent.length < 15000) {
                         memoryPayload +=
-                            `=== MASTER PLAN (${path.basename(planPath)}) ===\n` +
+                            `=== PLAN FILE (${path.basename(planPath)}) ===\n` +
                             `${planContent}\n\n`;
                     } else {
                         memoryPayload +=
-                            `=== MASTER PLAN ===\n` +
+                            `=== PLAN FILE ===\n` +
                             `[WARNING: Your plan file "${path.basename(planPath)}" exceeds 15,000 characters (${planContent.length.toLocaleString()} chars). ` +
-                            `TokenGuard skipped injection to protect your context window. ` +
+                            `NREKI skipped injection to protect your context window. ` +
                             `Summarize it or split it into smaller files, then re-anchor with: ` +
-                            `tg_guard action:"set_plan" text:"<shorter_plan_file>"]\n\n`;
+                            `nreki_guard action:"set_plan" text:"<shorter_plan_file>"]\n\n`;
                     }
                 }
 
-                // LAYER 2: Working Memory — Scratchpad
-                const scratchpad = deps.engine.getMetadata("tg_scratchpad");
+                // LAYER 2: Scratchpad
+                const scratchpad = deps.engine.getMetadata("nreki_scratchpad");
                 if (scratchpad) {
                     memoryPayload +=
-                        `=== ACTIVE SCRATCHPAD (Your Notes) ===\n` +
+                        `=== SCRATCHPAD (Your Notes) ===\n` +
                         `${scratchpad}\n\n`;
                 }
 
@@ -126,10 +165,10 @@ function applyAntiAmnesiaHeartbeat(
                         memoryPayload += `${pinnedText}\n\n`;
                     }
                 } catch {
-                    // getPinnedText may fail — skip gracefully
+                    // getPinnedText may fail - skip gracefully
                 }
 
-                // LAYER 3: Hippocampus — Recent Successful Edits
+                // LAYER 3: Recent Edits
                 const history = deps.circuitBreaker.getState().history;
                 const recentEdits = new Set<string>();
                 const scanWindow = Math.max(0, history.length - 15);
@@ -144,11 +183,11 @@ function applyAntiAmnesiaHeartbeat(
                 }
                 if (recentEdits.size > 0) {
                     memoryPayload +=
-                        `=== SPATIAL AWARENESS (Recent Edits) ===\n` +
+                        `=== RECENT EDITS ===\n` +
                         `You recently modified: ${Array.from(recentEdits).join(", ")}.\n\n`;
                 }
 
-                // LAYER 4: Executive Attention — Circuit Breaker State
+                // LAYER 4: Circuit Breaker Alert
                 const cbState = deps.circuitBreaker.getState();
                 if (cbState.escalationLevel > 0) {
                     const target =
@@ -156,22 +195,22 @@ function applyAntiAmnesiaHeartbeat(
                         cbState.lastTrippedFile ||
                         "a critical component";
                     memoryPayload +=
-                        `=== EMERGENCY FOCUS (CIRCUIT BREAKER LEVEL ${cbState.escalationLevel}) ===\n` +
+                        `=== CIRCUIT BREAKER ALERT (LEVEL ${cbState.escalationLevel}) ===\n` +
                         `You are executing a "Break & Build" strategy on \`${target}\`.\n` +
                         `Do not deviate until this is resolved.\n\n`;
                 }
 
-                // ATTENTION SANDWICH: Memory ABOVE, tool result BELOW
+                // TOP-INJECTION: State ABOVE, tool result BELOW
                 if (memoryPayload.trim().length > 0) {
                     const header =
                         `=================================================================\n` +
-                        ` [TOKENGUARD NEURAL SYNC: STATE CONSOLIDATION]\n` +
-                        ` Context compaction detected. Restoring cognitive state:\n` +
+                        ` [NREKI CONTEXT HEARTBEAT]\n` +
+                        ` Context compaction detected. Restoring session state:\n` +
                         `=================================================================\n\n`;
 
                     const footer =
                         `=================================================================\n` +
-                        `[END NEURAL SYNC] Proceed with the tool result below:\n` +
+                        `[END CONTEXT HEARTBEAT] Proceed with tool result below:\n` +
                         `=================================================================\n\n`;
 
                     const newResponse = {
@@ -186,7 +225,7 @@ function applyAntiAmnesiaHeartbeat(
                     };
 
                     deps.engine.setMetadata(
-                        "tg_plan_last_inject",
+                        "nreki_plan_last_inject",
                         String(currentCalls),
                     );
 
@@ -195,7 +234,7 @@ function applyAntiAmnesiaHeartbeat(
             }
         }
     } catch {
-        // Fail silently — never break the core tool response
+        // Fail silently - never break the core tool response
     }
 
     return response;
@@ -210,14 +249,17 @@ export interface McpToolResponse {
 }
 
 export interface RouterDependencies {
-    engine: TokenGuardEngine;
+    engine: NrekiEngine;
     monitor: TokenMonitor;
     sandbox: AstSandbox;
     circuitBreaker: CircuitBreaker;
     hook?: PreToolUseHook;
+    kernel?: NrekiKernel;
+    chronos?: ChronosMemory;
+    nrekiMode?: "syntax" | "file" | "project" | "hologram";
 }
 
-/** Flat params for tg_navigate (replaces target + options bag). */
+/** Flat params for nreki_navigate (replaces target + options bag). */
 export interface NavigateParams {
     action: string;
     query?: string;
@@ -231,7 +273,7 @@ export interface NavigateParams {
     auto_context?: boolean;
 }
 
-/** Flat params for tg_code (replaces path + options bag). */
+/** Flat params for nreki_code (replaces path + options bag). */
 export interface CodeParams {
     action: string;
     path?: string;
@@ -248,7 +290,7 @@ export interface CodeParams {
     edits?: Array<{ path: string; symbol: string; new_code: string; mode?: string }>;
 }
 
-/** Flat params for tg_guard (replaces options bag). */
+/** Flat params for nreki_guard (replaces options bag). */
 export interface GuardParams {
     action: string;
     text?: string;
@@ -256,7 +298,7 @@ export interface GuardParams {
     id?: string;
 }
 
-// ─── tg_navigate ────────────────────────────────────────────────────
+// ─── nreki_navigate ────────────────────────────────────────────────────
 
 export async function handleNavigate(
     action: string,
@@ -275,15 +317,15 @@ export async function handleNavigate(
             return {
                 content: [{
                     type: "text" as const,
-                    text: `Unknown tg_navigate action: "${action}". Valid actions: search, definition, references, outline, map, prepare_refactor.`,
+                    text: `Unknown nreki_navigate action: "${action}". Valid actions: search, definition, references, outline, map, prepare_refactor.`,
                 }],
                 isError: true,
             };
     }
-    return applyAntiAmnesiaHeartbeat(action, response, deps);
+    return applyContextHeartbeat(action, response, deps);
 }
 
-// ─── tg_code ────────────────────────────────────────────────────────
+// ─── nreki_code ────────────────────────────────────────────────────────
 
 export async function handleCode(
     action: string,
@@ -305,16 +347,16 @@ export async function handleCode(
             return {
                 content: [{
                     type: "text" as const,
-                    text: `Unknown tg_code action: "${action}"${hint}. Valid actions: read, compress, edit, batch_edit, undo, filter_output.`,
+                    text: `Unknown nreki_code action: "${action}"${hint}. Valid actions: read, compress, edit, batch_edit, undo, filter_output.`,
                 }],
                 isError: true,
             };
         }
     }
-    return applyAntiAmnesiaHeartbeat(action, response, deps);
+    return applyContextHeartbeat(action, response, deps);
 }
 
-// ─── tg_guard ───────────────────────────────────────────────────────
+// ─── nreki_guard ───────────────────────────────────────────────────────
 
 export async function handleGuard(
     action: string,
@@ -334,12 +376,12 @@ export async function handleGuard(
             return {
                 content: [{
                     type: "text" as const,
-                    text: `Unknown tg_guard action: "${action}". Valid actions: pin, unpin, status, report, reset, set_plan, memorize.`,
+                    text: `Unknown nreki_guard action: "${action}". Valid actions: pin, unpin, status, report, reset, set_plan, memorize.`,
                 }],
                 isError: true,
             };
     }
-    return applyAntiAmnesiaHeartbeat(action, response, deps);
+    return applyContextHeartbeat(action, response, deps);
 }
 
 async function handleReset(
@@ -368,7 +410,7 @@ async function handleReset(
                 `**Previous level:** ${prevLevel}\n` +
                 `**Status:** All clear. You may retry the edit. ` +
                 `If you get stuck again, the breaker starts fresh from Level 1.\n\n` +
-                `[TokenGuard: circuit breaker reset by human]`,
+                `[NREKI: circuit breaker reset by human]`,
         }],
     };
 }
@@ -402,7 +444,7 @@ async function handleSearch(
                     `No results found for: "${query}"\n\n` +
                     `Indexed ${engine.getStats().filesIndexed} files with ${engine.getStats().totalChunks} chunks.\n` +
                     `Try a broader query or index more directories.\n\n` +
-                    `[TokenGuard saved ~0 tokens on this query]`,
+                    `[NREKI saved ~0 tokens on this query]`,
             }],
         };
     }
@@ -433,16 +475,16 @@ async function handleSearch(
     );
     const saved = Math.max(0, grepEstimate - searchTokens);
 
-    engine.logUsage("tg_search", searchTokens, searchTokens, saved);
+    engine.logUsage("nreki_search", searchTokens, searchTokens, saved);
 
     return {
         content: [{
             type: "text" as const,
             text:
-                `## TokenGuard Search: "${query}"\n` +
+                `## NREKI Search: "${query}"\n` +
                 `Found ${results.length} results across ${new Set(results.map(r => r.path)).size} files.\n\n` +
                 formatted.join("\n\n") +
-                `\n\n[TokenGuard saved ~${saved.toLocaleString()} tokens on this query (estimated)]`,
+                `\n\n[NREKI saved ~${saved.toLocaleString()} tokens on this query (estimated)]`,
         }],
     };
 }
@@ -467,7 +509,7 @@ async function handleDefinition(
                 text:
                     `No definition found for symbol: "${symbol}"` +
                     (kind !== "any" ? ` (kind: ${kind})` : "") +
-                    `\n\n[TokenGuard saved ~0 tokens]`,
+                    `\n\n[NREKI saved ~0 tokens]`,
             }],
         };
     }
@@ -515,7 +557,7 @@ async function handleDefinition(
                 if (safeSigs.length > 0) {
                     autoContextBlock =
                         `\n\n### Related Signatures (auto-detected, may be incomplete)\n` +
-                        `TokenGuard resolved these external dependencies used in the definition:\n` +
+                        `NREKI resolved these external dependencies used in the definition:\n` +
                         safeSigs.join("\n");
                     extraTokens = Embedder.estimateTokens(autoContextBlock);
                     engine.incrementAutoContext();
@@ -526,7 +568,7 @@ async function handleDefinition(
         }
     }
 
-    engine.logUsage("tg_def", bodyTokens + extraTokens, bodyTokens + extraTokens, 0);
+    engine.logUsage("nreki_navigate:definition", bodyTokens + extraTokens, bodyTokens + extraTokens, 0);
 
     return {
         content: [{
@@ -536,7 +578,7 @@ async function handleDefinition(
                 `Found ${results.length} definition(s).\n\n` +
                 formatted.join("\n\n") +
                 autoContextBlock +
-                `\n\n[TokenGuard: ${(bodyTokens + extraTokens).toLocaleString()} tokens — exact AST lookup, no search overhead]`,
+                `\n\n[NREKI: ${(bodyTokens + extraTokens).toLocaleString()} tokens - exact AST lookup, no search overhead]`,
         }],
     };
 }
@@ -557,7 +599,7 @@ async function handleReferences(
         return {
             content: [{
                 type: "text" as const,
-                text: `No references found for: "${symbol}"\n\n[TokenGuard saved ~0 tokens]`,
+                text: `No references found for: "${symbol}"\n\n[NREKI saved ~0 tokens]`,
             }],
         };
     }
@@ -570,7 +612,7 @@ async function handleReferences(
     }
 
     const formatted: string[] = [];
-    for (const [file, refs] of [...byFile.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+    for (const [file, refs] of [...byFile.entries()].sort((a, b) => a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)) {
         formatted.push(`### ${file} (${refs.length} reference${refs.length > 1 ? "s" : ""})`);
         for (const ref of refs) {
             formatted.push(`**L${ref.line}:**`);
@@ -582,7 +624,7 @@ async function handleReferences(
         (sum, r) => sum + Embedder.estimateTokens(r.context), 0,
     );
 
-    engine.logUsage("tg_refs", refTokens, refTokens, 0);
+    engine.logUsage("nreki_refs", refTokens, refTokens, 0);
 
     return {
         content: [{
@@ -591,7 +633,7 @@ async function handleReferences(
                 `## References: ${symbol}\n` +
                 `Found ${results.length} reference(s) across ${byFile.size} file(s).\n\n` +
                 formatted.join("\n") +
-                `\n\n[TokenGuard: ${refTokens.toLocaleString()} tokens]`,
+                `\n\n[NREKI: ${refTokens.toLocaleString()} tokens]`,
         }],
     };
 }
@@ -612,7 +654,7 @@ async function handleOutline(
         return {
             content: [{
                 type: "text" as const,
-                text: `Security error: ${(err as Error).message}\n\n[TokenGuard saved ~0 tokens]`,
+                text: `Security error: ${(err as Error).message}\n\n[NREKI saved ~0 tokens]`,
             }],
         };
     }
@@ -627,7 +669,7 @@ async function handleOutline(
                 text:
                     `No symbols found in: ${file}\n` +
                     `(File may be empty, unsupported, or contain no declarations.)\n\n` +
-                    `[TokenGuard saved ~0 tokens]`,
+                    `[NREKI saved ~0 tokens]`,
             }],
         };
     }
@@ -638,7 +680,7 @@ async function handleOutline(
     for (const sym of symbols) {
         const exported = sym.exportedAs ? ` [${sym.exportedAs}]` : "";
         lines.push(
-            `- **${sym.kind}** \`${sym.name}\`${exported} — L${sym.startLine}-L${sym.endLine}`,
+            `- **${sym.kind}** \`${sym.name}\`${exported} - L${sym.startLine}-L${sym.endLine}`,
         );
         lines.push(`  \`${sym.signature}\``);
     }
@@ -650,14 +692,14 @@ async function handleOutline(
         const fullTokens = Embedder.estimateTokens(fullContent);
         const saved = Math.max(0, fullTokens - outlineTokens);
 
-        engine.logUsage("tg_outline", outlineTokens, outlineTokens, saved);
+        engine.logUsage("nreki_outline", outlineTokens, outlineTokens, saved);
 
         lines.push("");
-        lines.push(`[TokenGuard saved ~${saved.toLocaleString()} tokens vs reading full file]`);
+        lines.push(`[NREKI saved ~${saved.toLocaleString()} tokens vs reading full file]`);
     } catch {
-        engine.logUsage("tg_outline", outlineTokens, outlineTokens, 0);
+        engine.logUsage("nreki_outline", outlineTokens, outlineTokens, 0);
         lines.push("");
-        lines.push(`[TokenGuard: ${outlineTokens.toLocaleString()} tokens]`);
+        lines.push(`[NREKI: ${outlineTokens.toLocaleString()} tokens]`);
     }
 
     return {
@@ -684,17 +726,17 @@ async function handleMap(
     const fullText = text + (pinnedText ? "\n" + pinnedText : "");
     const tokens = Embedder.estimateTokens(fullText);
 
-    engine.logUsage("tg_map", tokens, tokens, 0);
+    engine.logUsage("nreki_map", tokens, tokens, 0);
 
     return {
         content: [{
             type: "text" as const,
             text:
                 fullText +
-                `\n[TokenGuard repo map: ${tokens.toLocaleString()} tokens | ` +
+                `\n[NREKI repo map: ${tokens.toLocaleString()} tokens | ` +
                 `${fromCache ? "from cache (prompt-cacheable)" : "freshly generated"} | ` +
                 `${pinnedText ? `${listPins(process.cwd()).length} pinned rules | ` : ""}` +
-                `This text is deterministic — place it early in context for Anthropic prompt caching]`,
+                `This text is deterministic - place it early in context for Anthropic prompt caching]`,
         }],
     };
 }
@@ -753,6 +795,40 @@ async function handlePrepareRefactor(
             isError: true,
         };
     }
+
+    // ─── NREKI LAYER 2: TYPE-SAFE PREDICTIVE BLAST RADIUS ───
+    if (deps.kernel?.isBooted()) {
+        try {
+            const parser = engine.getParser();
+            const root = engine.getProjectRoot();
+            const defs = await findDefinition(root, parser, symbolName, "any");
+
+            if (defs.length > 0) {
+                const targetFile = safePath(process.cwd(), defs[0].filePath);
+                const t0 = performance.now();
+                const br = deps.kernel.predictBlastRadius(targetFile, symbolName);
+                const latency = (performance.now() - t0).toFixed(2);
+
+                const jitWarning = deps.chronos ? deps.chronos.getContextWarnings(targetFile) : "";
+
+                const lines: string[] = [
+                    `## 🎯 Refactor Simulator: \`${symbolName}\``,
+                    `**Source:** \`${defs[0].filePath}\` (L${defs[0].startLine})\n`,
+                    jitWarning,
+                    br.report,
+                    `\n[NREKI: Type-safe blast radius computed via LanguageService in ${latency}ms]`,
+                ];
+
+                return {
+                    content: [{ type: "text" as const, text: lines.join("\n") }],
+                };
+            }
+        } catch (err) {
+            console.error("[NREKI] Predictive Blast Radius failed:", err);
+            // Fallthrough to Layer 1 (AST heuristics)
+        }
+    }
+    // ─── LAYER 1: HEURISTIC AST FALLBACK ───
 
     const parser = engine.getParser();
 
@@ -813,17 +889,17 @@ async function handlePrepareRefactor(
     ];
 
     if (highConfidence.length > 0) {
-        lines.push(`### HIGH CONFIDENCE (${highConfidence.length} — structural usage)`);
+        lines.push(`### HIGH CONFIDENCE (${highConfidence.length} - structural usage)`);
         for (const m of highConfidence) {
-            lines.push(`  ${m.file}:L${m.line} — \`${m.context}\``);
+            lines.push(`  ${m.file}:L${m.line} - \`${m.context}\``);
         }
         lines.push("");
     }
 
     if (reviewManually.length > 0) {
-        lines.push(`### REVIEW MANUALLY (${reviewManually.length} — may be string/key/comment)`);
+        lines.push(`### REVIEW MANUALLY (${reviewManually.length} - may be string/key/comment)`);
         for (const m of reviewManually) {
-            lines.push(`  ${m.file}:L${m.line} — \`${m.context}\` (${m.reason})`);
+            lines.push(`  ${m.file}:L${m.line} - \`${m.context}\` (${m.reason})`);
         }
         lines.push("");
     }
@@ -832,7 +908,7 @@ async function handlePrepareRefactor(
         lines.push(`No occurrences of \`${symbolName}\` found in the project.`);
     } else {
         lines.push(
-            `Use \`tg_code action:"batch_edit"\` to rename the high-confidence matches. ` +
+            `Use \`nreki_code action:"batch_edit"\` to rename the high-confidence matches. ` +
             `Review manually before including any marked for review.`
         );
     }
@@ -859,7 +935,7 @@ async function handleRead(
         return {
             content: [{
                 type: "text" as const,
-                text: `Security error: ${(err as Error).message}\n\n[TokenGuard saved ~0 tokens]`,
+                text: `Security error: ${(err as Error).message}\n\n[NREKI saved ~0 tokens]`,
             }],
         };
     }
@@ -872,12 +948,12 @@ async function handleRead(
             return {
                 content: [{
                     type: "text" as const,
-                    text: `File skipped: ${filterResult.reason}\n\n[TokenGuard saved ~0 tokens]`,
+                    text: `File skipped: ${filterResult.reason}\n\n[NREKI saved ~0 tokens]`,
                 }],
             };
         }
 
-        // Read file ONCE — reused for auto-context extraction and compression
+        // Read file ONCE - reused for auto-context extraction and compression
         const rawContent = readSource(resolvedPath);
 
         // Auto-Context extraction (runs before compress/raw branch)
@@ -899,7 +975,7 @@ async function handleRead(
                     if (safeSigs.length > 0) {
                         autoContextBlock =
                             `\n\n### Related Signatures (auto-detected, may be incomplete)\n` +
-                            `TokenGuard resolved these external dependencies imported in this file:\n` +
+                            `NREKI resolved these external dependencies imported in this file:\n` +
                             safeSigs.join("\n");
                         extraTokens = Embedder.estimateTokens(autoContextBlock);
                         engine.incrementAutoContext();
@@ -912,14 +988,17 @@ async function handleRead(
 
         // Skip compression for small files (< 1KB)
         if (stat.size < 1024) {
+            const jitWarning = deps.chronos ? deps.chronos.getContextWarnings(resolvedPath) : "";
+
             return {
                 content: [{
                     type: "text" as const,
                     text:
-                        `## ${path.basename(resolvedPath)} (raw — ${stat.size} bytes, below 1KB threshold)\n\n` +
+                        `## ${path.basename(resolvedPath)} (raw - ${stat.size} bytes, below 1KB threshold)\n\n` +
+                        jitWarning +
                         `\`\`\`\n${rawContent}\n\`\`\`\n\n` +
                         autoContextBlock +
-                        `[TokenGuard: file too small to compress]`,
+                        `[NREKI: file too small to compress]`,
                 }],
             };
         }
@@ -934,6 +1013,9 @@ async function handleRead(
             // Mark as safely read (removes from Danger Zones)
             engine.markFileRead(resolvedPath);
 
+            // CHRONOS: Marcar lectura descomprimida para desbloquear edición
+            if (deps.chronos) deps.chronos.markReadUncompressed(resolvedPath);
+
             // Behavioral advisor: teach Claude to use compression next time
             let advice = "";
             if (deps.hook) {
@@ -943,14 +1025,17 @@ async function handleRead(
                 }
             }
 
+            const jitWarning = deps.chronos ? deps.chronos.getContextWarnings(resolvedPath) : "";
+
             return {
                 content: [{
                     type: "text" as const,
                     text:
                         `## ${path.basename(resolvedPath)} (raw)\n\n` +
+                        jitWarning +
                         `\`\`\`\n${rawContent}\n\`\`\`\n\n` +
                         autoContextBlock +
-                        `[TokenGuard: raw read, no compression applied]${advice}`,
+                        `[NREKI: raw read, no compression applied]${advice}`,
                 }],
             };
         }
@@ -960,7 +1045,7 @@ async function handleRead(
         const saved = result.tokensSaved;
 
         engine.logUsage(
-            "tg_read",
+            "nreki_read",
             Embedder.estimateTokens(result.compressed) + extraTokens,
             Embedder.estimateTokens(result.compressed) + extraTokens,
             saved,
@@ -969,8 +1054,10 @@ async function handleRead(
         const sessionReport = engine.getSessionReport();
 
         const mapHint = level === "aggressive"
-            ? "See tg_navigate action:\"map\" for full project structure. Showing only the requested code:\n\n"
+            ? "See nreki_navigate action:\"map\" for full project structure. Showing only the requested code:\n\n"
             : "";
+
+        const jitWarning = deps.chronos ? deps.chronos.getContextWarnings(resolvedPath) : "";
 
         return {
             content: [{
@@ -980,9 +1067,10 @@ async function handleRead(
                     `${result.originalSize.toLocaleString()} → ${result.compressedSize.toLocaleString()} chars ` +
                     `(${(result.ratio * 100).toFixed(1)}% reduction)\n\n` +
                     mapHint +
+                    jitWarning +
                     `\`\`\`\n${result.compressed}\n\`\`\`\n\n` +
                     autoContextBlock +
-                    `[TokenGuard saved ~${saved.toLocaleString()} tokens | ` +
+                    `[NREKI saved ~${saved.toLocaleString()} tokens | ` +
                     `Session: ~${sessionReport.totalTokensSaved.toLocaleString()} tokens saved]`,
             }],
         };
@@ -990,7 +1078,7 @@ async function handleRead(
         return {
             content: [{
                 type: "text" as const,
-                text: `Error reading ${file_path}: ${(err as Error).message}\n\n[TokenGuard saved ~0 tokens]`,
+                text: `Error reading ${file_path}: ${(err as Error).message}\n\n[NREKI saved ~0 tokens]`,
             }],
         };
     }
@@ -1011,7 +1099,7 @@ async function handleCompress(
         return {
             content: [{
                 type: "text" as const,
-                text: `Security error: ${(err as Error).message}\n\n[TokenGuard saved ~0 tokens on this query]`,
+                text: `Security error: ${(err as Error).message}\n\n[NREKI saved ~0 tokens on this query]`,
             }],
         };
     }
@@ -1031,7 +1119,7 @@ async function handleCompress(
             const sessionReport = engine.getSessionReport();
 
             engine.logUsage(
-                "tg_compress",
+                "nreki_compress",
                 Embedder.estimateTokens(result.compressed),
                 Embedder.estimateTokens(result.compressed),
                 saved,
@@ -1041,7 +1129,7 @@ async function handleCompress(
                 content: [{
                     type: "text" as const,
                     text:
-                        `## TokenGuard Advanced Compress: ${path.basename(resolvedPath)}\n` +
+                        `## NREKI Advanced Compress: ${path.basename(resolvedPath)}\n` +
                         `Level: ${compression_level} | ` +
                         `${result.originalSize.toLocaleString()} → ${result.compressedSize.toLocaleString()} chars ` +
                         `(${(result.ratio * 100).toFixed(1)}% reduction)\n` +
@@ -1049,7 +1137,7 @@ async function handleCompress(
                         `  Token filtering: -${result.breakdown.tokenFilterReduction.toLocaleString()} chars\n` +
                         `  Structural: -${result.breakdown.structuralReduction.toLocaleString()} chars\n\n` +
                         `\`\`\`\n${result.compressed}\n\`\`\`\n\n` +
-                        `[TokenGuard saved ~${saved.toLocaleString()} tokens | ` +
+                        `[NREKI saved ~${saved.toLocaleString()} tokens | ` +
                         `Session total: ~${sessionReport.totalTokensSaved.toLocaleString()} tokens ` +
                         `($${sessionReport.savedUsdSonnet.toFixed(3)} Sonnet / $${sessionReport.savedUsdOpus.toFixed(3)} Opus)]`,
                 }],
@@ -1065,7 +1153,7 @@ async function handleCompress(
         const saved = result.tokensSaved;
 
         engine.logUsage(
-            "tg_compress",
+            "nreki_compress",
             Embedder.estimateTokens(result.compressed),
             Embedder.estimateTokens(result.compressed),
             saved,
@@ -1075,19 +1163,19 @@ async function handleCompress(
             content: [{
                 type: "text" as const,
                 text:
-                    `## TokenGuard Compressed: ${path.basename(resolvedPath)}\n` +
+                    `## NREKI Compressed: ${path.basename(resolvedPath)}\n` +
                     `Tier ${tier} | ${result.chunksFound} chunks | ` +
                     `${result.originalSize.toLocaleString()} → ${result.compressedSize.toLocaleString()} chars ` +
                     `(${(result.ratio * 100).toFixed(1)}% reduction)\n\n` +
                     `\`\`\`\n${result.compressed}\n\`\`\`\n\n` +
-                    `[TokenGuard saved ~${saved.toLocaleString()} tokens on this query]`,
+                    `[NREKI saved ~${saved.toLocaleString()} tokens on this query]`,
             }],
         };
     } catch (err) {
         return {
             content: [{
                 type: "text" as const,
-                text: `Error compressing ${file_path}: ${(err as Error).message}\n\n[TokenGuard saved ~0 tokens on this query]`,
+                text: `Error compressing ${file_path}: ${(err as Error).message}\n\n[NREKI saved ~0 tokens on this query]`,
             }],
         };
     }
@@ -1108,7 +1196,7 @@ async function handleEdit(
         return {
             content: [{
                 type: "text" as const,
-                text: `Error: "symbol" and "new_code" are required for the edit action.\n\n[TokenGuard saved ~0 tokens]`,
+                text: `Error: "symbol" and "new_code" are required for the edit action.\n\n[NREKI saved ~0 tokens]`,
             }],
         };
     }
@@ -1120,14 +1208,14 @@ async function handleEdit(
         return {
             content: [{
                 type: "text" as const,
-                text: `Security error: ${(err as Error).message}\n\n[TokenGuard saved ~0 tokens]`,
+                text: `Security error: ${(err as Error).message}\n\n[NREKI saved ~0 tokens]`,
             }],
             isError: true,
         };
     }
 
     // Acquire file-level mutex to prevent concurrent edit corruption
-    const lockResult = acquireFileLock(resolvedPath, "tg_code:edit");
+    const lockResult = acquireFileLock(resolvedPath, "nreki_code:edit");
     if (!lockResult.acquired) {
         return {
             content: [{
@@ -1136,10 +1224,30 @@ async function handleEdit(
                     `## Semantic Edit: BLOCKED\n\n` +
                     `File is currently locked by a concurrent edit (${lockResult.heldBy}, ${lockResult.heldForMs}ms ago).\n` +
                     `Wait for the current edit to complete and retry.\n\n` +
-                    `[TokenGuard saved ~0 tokens]`,
+                    `[NREKI saved ~0 tokens]`,
             }],
             isError: true,
         };
+    }
+
+    // CHRONOS HARD BLOCK: high-friction file requires uncompressed read first
+    if (deps.chronos && deps.chronos.isHighFriction(resolvedPath)) {
+        if (!deps.chronos.hasReadUncompressed(resolvedPath)) {
+            releaseFileLock(resolvedPath);
+            return {
+                content: [{
+                    type: "text" as const,
+                    text:
+                        `## Edit Blocked - High Friction File\n\n` +
+                        `File \`${path.basename(resolvedPath)}\` has high historical error rate (high Cognitive Friction Index).\n` +
+                        `You attempted a blind edit without mapping its full logic into your context.\n\n` +
+                        `**ACTION REQUIRED**: Run \`nreki_code action:"read" compress:false path:"${file}"\` first.\n` +
+                        `NREKI will unlock the edit once you have read the uncompressed code.\n\n` +
+                        `[NREKI: Chronos edit gating active]`,
+                }],
+                isError: true,
+            };
+        }
     }
 
     try {
@@ -1148,6 +1256,28 @@ async function handleEdit(
             ? params.mode as EditMode
             : "replace";
 
+        // Deferred boot: kernel boots on first edit, not at startup
+        let useKernel = false;
+        if (deps.kernel && deps.nrekiMode !== "syntax") {
+            if (!deps.kernel.isBooted()) {
+                console.error(
+                    `[NREKI] Booting kernel (${deps.nrekiMode} mode). First edit will be slower.`
+                );
+                try {
+                    await ensureHologramReady(deps.kernel, deps.nrekiMode ?? "");
+                    deps.kernel.boot(
+                        process.cwd(),
+                        deps.nrekiMode as "file" | "project" | "hologram",
+                    );
+                } catch (err) {
+                    console.error(
+                        `[NREKI] Kernel boot failed: ${(err as Error).message}. Falling back to Layer 1.`
+                    );
+                }
+            }
+            useKernel = deps.kernel.isBooted();
+        }
+
         const result = await semanticEdit(
             resolvedPath,
             symbol,
@@ -1155,9 +1285,10 @@ async function handleEdit(
             parser,
             sandbox,
             mode,
+            useKernel, // dryRun=true if kernel is active (ZERO DISK TOUCH)
         );
 
-        if (!result.success) {
+        if (!result.success || (useKernel && !result.newContent)) {
             return {
                 content: [{
                     type: "text" as const,
@@ -1166,14 +1297,194 @@ async function handleEdit(
                         `**Symbol:** ${symbol}\n` +
                         `**File:** ${file}\n\n` +
                         `${result.error}\n\n` +
-                        `[TokenGuard saved ~0 tokens]`,
+                        `[NREKI saved ~0 tokens]`,
                 }],
                 isError: true,
             };
         }
 
+        // ─── NREKI Layer 2: Cross-file semantic verification ─────────
+        let kernelResult: NrekiInterceptResult | undefined;
+        let ttrdFeedback = "";
+        if (useKernel && deps.kernel) {
+            // TOPOLOGICAL: compute dependents for hologram mode
+            let dependentsToInject: string[] = [];
+            if (deps.nrekiMode === "hologram") {
+                try {
+                    const relPath = path.relative(process.cwd(), resolvedPath).replace(/\\/g, "/");
+                    const allDependents = await engine.findDependents(relPath);
+                    if (allDependents.length <= 50) {
+                        dependentsToInject = allDependents;
+                    } else {
+                        // Too many dependents - check if signature changed
+                        const oldContent = fs.readFileSync(resolvedPath, "utf-8");
+                        const newContent = result.newContent!;
+                        const oldExports = oldContent.split("\n").filter(l => l.trim().startsWith("export")).join("\n");
+                        const newExports = newContent.split("\n").filter(l => l.trim().startsWith("export")).join("\n");
+                        if (oldExports !== newExports) {
+                            // Signature changed + >50 dependents = too risky
+                            releaseFileLock(resolvedPath);
+                            return {
+                                content: [{
+                                    type: "text" as const,
+                                    text: `[NREKI] Edit blocked: signature change affects ${allDependents.length} files. ` +
+                                        `Validating this cascade exceeds safe limits. ` +
+                                        `Use batch_edit to migrate callers explicitly.`
+                                }],
+                                isError: true
+                            };
+                        }
+                        // Signature unchanged, safe to skip dependents
+                        dependentsToInject = [];
+                    }
+                } catch {
+                    // Engine not ready, proceed without dependents
+                    dependentsToInject = [];
+                }
+            }
+
+            try {
+                // Pre-write validation in RAM. NO ZOMBIE TIMEOUT (Fix A3).
+                kernelResult = await deps.kernel.interceptAtomicBatch([
+                    { targetFile: resolvedPath, proposedContent: result.newContent! },
+                ], dependentsToInject);
+
+                if (!kernelResult.safe) {
+                    // FP-2 + A5: Filter node_modules errors with path segment regex
+                    const agentErrors = kernelResult.structured?.filter(e =>
+                        !e.file.match(/[/\\]node_modules[/\\]/)
+                    ) || [];
+
+                    if (agentErrors.length === 0) {
+                        // All errors from node_modules - agent's edit is fine
+                        console.error(
+                            `[NREKI] Warning: ${kernelResult.structured?.length} error(s) in node_modules ignored.`
+                        );
+                        try { saveBackup(process.cwd(), resolvedPath); } catch {}
+                        await deps.kernel.commitToDisk();
+                    } else {
+                        // CHRONOS: Castigar los archivos donde ESTALLAN los errores (las víctimas)
+                        if (deps.chronos) {
+                            const errorByFile = new Map<string, string>();
+                            for (const e of agentErrors) {
+                                if (!errorByFile.has(e.file)) errorByFile.set(e.file, e.message);
+                            }
+                            for (const [fragileFile, firstMsg] of errorByFile.entries()) {
+                                deps.chronos.recordSemanticError(fragileFile, firstMsg);
+                            }
+                        }
+
+                        // REJECTED: Purge RAM. DISK WAS NEVER TOUCHED. ZERO RESTORES.
+                        await deps.kernel.rollbackAll();
+
+                        const structuredInfo = "\n\nSemantic errors:\n" +
+                            agentErrors.map(e =>
+                                `  → ${path.relative(process.cwd(), e.file)} (${e.line},${e.column}): ${e.code} - ${e.message}`
+                            ).join("\n");
+
+                        return {
+                            content: [{
+                                type: "text" as const,
+                                text:
+                                    `## Semantic Edit: BLOCKED BY NREKI (Layer 2)\n\n` +
+                                    `**Symbol:** ${symbol}\n` +
+                                    `**File:** ${file}\n\n` +
+                                    `Layer 1 (syntax) passed, but Layer 2 (cross-file semantics) detected errors.\n` +
+                                    `🛡️ **DISK UNTOUCHED: Caught in RAM. File not modified.**${structuredInfo}\n\n` +
+                                    `Fix the type errors and retry. If you changed a function signature, ` +
+                                    `use \`nreki_code action:"batch_edit"\` to update all callers in one atomic transaction.\n\n` +
+                                    `[NREKI: validated in ${kernelResult.latencyMs}ms]`,
+                            }],
+                            isError: true,
+                        };
+                    }
+                } else {
+                    // MATHEMATICALLY SAFE: Kernel commits via two-phase atomic write
+                    try { saveBackup(process.cwd(), resolvedPath); } catch {}
+
+                    // L3.3: Backup archivos extra que el Auto-Healer tocó (para nreki_undo)
+                    if (kernelResult.healedFiles) {
+                        for (const hf of kernelResult.healedFiles) {
+                            try { saveBackup(process.cwd(), path.resolve(process.cwd(), hf)); } catch {}
+                            // CHRONOS: Rastrear auto-heals
+                            if (deps.chronos) deps.chronos.recordHeal(hf);
+                        }
+                    }
+
+                    await deps.kernel.commitToDisk();
+
+                    // TTRD: Record regressions and check debt payments
+                    if (deps.chronos && kernelResult.postContracts) {
+                        // Record new regressions
+                        if (kernelResult.regressions && kernelResult.regressions.length > 0) {
+                            const byFile = new Map<string, TypeRegression[]>();
+                            for (const r of kernelResult.regressions) {
+                                const arr = byFile.get(r.filePath) || [];
+                                arr.push(r);
+                                byFile.set(r.filePath, arr);
+                            }
+
+                            const penaltyList: string[] = [];
+                            for (const [fPath, regs] of byFile.entries()) {
+                                deps.chronos.recordRegressions(path.resolve(process.cwd(), fPath), regs);
+                                for (const r of regs) {
+                                    penaltyList.push(`  - \`${r.symbol}\` in \`${path.basename(fPath)}\`: \`${r.oldType}\` -> \`${r.newType}\``);
+                                }
+                            }
+
+                            ttrdFeedback += `\n\n**TYPE REGRESSION DETECTED**\n` +
+                                `The edit compiled successfully, but weakened the type safety of the project:\n` +
+                                `${penaltyList.join("\n")}\n` +
+                                `This technical debt has been logged. Restore strict typing instead of using any/unknown.`;
+                        }
+
+                        // Check if previous debts were paid
+                        const posixResolved = deps.kernel.resolvePosixPath(resolvedPath);
+                        const fileContracts = kernelResult.postContracts.get(posixResolved);
+                        const paidDebts = deps.chronos.assessDebtPayments(resolvedPath, fileContracts);
+                        if (paidDebts.length > 0) {
+                            ttrdFeedback += `\n\n**TYPE DEBT PAID**\n` +
+                                `Strict typing restored for: ${paidDebts.map(s => `\`${s}\``).join(", ")}.\n` +
+                                `Friction score reduced.`;
+                        }
+
+                        // Success reward only for files without regressions in this edit
+                        const hasRegressionHere = kernelResult.regressions?.some(
+                            r => r.filePath === posixResolved
+                        );
+                        if (!hasRegressionHere) {
+                            deps.chronos.recordSuccess(resolvedPath);
+                        }
+
+                        deps.chronos.syncTechDebt(
+                            deps.kernel.getInitialErrorCount(),
+                            deps.kernel.getCurrentErrorCount(),
+                        );
+                    } else if (deps.chronos) {
+                        // Fallback when no postContracts (non-TS files, etc.)
+                        deps.chronos.recordSuccess(resolvedPath);
+                        deps.chronos.syncTechDebt(
+                            deps.kernel.getInitialErrorCount(),
+                            deps.kernel.getCurrentErrorCount(),
+                        );
+                    }
+                }
+
+            } catch (kernelError) {
+                // Graceful degradation: kernel crashed, fall back to direct write
+                console.error(`[NREKI] Kernel error during edit verification: ${kernelError}`);
+                try { saveBackup(process.cwd(), resolvedPath); } catch {}
+                fs.writeFileSync(resolvedPath, result.newContent!, "utf-8");
+                // A-06: Await rollback to prevent stale VFS on next intercept
+                try { await deps.kernel.rollbackAll(); } catch (e) {
+                    console.error(`[NREKI] Rollback after kernel crash also failed: ${e}`);
+                }
+            }
+        }
+        // ─── End NREKI Layer 2 ───────────────────────────────────────
+
         engine.logUsage(
-            "tg_semantic_edit",
+            "nreki_code:edit",
             Embedder.estimateTokens(new_code),
             Embedder.estimateTokens(new_code),
             result.tokensAvoided,
@@ -1192,7 +1503,7 @@ async function handleEdit(
                         blastRadiusWarning =
                             `\n\n**[BLAST RADIUS]** Signature of \`${symbol}\` changed.\n` +
                             `This file is imported by:\n${depList}\n\n` +
-                            `If you altered parameters or return types, use \`tg_code action:"batch_edit"\` ` +
+                            `If you altered parameters or return types, use \`nreki_code action:"batch_edit"\` ` +
                             `to update those files before running tests.`;
                     }
                 }
@@ -1208,7 +1519,9 @@ async function handleEdit(
                     `**File:** ${file}\n` +
                     `**Lines:** ${result.oldLines} → ${result.newLines}\n` +
                     `**Syntax:** validated ✓\n\n` +
-                    `[TokenGuard saved ~${result.tokensAvoided.toLocaleString()} tokens vs native read+edit]` +
+                    `[NREKI saved ~${result.tokensAvoided.toLocaleString()} tokens vs native read+edit]` +
+                    (kernelResult?.errorText ? `\n\n${kernelResult.errorText}` : "") +
+                    ttrdFeedback +
                     blastRadiusWarning,
             }],
         };
@@ -1229,7 +1542,7 @@ async function handleBatchEdit(
         return {
             content: [{
                 type: "text" as const,
-                text: `Error: "edits" array is required for batch_edit.\n\n[TokenGuard saved ~0 tokens]`,
+                text: `Error: "edits" array is required for batch_edit.\n\n[NREKI saved ~0 tokens]`,
             }],
             isError: true,
         };
@@ -1242,7 +1555,7 @@ async function handleBatchEdit(
             return {
                 content: [{
                     type: "text" as const,
-                    text: `Error: edit[${i}] missing required fields (path, symbol, new_code).\n\n[TokenGuard saved ~0 tokens]`,
+                    text: `Error: edit[${i}] missing required fields (path, symbol, new_code).\n\n[NREKI saved ~0 tokens]`,
                 }],
                 isError: true,
             };
@@ -1263,9 +1576,11 @@ async function handleBatchEdit(
         }
     }
 
+    // BUG C: Sort lock paths to prevent deadlocks
+    uniquePaths.sort();
     const acquiredLocks: string[] = [];
     for (const p of uniquePaths) {
-        const lock = acquireFileLock(p, "tg_code:batch_edit");
+        const lock = acquireFileLock(p, "nreki_code:batch_edit");
         if (!lock.acquired) {
             // Rollback: release all locks acquired so far
             for (const rp of acquiredLocks) releaseFileLock(rp);
@@ -1273,12 +1588,33 @@ async function handleBatchEdit(
                 content: [{ type: "text" as const, text:
                     `## Batch Edit: BLOCKED\n\n` +
                     `File \`${path.relative(process.cwd(), p)}\` is locked by another edit (${lock.heldBy}, ${lock.heldForMs}ms).\n` +
-                    `Wait for it to finish, then resend the full batch.\n\n[TokenGuard saved ~0 tokens]`
+                    `Wait for it to finish, then resend the full batch.\n\n[NREKI saved ~0 tokens]`
                 }],
                 isError: true,
             };
         }
         acquiredLocks.push(p);
+    }
+
+    // CHRONOS HARD BLOCK: Check all files in batch
+    if (deps.chronos) {
+        for (const p of uniquePaths) {
+            if (deps.chronos.isHighFriction(p) && !deps.chronos.hasReadUncompressed(p)) {
+                for (const rp of acquiredLocks) releaseFileLock(rp);
+                return {
+                    content: [{
+                        type: "text" as const,
+                        text:
+                            `## Edit Blocked - High Friction File\n\n` +
+                            `File \`${path.relative(process.cwd(), p)}\` has high historical error rate.\n` +
+                            `You MUST read it uncompressed before including it in a batch edit.\n\n` +
+                            `**ACTION REQUIRED**: Run \`nreki_code action:"read" compress:false path:"${path.relative(process.cwd(), p)}"\` first.\n\n` +
+                            `[NREKI: Chronos edit gating active]`,
+                    }],
+                    isError: true,
+                };
+            }
+        }
     }
 
     try {
@@ -1292,9 +1628,31 @@ async function handleBatchEdit(
                 : "replace",
         }));
 
-        const result = await batchSemanticEdit(batchOps, parser, sandbox, process.cwd());
+        // Deferred boot: kernel boots on first edit, not at startup
+        let useKernel = false;
+        if (deps.kernel && deps.nrekiMode !== "syntax") {
+            if (!deps.kernel.isBooted()) {
+                console.error(
+                    `[NREKI] Booting kernel (${deps.nrekiMode} mode). First edit will be slower.`
+                );
+                try {
+                    await ensureHologramReady(deps.kernel, deps.nrekiMode ?? "");
+                    deps.kernel.boot(
+                        process.cwd(),
+                        deps.nrekiMode as "file" | "project" | "hologram",
+                    );
+                } catch (err) {
+                    console.error(
+                        `[NREKI] Kernel boot failed: ${(err as Error).message}. Falling back to Layer 1.`
+                    );
+                }
+            }
+            useKernel = deps.kernel.isBooted();
+        }
 
-        if (!result.success) {
+        const result = await batchSemanticEdit(batchOps, parser, sandbox, process.cwd(), useKernel);
+
+        if (!result.success || (useKernel && !result.vfs)) {
             return {
                 content: [{
                     type: "text" as const,
@@ -1304,11 +1662,204 @@ async function handleBatchEdit(
                         `**Files involved:** ${result.fileCount}\n\n` +
                         `${result.error}\n\n` +
                         `No files were modified.\n\n` +
-                        `[TokenGuard saved ~0 tokens]`,
+                        `[NREKI saved ~0 tokens]`,
                 }],
                 isError: true,
             };
         }
+
+        // ─── NREKI Layer 2: Cross-file semantic verification ─────────
+        let batchTtrdFeedback = "";
+        if (useKernel && deps.kernel) {
+            try {
+                // Inject VFS virtual state into kernel
+                const kernelEdits: Array<{ targetFile: string; proposedContent: string | null }> = [];
+                for (const [filePath, content] of result.vfs!.entries()) {
+                    kernelEdits.push({ targetFile: filePath, proposedContent: content });
+                }
+
+                // TOPOLOGICAL: compute dependents for hologram batch
+                let batchDependents: string[] = [];
+                if (deps.nrekiMode === "hologram" && result.oldRawCodes) {
+                    try {
+                        const changedFiles = new Set<string>();
+                        for (const edit of batchOps) {
+                            if (edit.mode && edit.mode !== "replace") continue;
+                            const key = `${edit.path}::${edit.symbol}`;
+                            const oldRaw = result.oldRawCodes.get(key);
+                            if (oldRaw && detectSignatureChange(oldRaw, edit.new_code)) {
+                                changedFiles.add(
+                                    path.relative(process.cwd(), safePath(process.cwd(), edit.path)).replace(/\\/g, "/")
+                                );
+                            }
+                        }
+                        if (changedFiles.size > 0) {
+                            const allDepSet = new Set<string>();
+                            for (const fp of changedFiles) {
+                                const fileDeps2 = await engine.findDependents(fp);
+                                for (const d of fileDeps2) allDepSet.add(d);
+                            }
+                            // Remove files already in the batch
+                            for (const fp of result.files) {
+                                allDepSet.delete(fp);
+                            }
+                            if (allDepSet.size <= 50) {
+                                batchDependents = [...allDepSet];
+                            }
+                            // >50 dependents: skip injection (too risky for batch)
+                        }
+                    } catch { /* non-fatal */ }
+                }
+
+                if (kernelEdits.length > 0) {
+                    const kernelResult = await deps.kernel.interceptAtomicBatch(kernelEdits, batchDependents);
+
+                    if (!kernelResult.safe) {
+                        // FP-2 + A5: Filter node_modules errors with path segment regex
+                        const agentErrors = kernelResult.structured?.filter(e =>
+                            !e.file.match(/[/\\]node_modules[/\\]/)
+                        ) || [];
+
+                        if (agentErrors.length === 0) {
+                            console.error(
+                                `[NREKI] Warning: ${kernelResult.structured?.length} error(s) in node_modules ignored.`
+                            );
+                            for (const filePath of result.vfs!.keys()) {
+                                try { saveBackup(process.cwd(), filePath); } catch {}
+                            }
+                            await deps.kernel.commitToDisk();
+                        } else {
+                            // CHRONOS: Castigar los archivos donde ESTALLAN los errores (las víctimas)
+                            if (deps.chronos) {
+                                const errorByFile = new Map<string, string>();
+                                for (const e of agentErrors) {
+                                    if (!errorByFile.has(e.file)) errorByFile.set(e.file, e.message);
+                                }
+                                for (const [fragileFile, firstMsg] of errorByFile.entries()) {
+                                    deps.chronos.recordSemanticError(fragileFile, firstMsg);
+                                }
+                            }
+
+                            // ATOMIC CIRCUIT BREAK: NO FILES WERE WRITTEN.
+                            await deps.kernel.rollbackAll();
+
+                            const structuredInfo = "\n\nSemantic errors:\n" +
+                                agentErrors.map(e =>
+                                    `  → ${path.relative(process.cwd(), e.file)} (${e.line},${e.column}): ${e.code} - ${e.message}`
+                                ).join("\n");
+
+                            return {
+                                content: [{
+                                    type: "text" as const,
+                                    text:
+                                        `## Batch Edit: BLOCKED BY NREKI (Layer 2)\n\n` +
+                                        `**Edits attempted:** ${result.editCount}\n` +
+                                        `**Files involved:** ${result.fileCount}\n\n` +
+                                        `Layer 1 (syntax) passed for all files, but Layer 2 (cross-file semantics) detected errors.\n` +
+                                        `🛡️ **DISK UNTOUCHED: Transaction aborted in RAM. No files were modified.**${structuredInfo}\n\n` +
+                                        `If you changed a function signature, include ALL callers in the same batch.\n\n` +
+                                        `[NREKI: RAM validated in ${kernelResult.latencyMs}ms]`,
+                                }],
+                                isError: true,
+                            };
+                        }
+                    } else {
+                        // SAFE: COMMIT TO DISK via two-phase atomic write
+                        for (const filePath of result.vfs!.keys()) {
+                            try { saveBackup(process.cwd(), filePath); } catch {}
+                        }
+
+                        // L3.3: Backup archivos extra que el Auto-Healer tocó
+                        if (kernelResult.healedFiles) {
+                            for (const hf of kernelResult.healedFiles) {
+                                try { saveBackup(process.cwd(), path.resolve(process.cwd(), hf)); } catch {}
+                                // CHRONOS: Rastrear auto-heals
+                                if (deps.chronos) deps.chronos.recordHeal(hf);
+                            }
+                        }
+
+                        await deps.kernel.commitToDisk();
+
+                        // TTRD: Record regressions and check debt payments
+                        if (deps.chronos && kernelResult.postContracts) {
+                            // Record regressions grouped by file
+                            if (kernelResult.regressions && kernelResult.regressions.length > 0) {
+                                const byFile = new Map<string, TypeRegression[]>();
+                                for (const r of kernelResult.regressions) {
+                                    const arr = byFile.get(r.filePath) || [];
+                                    arr.push(r);
+                                    byFile.set(r.filePath, arr);
+                                }
+
+                                const penaltyList: string[] = [];
+                                for (const [fPath, regs] of byFile.entries()) {
+                                    deps.chronos.recordRegressions(path.resolve(process.cwd(), fPath), regs);
+                                    for (const r of regs) {
+                                        penaltyList.push(`  - \`${r.symbol}\` in \`${path.basename(fPath)}\`: \`${r.oldType}\` -> \`${r.newType}\``);
+                                    }
+                                }
+
+                                batchTtrdFeedback += `\n\n**TYPE REGRESSION DETECTED**\n` +
+                                    `The batch compiled successfully, but weakened type safety:\n` +
+                                    `${penaltyList.join("\n")}\n` +
+                                    `This technical debt has been logged. Restore strict typing.`;
+                            }
+
+                            // Check debt payments for all files in the batch
+                            const allPaid: string[] = [];
+                            for (const filePath of result.vfs!.keys()) {
+                                const posixPath = deps.kernel.resolvePosixPath(filePath);
+                                const fileContracts = kernelResult.postContracts.get(posixPath);
+                                const paid = deps.chronos.assessDebtPayments(filePath, fileContracts);
+                                if (paid.length > 0) {
+                                    allPaid.push(`\`${path.basename(filePath)}\`: ${paid.join(", ")}`);
+                                }
+
+                                // Success reward only for files without regressions
+                                const hasRegressionHere = kernelResult.regressions?.some(
+                                    r => r.filePath === posixPath
+                                );
+                                if (!hasRegressionHere) {
+                                    deps.chronos.recordSuccess(filePath);
+                                }
+                            }
+
+                            if (allPaid.length > 0) {
+                                batchTtrdFeedback += `\n\n**TYPE DEBT PAID**\n` +
+                                    `Strict typing restored:\n` +
+                                    `${allPaid.join("\n")}\n` +
+                                    `Friction score reduced.`;
+                            }
+
+                            deps.chronos.syncTechDebt(
+                                deps.kernel.getInitialErrorCount(),
+                                deps.kernel.getCurrentErrorCount(),
+                            );
+                        } else if (deps.chronos) {
+                            for (const filePath of result.vfs!.keys()) {
+                                deps.chronos.recordSuccess(filePath);
+                            }
+                            deps.chronos.syncTechDebt(
+                                deps.kernel.getInitialErrorCount(),
+                                deps.kernel.getCurrentErrorCount(),
+                            );
+                        }
+                    }
+                }
+            } catch (kernelError) {
+                // Graceful degradation: kernel crashed, fall back to direct write
+                console.error(`[NREKI] Kernel error during batch verification: ${kernelError}`);
+                for (const [filePath, content] of result.vfs!.entries()) {
+                    try { saveBackup(process.cwd(), filePath); } catch {}
+                    fs.writeFileSync(filePath, content, "utf-8");
+                }
+                // A-06: Await rollback to prevent stale VFS on next intercept
+                try { await deps.kernel.rollbackAll(); } catch (e) {
+                    console.error(`[NREKI] Rollback after kernel crash also failed: ${e}`);
+                }
+            }
+        }
+        // ─── End NREKI Layer 2 ───────────────────────────────────────
 
         const fileList = result.files.map(f => `  - ${f}`).join("\n");
 
@@ -1330,8 +1881,8 @@ async function handleBatchEdit(
                     const allDependents = new Set<string>();
                     for (const filePath of result.files) {
                         try {
-                            const deps = await engine.findDependents(filePath);
-                            for (const d of deps) allDependents.add(d);
+                            const fileDeps = await engine.findDependents(filePath);
+                            for (const d of fileDeps) allDependents.add(d);
                         } catch { /* non-fatal */ }
                     }
                     // Remove files that were already part of this batch edit
@@ -1344,7 +1895,7 @@ async function handleBatchEdit(
                     blastRadiusWarning =
                         `\n\n**[BLAST RADIUS]** Signature changed for: ${changedSymbols.map(s => `\`${s}\``).join(", ")}.` +
                         depList +
-                        `\nIf you altered parameters or return types, use \`tg_code action:"batch_edit"\` to update those files before running tests.`;
+                        `\nIf you altered parameters or return types, use \`nreki_code action:"batch_edit"\` to update those files before running tests.`;
                 }
             } catch { /* non-fatal */ }
         }
@@ -1359,7 +1910,8 @@ async function handleBatchEdit(
                     `${fileList}\n\n` +
                     `All files passed syntax validation.\n` +
                     `Run \`npm run typecheck\` or your tests to verify types.\n\n` +
-                    `[TokenGuard batch edit complete]` +
+                    `[NREKI batch edit complete]` +
+                    batchTtrdFeedback +
                     blastRadiusWarning,
             }],
         };
@@ -1380,7 +1932,7 @@ async function handleUndo(
         return {
             content: [{
                 type: "text" as const,
-                text: `Security error: ${(err as Error).message}\n\n[TokenGuard saved ~0 tokens]`,
+                text: `Security error: ${(err as Error).message}\n\n[NREKI saved ~0 tokens]`,
             }],
         };
     }
@@ -1390,14 +1942,14 @@ async function handleUndo(
         return {
             content: [{
                 type: "text" as const,
-                text: `## tg_undo: SUCCESS\n\n${message}\n\n[TokenGuard: file restored]`,
+                text: `## nreki_undo: SUCCESS\n\n${message}\n\n[NREKI: file restored]`,
             }],
         };
     } catch (err) {
         return {
             content: [{
                 type: "text" as const,
-                text: `## tg_undo: FAILED\n\n${(err as Error).message}\n\n[TokenGuard saved ~0 tokens]`,
+                text: `## nreki_undo: FAILED\n\n${(err as Error).message}\n\n[NREKI saved ~0 tokens]`,
             }],
         };
     }
@@ -1418,7 +1970,7 @@ async function handleFilterOutput(
         return {
             content: [{
                 type: "text" as const,
-                text: `Error: "output" is required for the filter_output action.\n\n[TokenGuard saved ~0 tokens]`,
+                text: `Error: "output" is required for the filter_output action.\n\n[NREKI saved ~0 tokens]`,
             }],
         };
     }
@@ -1426,7 +1978,7 @@ async function handleFilterOutput(
     const result = filterTerminalOutput(output, max_lines);
 
     engine.logUsage(
-        "tg_filter_output",
+        "nreki_filter_output",
         result.filtered_tokens,
         result.filtered_tokens,
         Math.max(0, result.original_tokens - result.filtered_tokens),
@@ -1436,7 +1988,7 @@ async function handleFilterOutput(
     let circuitWarning = "";
     if (result.error_summary.errorCount > 0) {
         const loopCheck = circuitBreaker.recordToolCall(
-            "tg_filter_output",
+            "nreki_filter_output",
             output,
             result.error_summary.affectedFiles[0] ?? undefined,
         );
@@ -1479,7 +2031,7 @@ async function handleFilterOutput(
 
     const saved = Math.max(0, result.original_tokens - result.filtered_tokens);
     summaryLines.push("");
-    summaryLines.push(`[TokenGuard saved ~${saved.toLocaleString()} tokens on this filter]`);
+    summaryLines.push(`[NREKI saved ~${saved.toLocaleString()} tokens on this filter]`);
 
     return {
         content: [{
@@ -1502,7 +2054,7 @@ async function handlePin(
         return {
             content: [{
                 type: "text" as const,
-                text: "Error: `text` is required for the pin action.\n\n[TokenGuard saved ~0 tokens]",
+                text: "Error: `text` is required for the pin action.\n\n[NREKI saved ~0 tokens]",
             }],
         };
     }
@@ -1512,7 +2064,7 @@ async function handlePin(
         return {
             content: [{
                 type: "text" as const,
-                text: `## Pin: FAILED\n\n${result.error}\n\n[TokenGuard saved ~0 tokens]`,
+                text: `## Pin: FAILED\n\n${result.error}\n\n[NREKI saved ~0 tokens]`,
             }],
         };
     }
@@ -1526,8 +2078,8 @@ async function handlePin(
                 `**ID:** ${result.pin.id}\n` +
                 `**Rule:** ${result.pin.text}\n` +
                 `**Total pins:** ${pins.length}/${10}\n\n` +
-                `This rule will appear in every tg_navigate action:"map" response.\n\n` +
-                `[TokenGuard saved ~0 tokens]`,
+                `This rule will appear in every nreki_navigate action:"map" response.\n\n` +
+                `[NREKI saved ~0 tokens]`,
         }],
     };
 }
@@ -1540,13 +2092,21 @@ async function handleUnpin(
     const index = typeof params.index === "number" ? params.index : undefined;
     const id = typeof params.id === "string" ? params.id : undefined;
 
-    const pinId = id ?? (typeof index === "number" ? `pin_${String(index).padStart(3, "0")}` : undefined);
+    // A-14: When index is provided, resolve to the pin at that display position
+    // (1-based, sorted by id via stableCompare - same order as getPinnedText).
+    let pinId = id;
+    if (!pinId && typeof index === "number") {
+        const allPins = listPins(projectRoot);
+        const sorted = [...allPins].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+        const target = sorted[index - 1];
+        pinId = target?.id;
+    }
 
     if (!pinId) {
         return {
             content: [{
                 type: "text" as const,
-                text: "Error: `index` or `id` is required for the unpin action.\n\n[TokenGuard saved ~0 tokens]",
+                text: "Error: `index` or `id` is required for the unpin action.\n\n[NREKI saved ~0 tokens]",
             }],
         };
     }
@@ -1556,7 +2116,7 @@ async function handleUnpin(
         return {
             content: [{
                 type: "text" as const,
-                text: `## Pin: NOT FOUND\n\nNo pin with id "${pinId}" exists.\n\n[TokenGuard saved ~0 tokens]`,
+                text: `## Pin: NOT FOUND\n\nNo pin with id "${pinId}" exists.\n\n[NREKI saved ~0 tokens]`,
             }],
         };
     }
@@ -1564,7 +2124,7 @@ async function handleUnpin(
     return {
         content: [{
             type: "text" as const,
-            text: `## Pin: REMOVED\n\n**ID:** ${pinId}\n\nThis rule will no longer appear in tg_navigate action:"map" responses.\n\n[TokenGuard saved ~0 tokens]`,
+            text: `## Pin: REMOVED\n\n**ID:** ${pinId}\n\nThis rule will no longer appear in nreki_navigate action:"map" responses.\n\n[NREKI saved ~0 tokens]`,
         }],
     };
 }
@@ -1573,6 +2133,7 @@ async function handleStatus(
     deps: RouterDependencies,
 ): Promise<McpToolResponse> {
     const { engine, monitor } = deps;
+    await engine.initialize();
 
     const report = monitor.generateReport();
     const prediction = monitor.predictExhaustion();
@@ -1597,7 +2158,7 @@ async function handleStatus(
             "",
             "───────────────────────────────────────────",
             "  ☢️ DANGER ZONES (Heaviest unread files):",
-            "  Do NOT read these raw. Use tg_code action:\"compress\".",
+            "  Do NOT read these raw. Use nreki_code action:\"compress\".",
             ...heavyFiles.map(f =>
                 `     - ${path.relative(process.cwd(), f.path)} (~${f.estimated_tokens.toLocaleString()} tokens)`
             ),
@@ -1610,14 +2171,14 @@ async function handleStatus(
         recommendations =
             "\n\n⚠️ RECOMMENDATIONS:\n" +
             "  1. Switch to aggressive compression for all file reads\n" +
-            "  2. Use tg_navigate action:\"search\" instead of reading files directly\n" +
-            "  3. Minimize output length — emit only patches\n" +
+            "  2. Use nreki_navigate action:\"search\" instead of reading files directly\n" +
+            "  3. Minimize output length - emit only patches\n" +
             "  4. Consider starting a new session soon";
     } else if (prediction.alertLevel === "warning") {
         recommendations =
             "\n\n💡 RECOMMENDATIONS:\n" +
-            "  1. Use tg_code action:\"compress\" for files > 100 lines\n" +
-            "  2. Prefer tg_navigate action:\"search\" over grep/glob\n" +
+            "  1. Use nreki_code action:\"compress\" for files > 100 lines\n" +
+            "  2. Prefer nreki_navigate action:\"search\" over grep/glob\n" +
             "  3. Keep responses concise";
     }
 
@@ -1631,7 +2192,7 @@ async function handleStatus(
                 indexSection +
                 dangerZones +
                 recommendations +
-                `\n\n[TokenGuard saved ~${saved.toLocaleString()} tokens on this query]`,
+                `\n\n[NREKI saved ~${saved.toLocaleString()} tokens on this query]`,
         }],
     };
 }
@@ -1640,6 +2201,7 @@ async function handleReport(
     deps: RouterDependencies,
 ): Promise<McpToolResponse> {
     const { engine, monitor, circuitBreaker } = deps;
+    await engine.initialize();
 
     const sessionReport = engine.getSessionReport();
     const burnRate = monitor.computeBurnRate();
@@ -1650,7 +2212,7 @@ async function handleReport(
 
     const fileTypeRows = sessionReport.byFileType.length > 0
         ? sessionReport.byFileType.map(ft =>
-            `  ${ft.ext.padEnd(6)} — ${ft.count} files, ` +
+            `  ${ft.ext.padEnd(6)} - ${ft.count} files, ` +
             `avg ${(ft.ratio * 100).toFixed(0)}% compression, ` +
             `${ft.tokensSaved.toLocaleString()} tokens saved`,
         ).join("\n")
@@ -1672,7 +2234,7 @@ async function handleReport(
         if (opusSavings > 0.50) {
             modelRec = `Consider Sonnet for exploration to save ~$${(opusSavings - sonnetSavings).toFixed(2)}/session. Use Opus for final implementation.`;
         } else {
-            modelRec = `Current usage is efficient. TokenGuard has saved $${sonnetSavings.toFixed(3)} (Sonnet) / $${opusSavings.toFixed(3)} (Opus).`;
+            modelRec = `Current usage is efficient. NREKI has saved $${sonnetSavings.toFixed(3)} (Sonnet) / $${opusSavings.toFixed(3)} (Opus).`;
         }
     }
 
@@ -1690,7 +2252,7 @@ async function handleReport(
     const receipt = [
         "",
         "+--------------------------------------------------+",
-        "|          TOKENGUARD SESSION RECEIPT               |",
+        "|          NREKI SESSION RECEIPT                    |",
         "+--------------------------------------------------+",
         `|  Input Tokens Saved:      ${pad(sessionReport.totalTokensSaved.toLocaleString(), 16)}    |`,
         `|  Output Tokens Avoided:   ${pad(usageStats.total_saved.toLocaleString(), 16)}    |`,
@@ -1708,13 +2270,21 @@ async function handleReport(
         `|  TOOLS USED:              ${pad(usageStats.tool_calls + " calls", 16)}    |`,
         "+--------------------------------------------------+",
         "",
-        "💡 Did TokenGuard save your session?",
-        "   Share this receipt → https://github.com/Ruso-0/TokenGuard/discussions",
+        "💡 Did NREKI save your session?",
+        "   Share this receipt → https://github.com/Ruso-0/nreki/discussions",
     ].join("\n");
+
+    let healthScoreStr = "";
+    if (deps.kernel && deps.kernel.isBooted() && deps.chronos) {
+        healthScoreStr = deps.chronos.getHealthReport(
+            deps.kernel.getInitialErrorCount(),
+            deps.kernel.getCurrentErrorCount(),
+        ) + "\n\n";
+    }
 
     const report = [
         "===================================================",
-        "  TokenGuard — Session Report",
+        "  NREKI - Session Report",
         "===================================================",
         "",
         `  Session Duration:     ${sessionReport.durationMinutes} min`,
@@ -1740,7 +2310,7 @@ async function handleReport(
     return {
         content: [{
             type: "text" as const,
-            text: report + receipt,
+            text: healthScoreStr + report + receipt,
         }],
     };
 }
@@ -1782,7 +2352,7 @@ async function handleSetPlan(
                 text:
                     `## Set Plan: REJECTED (Too Large)\n\n` +
                     `Your plan is estimated at **~${planTokens.toLocaleString()} tokens**.\n` +
-                    `TokenGuard injects this every ~15 tool calls. A plan this large will burn ` +
+                    `NREKI injects this every ~15 tool calls. A plan this large will burn ` +
                     `context rapidly and accelerate compaction instead of preventing it.\n\n` +
                     `**Action:** Summarize your \`${path.basename(resolvedPath)}\` into strict ` +
                     `bullet points (aim for < 1,500 tokens), then try again.`,
@@ -1791,9 +2361,9 @@ async function handleSetPlan(
         };
     }
 
-    deps.engine.setMetadata("tg_master_plan", resolvedPath);
+    deps.engine.setMetadata("nreki_master_plan", resolvedPath);
     deps.engine.setMetadata(
-        "tg_plan_last_inject",
+        "nreki_plan_last_inject",
         String(deps.circuitBreaker.getStats().totalToolCalls),
     );
 
@@ -1804,9 +2374,9 @@ async function handleSetPlan(
                 `## Master Plan Anchored\n\n` +
                 `**Path:** ${resolvedPath}\n` +
                 `**Cost:** ~${planTokens.toLocaleString()} tokens per heartbeat\n\n` +
-                `TokenGuard's Anti-Amnesia Protocol is now ACTIVE. It will silently re-inject ` +
+                `NREKI's Context Heartbeat is now ACTIVE. It will silently re-inject ` +
                 `these constraints every ~15 tool calls during context-gathering operations.\n\n` +
-                `*Tip: Use \`tg_guard action:"memorize"\` as you progress to leave notes for your future self.*`,
+                `*Tip: Use \`nreki_guard action:"memorize"\` as you progress to leave notes for your future self.*`,
         }],
     };
 }
@@ -1832,14 +2402,14 @@ async function handleMemorize(
         };
     }
 
-    deps.engine.setMetadata("tg_scratchpad", params.text);
+    deps.engine.setMetadata("nreki_scratchpad", params.text);
 
     return {
         content: [{
             type: "text" as const,
             text:
                 `## Memory Saved\n\n` +
-                `TokenGuard has written your thoughts to the Active Scratchpad. ` +
+                `NREKI has written your thoughts to the Active Scratchpad. ` +
                 `If context compaction occurs, these notes will be automatically ` +
                 `re-injected so you don't lose your train of thought.`,
         }],

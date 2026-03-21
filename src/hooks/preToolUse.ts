@@ -1,5 +1,5 @@
 /**
- * hooks/preToolUse.ts — Pre-tool-use interceptor for TokenGuard.
+ * hooks/preToolUse.ts - Pre-tool-use interceptor for NREKI.
  *
  * Detects when Claude is about to read large files directly and
  * suggests more efficient alternatives. This is a defensive guard
@@ -7,8 +7,8 @@
  *
  * Intercepted patterns:
  * - Read Tool reading files > threshold
- * - Grep/glob operations that could use tg_navigate action:"search"
- * - Full file reads that should use tg_code action:"compress"
+ * - Grep/glob operations that could use nreki_navigate action:"search"
+ * - Full file reads that should use nreki_code action:"compress"
  */
 
 import fs from "fs";
@@ -103,9 +103,9 @@ export class PreToolUseHook {
         return {
             shouldIntercept: true,
             suggestion: [
-                `⚡ **TokenGuard Advice**: You just read "${path.basename(filePath)}" raw (~${fullTokens.toLocaleString()} tokens).`,
+                `⚡ **NREKI Advice**: You just read "${path.basename(filePath)}" raw (~${fullTokens.toLocaleString()} tokens).`,
                 `→ Reading massive files raw burns your context window unnecessarily.`,
-                `→ Next time, omit 'compress: false' (it defaults to true) or use \`tg_code action:"compress" path:"${filePath}" level:"${level}"\`.`,
+                `→ Next time, omit 'compress: false' (it defaults to true) or use \`nreki_code action:"compress" path:"${filePath}" level:"${level}"\`.`,
                 `→ You would have saved ~${(fullTokens - compressedTokens).toLocaleString()} tokens (${Math.round(estimatedRatio * 100)}% reduction) while keeping all structural context.`,
             ].join("\n"),
             wastedTokens: fullTokens,
@@ -120,7 +120,7 @@ export class PreToolUseHook {
     /** Generate a summary of all interception rules. */
     getRules(): string {
         return [
-            "TokenGuard Pre-Tool-Use Rules:",
+            "NREKI Pre-Tool-Use Rules:",
             `  • File read threshold: ${this.config.fileSizeThreshold} bytes`,
             `  • Token threshold: ${this.config.tokenThreshold} tokens`,
             `  • Grep interception: ${this.config.interceptGrep ? "enabled" : "disabled"}`,
@@ -131,7 +131,7 @@ export class PreToolUseHook {
 
     // ─── Helpers ──────────────────────────────────────────────────
 
-    /** No interception needed — pass through. */
+    /** No interception needed - pass through. */
     private passThrough(): InterceptResult {
         return {
             shouldIntercept: false,

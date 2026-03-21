@@ -1,14 +1,14 @@
 /**
- * compressor.ts — Semantic compression engine for TokenGuard.
+ * compressor.ts - Semantic compression engine for NREKI.
  *
  * Converts full source files into compressed shorthand AST notation,
  * dramatically reducing token count while preserving enough structural
  * context for LLMs to understand and modify the code.
  *
  * Compression tiers:
- * - Tier 1 (signatures only): ~80% reduction — just signatures + markers
- * - Tier 2 (smart body):      ~50% reduction — keeps key logic lines
- * - Tier 3 (docstrings):      ~30% reduction — keeps docs + signatures
+ * - Tier 1 (signatures only): ~80% reduction - just signatures + markers
+ * - Tier 2 (smart body):      ~50% reduction - keeps key logic lines
+ * - Tier 3 (docstrings):      ~30% reduction - keeps docs + signatures
  */
 
 import { ASTParser, type ParsedChunk } from "./parser.js";
@@ -42,7 +42,7 @@ export interface CompressorOptions {
     maxBodyLines?: number;
     /** Include file header (imports/comments). Default: true. */
     includeHeader?: boolean;
-    /** Focus on specific query — ranks chunks by relevance. */
+    /** Focus on specific query - ranks chunks by relevance. */
     focusQuery?: string;
 }
 
@@ -82,9 +82,9 @@ export class Compressor {
         const lines = content.split("\n");
 
         if (parseResult.chunks.length === 0) {
-            // No AST chunks found — return as-is with a header comment
+            // No AST chunks found - return as-is with a header comment
             return {
-                compressed: `// [TokenGuard] No parseable AST nodes found\n${content}`,
+                compressed: `// [NREKI] No parseable AST nodes found\n${content}`,
                 originalSize: content.length,
                 compressedSize: content.length,
                 ratio: 0,
@@ -100,7 +100,7 @@ export class Compressor {
 
         // Add file header comment
         parts.push(
-            `// [TokenGuard] Compressed: ${filePath} | Tier ${tier} | ${parseResult.chunks.length} chunks`
+            `// [NREKI] Compressed: ${filePath} | Tier ${tier} | ${parseResult.chunks.length} chunks`
         );
 
         // Include imports and top-level declarations (before first chunk)
@@ -167,7 +167,7 @@ export class Compressor {
     /**
      * Compress a single AST chunk based on the tier level.
      *
-     * Tier 1: Signature only — maximum compression
+     * Tier 1: Signature only - maximum compression
      * Tier 2: Signature + key body lines (returns, throws, awaits)
      * Tier 3: Signature + docstring + key body lines
      */
@@ -196,7 +196,7 @@ export class Compressor {
         const lines = chunk.rawCode.split("\n");
 
         if (lines.length <= maxBodyLines + 2) {
-            // Chunk is small enough — keep everything
+            // Chunk is small enough - keep everything
             return `[${chunk.nodeType}] ${chunk.rawCode.trim()}`;
         }
 
@@ -232,10 +232,13 @@ export class Compressor {
         const docLines: string[] = [];
         let inDoc = false;
 
+        // A-05: Only capture comments ABOVE the signature, not body comments.
+        // Stop collecting once we hit a non-comment, non-empty, non-docstring line.
+        let pastHeader = false;
         for (const line of lines) {
             const trimmed = line.trim();
 
-            // JSDoc
+            // JSDoc / Python docstring blocks
             if (trimmed.startsWith("/**") || trimmed.startsWith('"""') || trimmed.startsWith("'''")) {
                 inDoc = true;
             }
@@ -248,10 +251,16 @@ export class Compressor {
                 ) {
                     inDoc = false;
                 }
+                continue;
             }
-            // Single-line comments above the signature
-            if (trimmed.startsWith("//") || trimmed.startsWith("#")) {
+            // Single-line comments above the signature only
+            if (!pastHeader && (trimmed.startsWith("//") || trimmed.startsWith("#"))) {
                 docLines.push(line);
+                continue;
+            }
+            // First non-comment, non-empty line = signature boundary
+            if (trimmed.length > 0) {
+                pastHeader = true;
             }
         }
 
@@ -306,7 +315,7 @@ export class Compressor {
 
     /**
      * Quick estimate of compression savings for a file.
-     * Does not actually parse — uses heuristics based on file size and type.
+     * Does not actually parse - uses heuristics based on file size and type.
      */
     static estimateSavings(
         fileContent: string,

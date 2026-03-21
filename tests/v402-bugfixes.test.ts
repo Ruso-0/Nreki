@@ -1,5 +1,5 @@
 /**
- * v402-bugfixes.test.ts — Tests for v4.0.2 critical bugfixes.
+ * v402-bugfixes.test.ts - Tests for v4.0.2 critical bugfixes.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
@@ -60,7 +60,7 @@ describe("BUG 1: searchRawCode exhaustive scan", () => {
         expect(results.length).toBeGreaterThan(0);
 
         // Regular BM25 search on shorthand might NOT find it (shorthand strips body)
-        // This is the bug we fixed — searchFilesBySymbol is the exhaustive fallback
+        // This is the bug we fixed - searchFilesBySymbol is the exhaustive fallback
 
         engine.shutdown();
         fs.rmSync(dir, { recursive: true, force: true });

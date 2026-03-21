@@ -1,5 +1,5 @@
 /**
- * terminal-filter.ts — Terminal entropy filter for TokenGuard.
+ * terminal-filter.ts - Terminal entropy filter for NREKI.
  *
  * Filters noisy terminal output (npm errors, test failures, build logs)
  * to extract only actionable information. Typical savings: 90-98% on

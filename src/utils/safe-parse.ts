@@ -1,5 +1,5 @@
 /**
- * safe-parse.ts — WASM-safe Tree-sitter parsing with automatic memory cleanup.
+ * safe-parse.ts - WASM-safe Tree-sitter parsing with automatic memory cleanup.
  *
  * Ensures tree.delete() is always called after parsing, preventing
  * WASM memory leaks from Tree-sitter trees that are not freed.

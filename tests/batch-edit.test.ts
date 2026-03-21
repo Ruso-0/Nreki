@@ -1,5 +1,5 @@
 /**
- * batch-edit.test.ts — Tests for ACID batch edit with reverse splice.
+ * batch-edit.test.ts - Tests for ACID batch edit with reverse splice.
  *
  * Covers:
  * - Multiple edits across multiple files applied atomically

@@ -1,5 +1,5 @@
 /**
- * stress.test.ts — Stress tests for TokenGuard edge cases.
+ * stress.test.ts - Stress tests for NREKI edge cases.
  *
  * 10 scenarios covering:
  * 1. Empty file
@@ -271,7 +271,7 @@ describe("Stress: Minified JavaScript (single line)", () => {
         const scored = scoreTokens(slice, 0.7);
         const filtered = filterTokens(scored, "aggressive");
         // Minified JS is mostly protected tokens (operators, parens, numbers)
-        // so filtering may not reduce size — but it should not crash
+        // so filtering may not reduce size - but it should not crash
         expect(typeof filtered).toBe("string");
         expect(filtered.length).toBeGreaterThan(0);
         // Verify some content survived
@@ -529,7 +529,7 @@ describe("Stress: Repeated 100x indexing (idempotency)", () => {
         expect(stats.total_chunks).toBe(1);
         expect(stats.total_files).toBe(1);
 
-        // File hash should match — no update needed
+        // File hash should match - no update needed
         expect(db.fileNeedsUpdate("/test/repeat.ts", content)).toBe(false);
         // Changed content should need update
         expect(db.fileNeedsUpdate("/test/repeat.ts", content + " // modified")).toBe(true);
@@ -573,7 +573,7 @@ describe("Stress: Repeated 100x indexing (idempotency)", () => {
 
         // Log 100 usage entries
         for (let i = 0; i < 100; i++) {
-            db.logUsage("tg_search", 10, 20, 50);
+            db.logUsage("nreki_search", 10, 20, 50);
         }
 
         const stats = db.getUsageStats();
