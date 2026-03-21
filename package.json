@@ -15,7 +15,9 @@
     "test:watch": "vitest",
     "postinstall": "node scripts/download-wasm.js",
     "lint": "tsc --noEmit",
-    "benchmark:spectral": "tsx tests/benchmark-spectral.ts"
+    "benchmark:spectral": "tsx tests/benchmark-spectral.ts",
+    "benchmark:external": "tsx tests/benchmark-spectral-external.ts",
+    "benchmark:precision": "tsx tests/benchmark-precision.ts"
   },
   "keywords": [
     "nreki",
