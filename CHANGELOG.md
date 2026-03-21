@@ -2,6 +2,13 @@
 
 All notable changes to NREKI will be documented in this file.
 
+## [6.0.1] - 2026-03-21
+
+### Fixed
+- `NrekiDB.save()` and `NrekiDB.close()` guard against double-close during graceful shutdown
+- `file-lock.test.ts` platform guard for case-insensitive path test (macOS/Linux CI)
+- CI matrix expanded to Node 20, 22, 24
+
 ## [6.0.0] - 2026-03-19
 
 ### Added
