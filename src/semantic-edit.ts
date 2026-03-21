@@ -18,8 +18,9 @@ import { ASTParser, type ParsedChunk } from "./parser.js";
 import { AstSandbox } from "./ast-sandbox.js";
 import { Embedder } from "./embedder.js";
 import { readSource } from "./utils/read-source.js";
-import { saveBackup } from "./undo.js";
+import { saveBackup, getBackupPath } from "./undo.js";
 import { extractSignature, cleanSignature } from "./repo-map.js";
+import crypto from "crypto";
 
 // ─── Types ───────────────────────────────────────────────────────────
 
@@ -370,36 +371,60 @@ export async function batchSemanticEdit(
         }
     }
 
-    // 5. COMMIT: all passed validation → atomic write to disk (if not dry run)
+    // 5. COMMIT: Two-Phase Atomic Write with Unbreakable Rollback
     const writtenFiles: string[] = [];
     if (!dryRun) {
-        const tmpPaths: string[] = [];
-        const originalPaths: string[] = [];
+        const tmpFiles = new Map<string, string>();
+        const renamedFiles: string[] = [];
 
         try {
-            // Phase 5a: Write all to .tmp files first
+            // PHASE 1: PREPARE — Mandatory backups + entropy-named temps
             for (const [filePath, virtualContent] of vfs.entries()) {
-                const tmpPath = filePath + `.nreki-tmp-${Date.now()}`;
+                const entropy = crypto.randomBytes(4).toString("hex");
+                const tmpPath = `${filePath}.nreki-${Date.now()}-${entropy}.tmp`;
+
+                // Backup is MANDATORY for rollback safety.
+                // If backup fails (disk full), abort BEFORE any rename.
+                if (fs.existsSync(filePath)) {
+                    try {
+                        saveBackup(projectRoot, filePath);
+                    } catch (backupErr) {
+                        for (const tp of tmpFiles.values()) {
+                            if (fs.existsSync(tp)) try { fs.unlinkSync(tp); } catch {}
+                        }
+                        throw new Error(`Backup failed for ${filePath}: ${(backupErr as Error).message}`);
+                    }
+                }
+
                 fs.writeFileSync(tmpPath, virtualContent, "utf-8");
-                tmpPaths.push(tmpPath);
-                originalPaths.push(filePath);
+                tmpFiles.set(filePath, tmpPath);
             }
 
-            // Phase 5b: All .tmp writes succeeded — save backups then atomic rename
-            for (let i = 0; i < originalPaths.length; i++) {
-                try { saveBackup(projectRoot, originalPaths[i]); } catch { /* non-fatal */ }
-                fs.renameSync(tmpPaths[i], originalPaths[i]);
-                writtenFiles.push(path.relative(projectRoot, originalPaths[i]));
+            // PHASE 2: COMMIT — Atomic POSIX inode rename
+            for (const [filePath, tmpPath] of tmpFiles.entries()) {
+                fs.renameSync(tmpPath, filePath);
+                renamedFiles.push(filePath);
+                writtenFiles.push(path.relative(projectRoot, filePath));
             }
-        } catch (commitErr) {
-            // Phase 5c: ROLLBACK — clean up any .tmp files that were created
-            for (const tmpPath of tmpPaths) {
-                try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath); } catch { /* best effort */ }
+        } catch (fatalErr) {
+            // PHASE 3: ROLLBACK — Revert successful renames from backup
+            for (const donePath of renamedFiles) {
+                const backupPath = getBackupPath(projectRoot, donePath);
+                if (fs.existsSync(backupPath)) {
+                    try { fs.copyFileSync(backupPath, donePath); } catch {}
+                }
             }
-            throw new Error(
-                `[NREKI] ACID commit failed: ${(commitErr as Error).message}. ` +
-                `No files were modified. ${tmpPaths.length} temp files cleaned up.`
-            );
+            // Clean remaining temp files
+            for (const tmpPath of tmpFiles.values()) {
+                if (fs.existsSync(tmpPath)) try { fs.unlinkSync(tmpPath); } catch {}
+            }
+            return {
+                success: false,
+                editCount: edits.length,
+                fileCount: editsByFile.size,
+                files: [],
+                error: `ACID commit aborted: ${(fatalErr as Error).message}. ${renamedFiles.length} files reverted from backup.`,
+            };
         }
     } else {
         for (const filePath of vfs.keys()) {
