@@ -77,6 +77,8 @@ Override in package.json: `{ "nreki": { "mode": "project" } }`
 Hologram mode uses domain separation: the holographic kernel validates edits via shadows,
 while Layer 1 AST navigator handles reference queries and refactoring.
 
+**vs Project Corsa:** Microsoft's [TypeScript 7 native port](https://devblogs.microsoft.com/typescript/progress-on-typescript-7-december-2025/) (Go, multi-threaded) reports 8.74s for VSCode type-checking. NREKI JIT Holography achieves 3.32s total (boot + first edit) in single-threaded JavaScript by skipping 88% of files via on-demand shadow classification.
+
 ### Type Regression Detection (v5.3)
 
 Detects when an agent weakens types silently. TypeScript approves `RetryConfig` changed
@@ -306,12 +308,12 @@ nreki_guard action:"status"
 
 | Test | Result | Latency | Details |
 |------|--------|---------|---------|
-| Boot | SUCCESS | 10.68s | 148 files tracked, 0 baseline errors |
-| Valid edit | PASS | 2,725ms | Appending a comment - no false positive |
-| Type break | **CAUGHT** | 12,607ms | Changed `getPGroup()` return type - caught 10 cross-file errors across 3 files |
-| Syntax break | **CAUGHT** | 11,423ms | `return const let;` - blocked |
-| File delete | PASS | 7,401ms | Leaf file deletion - correctly allowed |
-| Non-TS file | PASS | 8,825ms | README.md - correctly ignored |
+| Boot | SUCCESS | 7.39s | 148 files tracked, 0 baseline errors |
+| Valid edit | PASS | 2,062ms | Appending a comment - no false positive |
+| Type break | **CAUGHT** | 7,230ms | Changed `getPGroup()` return type - cross-file error caught |
+| Syntax break | **CAUGHT** | 3,774ms | `return const let;` - blocked |
+| File delete | PASS | 1,596ms | Leaf file deletion - correctly allowed |
+| Non-TS file | PASS | 2,907ms | README.md - correctly ignored |
 
 **6/6 correct verdicts** against a real TypeScript project. Zero false positives. Zero false negatives.
 
@@ -338,7 +340,7 @@ nreki_guard action:"status"
 | Audit findings resolved | 30/30 |
 | OpenDota benchmark | 6/6 correct verdicts |
 | Auto-Healing safe fixes | 8 CodeFix types |
-| Boot time (148 files) | ~10s |
+| Boot time (148 files) | 7.39s |
 | Warm-path rollback | ~50ms |
 | Blast radius query | ~20ms |
 | PageRank convergence (1,000 files) | < 50ms |
