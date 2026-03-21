@@ -725,6 +725,7 @@ export class NrekiDB {
 
     /** Persist database and vector index to disk. */
     save(): void {
+        if (!this.db) return;
         // Save SQLite database
         const data = this.db.export();
         const buffer = Buffer.from(data);

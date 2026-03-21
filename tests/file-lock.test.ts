@@ -51,9 +51,16 @@ describe("File Lock", () => {
     });
 
     it("should normalize paths (case-insensitive, forward slashes)", () => {
-        acquireFileLock("D:\\Project\\SRC\\utils.ts", "nreki_code:edit");
-        const result = acquireFileLock("d:/project/src/utils.ts", "nreki_code:edit");
-        expect(result.acquired).toBe(false);
+        if (process.platform !== "win32") {
+            // Case-insensitive path normalization only applies on Windows
+            acquireFileLock("/project/SRC/utils.ts", "nreki_code:edit");
+            const result = acquireFileLock("/project/SRC/utils.ts", "nreki_code:edit");
+            expect(result.acquired).toBe(false);
+        } else {
+            acquireFileLock("D:\\Project\\SRC\\utils.ts", "nreki_code:edit");
+            const result = acquireFileLock("d:/project/src/utils.ts", "nreki_code:edit");
+            expect(result.acquired).toBe(false);
+        }
     });
 
     it("should auto-expire stale locks after 30 seconds", () => {
