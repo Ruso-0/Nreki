@@ -6,6 +6,12 @@ export interface TopologicalEdge {
     weight: number;
 }
 
+export interface SparseEdge {
+    u: number;
+    v: number;
+    weight: number;
+}
+
 export interface SpectralResult {
     fiedlerValue: number;
     volume: number;
@@ -178,39 +184,57 @@ export class SpectralTopologist {
 }
 
 export class SpectralMath {
-    public static getFiedlerValue(adjacencyMatrix: number[][]): number {
-        const N = adjacencyMatrix.length;
-        if (N <= 1) return 0;
+    public static analyzeTopology(N: number, edges: SparseEdge[]): { fiedler: number; volume: number } {
+        if (N <= 1) return { fiedler: 0, volume: 0 };
 
-        const L = new Float64Array(N * N);
+        const degree = new Float64Array(N);
+        const adj: number[][] = Array.from({ length: N }, () => []);
+        const weights: number[][] = Array.from({ length: N }, () => []);
+
         let maxDegree = 0;
-        for (let i = 0; i < N; i++) {
-            let degree = 0;
-            for (let j = 0; j < N; j++) {
-                if (i !== j) {
-                    const weight = Math.max(adjacencyMatrix[i][j] || 0, adjacencyMatrix[j][i] || 0);
-                    L[i * N + j] = -weight;
-                    degree += weight;
-                }
+        let volume = 0;
+
+        const edgeMap = new Map<number, Map<number, number>>();
+
+        for (let i = 0; i < edges.length; i++) {
+            const e = edges[i];
+            if (e.u === e.v) continue;
+
+            const min = Math.min(e.u, e.v);
+            const max = Math.max(e.u, e.v);
+
+            let row = edgeMap.get(min);
+            if (!row) {
+                row = new Map<number, number>();
+                edgeMap.set(min, row);
             }
-            L[i * N + i] = degree;
-            if (degree > maxDegree) maxDegree = degree;
+
+            const currentW = row.get(max) || 0;
+            if (e.weight > currentW) row.set(max, e.weight);
+        }
+
+        let seed = N * 2654435761;
+
+        for (const [u, row] of edgeMap.entries()) {
+            for (const [v, w] of row.entries()) {
+                adj[u].push(v); weights[u].push(w); degree[u] += w;
+                adj[v].push(u); weights[v].push(w); degree[v] += w;
+
+                volume += w;
+
+                if (degree[u] > maxDegree) maxDegree = degree[u];
+                if (degree[v] > maxDegree) maxDegree = degree[v];
+
+                seed = ((seed << 5) - seed + (w * 1000 | 0)) | 0;
+            }
         }
 
         const c = maxDegree * 2.0 + 1.0;
 
-        let seed = N * 2654435761;
-        for (let i = 0; i < N; i++) {
-            for (let j = 0; j < N; j++) {
-                const weight = Math.max(adjacencyMatrix[i][j] || 0, adjacencyMatrix[j][i] || 0);
-                seed = ((seed << 5) - seed + (weight * 1000 | 0)) | 0;
-            }
-        }
-
-        const v = new Float64Array(N);
+        const vec = new Float64Array(N);
         for (let i = 0; i < N; i++) {
             seed = (seed * 1103515245 + 12345) | 0;
-            v[i] = ((seed >>> 16) & 0x7fff) / 32768.0 - 0.5;
+            vec[i] = ((seed >>> 16) & 0x7fff) / 32768.0 - 0.5;
         }
 
         const v_next = new Float64Array(N);
@@ -219,35 +243,42 @@ export class SpectralMath {
 
         for (let iter = 0; iter < 100; iter++) {
             let sum = 0;
-            for (let i = 0; i < N; i++) sum += v[i];
+            for (let i = 0; i < N; i++) sum += vec[i];
             const mean = sum / N;
-            for (let i = 0; i < N; i++) v[i] -= mean;
+            for (let i = 0; i < N; i++) vec[i] -= mean;
 
             let norm = 0;
             for (let i = 0; i < N; i++) {
-                let Lv_i = 0;
-                for (let j = 0; j < N; j++) Lv_i += L[i * N + j] * v[j];
-                const val = c * v[i] - Lv_i;
+                let Lv_i = degree[i] * vec[i];
+                const neighbors = adj[i];
+                const wList = weights[i];
+                for (let k = 0; k < neighbors.length; k++) {
+                    Lv_i -= wList[k] * vec[neighbors[k]];
+                }
+                const val = c * vec[i] - Lv_i;
                 v_next[i] = val;
                 norm += val * val;
             }
 
             norm = Math.sqrt(norm);
-            if (norm < 1e-9) return 0;
-
-            for (let i = 0; i < N; i++) v[i] = v_next[i] / norm;
+            if (norm < 1e-9) return { fiedler: 0, volume };
+            for (let i = 0; i < N; i++) vec[i] = v_next[i] / norm;
 
             mu = 0;
             for (let i = 0; i < N; i++) {
-                let Lv_i = 0;
-                for (let j = 0; j < N; j++) Lv_i += L[i * N + j] * v[j];
-                mu += v[i] * (c * v[i] - Lv_i);
+                let Lv_i = degree[i] * vec[i];
+                const neighbors = adj[i];
+                const wList = weights[i];
+                for (let k = 0; k < neighbors.length; k++) {
+                    Lv_i -= wList[k] * vec[neighbors[k]];
+                }
+                mu += vec[i] * (c * vec[i] - Lv_i);
             }
 
             if (Math.abs(mu - prev_mu) < 1e-7) break;
             prev_mu = mu;
         }
 
-        return Math.max(0, c - mu);
+        return { fiedler: Math.max(0, c - mu), volume };
     }
 }
