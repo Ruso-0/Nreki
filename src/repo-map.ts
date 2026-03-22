@@ -32,7 +32,11 @@ export interface RepoMap {
     graph?: DependencyGraph;
 }
 
+/** Cache format version. Bump when CachedRepoMap structure changes. */
+const CACHE_FORMAT_VERSION = 1;
+
 export interface CachedRepoMap {
+    formatVersion?: number;
     digest: string;
     map: RepoMap;
     text: string;
@@ -640,8 +644,7 @@ function computeFileDigest(projectRoot: string): string {
         try {
             const stat = fs.statSync(file);
             const rel = path.relative(projectRoot, file).replace(/\\/g, "/");
-            // M-04: Use only rel:size - mtimeMs causes full cache invalidation on git clone
-            hash.update(`${rel}:${stat.size}\n`);
+            hash.update(`${rel}:${stat.size}:${Math.floor(stat.mtimeMs)}\n`);
         } catch {
             // Skip
         }
@@ -666,7 +669,7 @@ export async function getOrGenerateRepoMap(
             const cached: CachedRepoMap = JSON.parse(
                 fs.readFileSync(cachePath, "utf-8")
             );
-            if (cached.digest === currentDigest) {
+            if (cached.digest === currentDigest && (cached.formatVersion ?? 0) === CACHE_FORMAT_VERSION) {
                 // Restore graph from cached serialized form
                 if (cached.graph) {
                     cached.map.graph = deserializeGraph(cached.graph);
@@ -689,7 +692,7 @@ export async function getOrGenerateRepoMap(
     const graphData = map.graph ? serializeGraph(map.graph) : undefined;
     // Strip non-serializable graph from the map for JSON storage
     const mapForCache = { ...map, graph: undefined };
-    const cacheData: CachedRepoMap = { digest: currentDigest, map: mapForCache, text, graph: graphData };
+    const cacheData: CachedRepoMap = { formatVersion: CACHE_FORMAT_VERSION, digest: currentDigest, map: mapForCache, text, graph: graphData };
     fs.writeFileSync(cachePath, JSON.stringify(cacheData));
 
     return { map, text, fromCache: false };

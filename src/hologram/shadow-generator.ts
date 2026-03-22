@@ -662,12 +662,12 @@ function inferSimpleType(defaultVal: string): string {
     if (defaultVal === "true" || defaultVal === "false") return "boolean";
     if (defaultVal === "null") return "null";
     if (defaultVal === "undefined") return "undefined";
-    return "any";
+    return "unknown";
 }
 
 /**
  * Emit a class property declaration, stripping initializers.
- * "private cache = new Map()" -> "private cache: any;"
+ * "private cache = new Map()" -> "private cache: unknown;"
  * "public name: string = 'x'" -> "public name: string;"
  * "readonly x = 5" -> "readonly x: number;"
  */

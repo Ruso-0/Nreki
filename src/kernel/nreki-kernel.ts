@@ -81,13 +81,24 @@ export interface NrekiInterceptResult {
 export type NrekiMode = "auto" | "syntax" | "file" | "project" | "hologram";
 
 // ─── Environment file classifier (Performance Modes) ─────────────
+const ENV_FILE_BASENAMES = new Set([
+    "tsconfig.json", "jsconfig.json", "package.json",
+    "jest.config.ts", "jest.config.js", "jest.config.mjs",
+    "vitest.config.ts", "vitest.config.js", "vitest.config.mts",
+    "webpack.config.js", "webpack.config.ts",
+    "vite.config.ts", "vite.config.js", "vite.config.mts",
+    "rollup.config.js", "rollup.config.ts", "rollup.config.mjs",
+    "eslint.config.js", "eslint.config.mjs",
+    ".eslintrc.json", ".eslintrc.js",
+    "prettier.config.js", ".prettierrc.json",
+    "babel.config.js", "babel.config.json",
+    "next.config.js", "next.config.mjs", "next.config.ts",
+    "tailwind.config.js", "tailwind.config.ts",
+]);
+
 const isEnvironmentFile = (filePath: string): boolean => {
     const base = path.basename(filePath).toLowerCase();
-    return base.endsWith('.d.ts') ||
-           base.endsWith('.json') ||
-           base.includes('config') ||
-           base.includes('setup') ||
-           base.startsWith('.');
+    return base.endsWith(".d.ts") || base.startsWith(".") || ENV_FILE_BASENAMES.has(base);
 };
 
 // ─── NREKI Kernel ─────────────────────────────────────────────────

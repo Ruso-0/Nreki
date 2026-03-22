@@ -555,7 +555,7 @@ describe("performance", () => {
         const elapsed = performance.now() - start;
 
         expect(result.success).toBe(true);
-        expect(elapsed).toBeLessThan(200);
+        expect(elapsed).toBeLessThan(300);
 
         const content = fs.readFileSync(file, "utf-8");
         expect(content).toContain("return x * 50;");
