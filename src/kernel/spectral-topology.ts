@@ -185,6 +185,32 @@ export class SpectralTopologist {
         return blanket;
     }
 
+    public static filterFirstCrown(
+        targetFile: string,
+        nodes: Set<string>,
+        edges: TopologicalEdge[]
+    ): { crownNodes: Set<string>; crownEdges: TopologicalEdge[] } {
+
+        const targetPrefix = `${targetFile}::`;
+
+        const coreNodes = new Set<string>();
+        for (const n of nodes) {
+            if (n.startsWith(targetPrefix)) coreNodes.add(n);
+        }
+
+        const validNodes = new Set<string>(coreNodes);
+        for (const e of edges) {
+            if (coreNodes.has(e.sourceId)) validNodes.add(e.targetId);
+            if (coreNodes.has(e.targetId)) validNodes.add(e.sourceId);
+        }
+
+        const crownEdges = edges.filter(e =>
+            validNodes.has(e.sourceId) && validNodes.has(e.targetId)
+        );
+
+        return { crownNodes: validNodes, crownEdges };
+    }
+
     public static analyze(
         program: ts.Program,
         targetFiles: Set<string>,

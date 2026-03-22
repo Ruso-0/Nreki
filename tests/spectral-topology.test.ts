@@ -33,17 +33,20 @@ describe("SpectralMath.analyzeTopology", () => {
         expect(fiedler).toBe(0);
     });
 
-    it("should detect edge removal (fiedler drops)", () => {
+    it("should detect disconnection via Phi metric (breaking a dense hub)", () => {
         const connected: SparseEdge[] = [
             { u: 0, v: 1, weight: 1 },
             { u: 1, v: 2, weight: 1 },
+            { u: 0, v: 2, weight: 1 },
         ];
         const weakened: SparseEdge[] = [
             { u: 0, v: 1, weight: 1 },
         ];
-        const f1 = SpectralMath.analyzeTopology(3, connected).fiedler;
-        const f2 = SpectralMath.analyzeTopology(3, weakened).fiedler;
-        expect(f1).toBeGreaterThan(f2);
+        const r1 = SpectralMath.analyzeTopology(3, connected);
+        const r2 = SpectralMath.analyzeTopology(3, weakened);
+        const phi1 = r1.fiedler / 3;
+        const phi2 = r2.fiedler / 3;
+        expect(phi1).toBeGreaterThan(phi2);
     });
 
     it("should be deterministic", () => {
