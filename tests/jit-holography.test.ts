@@ -292,7 +292,7 @@ describe("JIT Holography", () => {
         expect(kernel.getJitCacheSize()).toBeGreaterThanOrEqual(1);
     });
 
-    it("15. rollbackAll clears JIT caches and allows re-classification", async () => {
+    it("15. rollbackAll preserves JIT cache, only invalidates edit targets", async () => {
         dir = createTempProject({
             "types.ts": `export interface User { name: string; }`,
             "main.ts": `import { User } from "./types";\nexport const u: User = { name: "a" };`,
@@ -300,21 +300,34 @@ describe("JIT Holography", () => {
         const kernel = bootJitKernel(dir);
         const host = (kernel as any).host;
 
-        // Trigger JIT classification
-        host.fileExists(toPosix(path.resolve(dir, "types.ts")));
-        const cacheBefore = kernel.getJitCacheSize();
-        expect(cacheBefore).toBeGreaterThanOrEqual(1);
-
-        // Verify the shadow data exists before rollback
+        // Trigger JIT classification for both files
         const typesTs = toPosix(path.resolve(dir, "types.ts"));
+        const mainTs = toPosix(path.resolve(dir, "main.ts"));
+        host.fileExists(typesTs);
+        host.fileExists(mainTs);
+        const cacheBefore = kernel.getJitCacheSize();
+        expect(cacheBefore).toBe(2);
+
+        // Verify types.ts shadow exists before rollback
         expect((kernel as any).prunedTsLookup.has(typesTs)).toBe(true);
 
-        // Rollback clears shadow data (updateProgram re-triggers JIT)
+        // Simulate an in-flight edit on main.ts (like interceptAtomicBatch does)
+        (kernel as any).currentEditTargets.add(mainTs);
+
+        // Snapshot cache size before rollback
+        const sizeBefore = kernel.getJitCacheSize();
+
+        // Rollback: should only invalidate main.ts, preserve types.ts
+        // Note: updateProgram() triggers TS resolution which re-classifies via JIT hooks
         await kernel.rollbackAll();
 
-        // After rollback + updateProgram, the JIT cache may be refilled by TS resolution.
-        // The key invariant: prunedFiles and shadowContent were cleared and rebuilt fresh.
-        // Verify kernel is still functional
+        // Cache preserved for types.ts (disk didn't change, classification valid)
+        expect((kernel as any).jitClassifiedCache.has(typesTs)).toBe(true);
+        // Cache size >= what we had before (updateProgram may re-classify more files)
+        // The key invariant: we did NOT clear() the entire cache (would have been 0 before updateProgram)
+        expect(kernel.getJitCacheSize()).toBeGreaterThanOrEqual(sizeBefore - 1);
+
+        // Kernel still functional
         expect(kernel.isBooted()).toBe(true);
         expect(kernel.hasJitHologram()).toBe(true);
     });

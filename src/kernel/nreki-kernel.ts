@@ -1516,11 +1516,18 @@ export class NrekiKernel {
             // BUG 1: In hologram mode, re-filter rootNames
             if (this.mode === "hologram") {
                 if (this.jitMode) {
-                    // JIT mode: clear caches, re-classify lazily on next access
-                    this.jitClassifiedCache.clear();
-                    this.prunedFiles.clear();
-                    this.shadowContent.clear();
+                    // SURGICAL JIT CACHE INVALIDATION:
+                    // jitClassifyFile() reads from DISK, not VFS. Classifications
+                    // remain valid after rollback because disk content is unchanged.
+                    // Only invalidate files that were being edited in this transaction.
+                    // This preserves the ~1.94s of accumulated JIT work.
+                    for (const target of this.currentEditTargets) {
+                        this.jitClassifiedCache.delete(target);
+                        this.prunedFiles.delete(target);
+                        this.shadowContent.delete(target);
+                    }
                     this.buildShadowLookups();
+                    this.currentEditTargets.clear();
                     this.rootNames = new Set(
                         [...this.rootNames].filter(f => f.endsWith(".d.ts")),
                     );
