@@ -55,7 +55,23 @@ export class SpectralTopologist {
                 nodes.add(sourceId);
 
                 const findDependencies = (node: ts.Node) => {
-                    if (ts.isBlock(node)) return;
+                    // ── PODADO RADICAL O(1) ──────────────────────────────
+                    // Solo necesitamos TypeReferenceNode en firmas y declaraciones.
+                    // Todo valor de ejecución se ignora inmediatamente.
+                    // Esto reduce la exploración de millones de nodos a miles.
+                    if (
+                        ts.isBlock(node) ||
+                        ts.isObjectLiteralExpression(node) ||
+                        ts.isArrayLiteralExpression(node) ||
+                        ts.isCallExpression(node) ||
+                        ts.isBinaryExpression(node) ||
+                        ts.isTemplateExpression(node) ||
+                        ts.isStringLiteral(node) ||
+                        ts.isNumericLiteral(node) ||
+                        ts.isNoSubstitutionTemplateLiteral(node)
+                    ) {
+                        return;
+                    }
 
                     if (node.kind === ts.SyntaxKind.AnyKeyword || node.kind === ts.SyntaxKind.UnknownKeyword) {
                         return;
@@ -84,6 +100,18 @@ export class SpectralTopologist {
                                 }
                             }
                         }
+
+                        // Los genéricos SÍ importan: Promise<User> → User es un edge
+                        if (node.typeArguments) node.typeArguments.forEach(findDependencies);
+                        return; // FIN de la rama. No bajamos más.
+                    }
+
+                    // Arrow/function expressions: solo firmas, NO body
+                    if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) {
+                        if (node.typeParameters) node.typeParameters.forEach(findDependencies);
+                        node.parameters.forEach(findDependencies);
+                        if (node.type) findDependencies(node.type);
+                        return; // NO entrar al body
                     }
 
                     ts.forEachChild(node, findDependencies);
