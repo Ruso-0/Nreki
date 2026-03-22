@@ -52,10 +52,13 @@ for (const file of candidateFiles) {
     }
 
     const start = performance.now();
-    const result = SpectralTopologist.analyze(program, blanketFiles);
+    const { nodes, edges } = SpectralTopologist.extractConstraintGraph(program, blanketFiles);
+    const { crownNodes, crownEdges } = SpectralTopologist.filterFirstCrown(file, nodes, edges);
+    const { sparseEdges, N } = SpectralTopologist.buildSparseGraph(crownNodes, crownEdges);
+    const { fiedler, volume } = SpectralMath.analyzeTopology(N, sparseEdges);
     const ms = performance.now() - start;
     latencies.push(ms);
-    console.log(`  ${path.basename(file)}: blanket=${blanketFiles.size} files, ${result.nodeCount} nodes, ${result.edgeCount} edges, ${ms.toFixed(1)}ms, λ₂=${result.fiedlerValue.toFixed(4)}`);
+    console.log(`  ${path.basename(file)}: blanket=${blanketFiles.size} files, crown=${crownNodes.size} nodes, ${crownEdges.length} edges, ${ms.toFixed(1)}ms, λ₂=${fiedler.toFixed(4)}`);
 }
 
 const avgLatency = latencies.reduce((a, b) => a + b, 0) / latencies.length;
@@ -69,34 +72,30 @@ let falseNegatives = 0;
 const totalWideningTests = candidateFiles.length;
 
 for (const file of candidateFiles) {
-    const pre = SpectralTopologist.analyze(program, allFiles, file);
-
     const blanket = SpectralTopologist.getMarkovBlanket(file, fullGraph.edges);
-    const egoEdges = fullGraph.edges.filter(e => {
-        const sf = e.sourceId.split("::")[0];
-        const tf = e.targetId.split("::")[0];
-        return blanket.has(sf) && (blanket.has(tf) || tf.startsWith("EXTERNAL"));
-    });
-
-    const postEdges = egoEdges.filter(e => e.sourceId.split("::")[0] !== file);
-    const postNodes = new Set<string>();
-    for (const e of postEdges) { postNodes.add(e.sourceId); postNodes.add(e.targetId); }
-    // Add isolated nodes from blanket files
-    for (const e of egoEdges) {
-        if (blanket.has(e.sourceId.split("::")[0])) postNodes.add(e.sourceId);
-        if (blanket.has(e.targetId.split("::")[0])) postNodes.add(e.targetId);
+    const blanketFiles = new Set<string>();
+    for (const f of allFiles) {
+        if (blanket.has(f.replace(/\\/g, "/"))) blanketFiles.add(f);
     }
 
-    const { sparseEdges: postSparse, N: postN } = SpectralTopologist.buildSparseGraph(postNodes, postEdges);
-    const { fiedler: postFiedler, volume: postVol } = SpectralMath.analyzeTopology(postN, postSparse);
+    const preGraph = SpectralTopologist.extractConstraintGraph(program, blanketFiles);
+    const preCrown = SpectralTopologist.filterFirstCrown(file, preGraph.nodes, preGraph.edges);
+    const preSparse = SpectralTopologist.buildSparseGraph(preCrown.crownNodes, preCrown.crownEdges);
+    const pre = SpectralMath.analyzeTopology(preSparse.N, preSparse.sparseEdges);
+    const N_AST_pre = preCrown.crownNodes.size;
+    const preResult = { fiedlerValue: pre.fiedler, volume: pre.volume, nodeCount: N_AST_pre, edgeCount: preCrown.crownEdges.length };
 
-    const post = { fiedlerValue: postFiedler, volume: postVol, nodeCount: postNodes.size, edgeCount: postEdges.length };
-    const delta = SpectralTopologist.computeDelta(pre, post);
+    const postEdges = preCrown.crownEdges.filter(e => e.sourceId.split("::")[0] !== file);
+    const postSparse = SpectralTopologist.buildSparseGraph(preCrown.crownNodes, postEdges);
+    const post = SpectralMath.analyzeTopology(postSparse.N, postSparse.sparseEdges);
+    const N_AST_post = preCrown.crownNodes.size;
+    const postResult = { fiedlerValue: post.fiedler, volume: post.volume, nodeCount: N_AST_post, edgeCount: postEdges.length };
 
+    const delta = SpectralTopologist.computeDelta(preResult, postResult);
     const detected = delta.verdict === "REJECTED_ENTROPY";
     if (!detected) falseNegatives++;
 
-    console.log(`  ${path.basename(file)}: pre(λ₂=${pre.fiedlerValue.toFixed(4)}, vol=${pre.volume}) → post(λ₂=${postFiedler.toFixed(4)}, vol=${postVol}) = ${delta.verdict} ${detected ? "✅" : "❌"}`);
+    console.log(`  ${path.basename(file)}: crown=${preCrown.crownNodes.size} nodes, pre(λ₂=${pre.fiedler.toFixed(4)}, vol=${pre.volume}) → post(λ₂=${post.fiedler.toFixed(4)}, vol=${post.volume}) Φ_pre=${(pre.fiedler/N_AST_pre).toFixed(4)} Φ_post=${(post.fiedler/N_AST_post).toFixed(4)} = ${delta.verdict} ${detected ? "✅" : "❌"}`);
 }
 
 console.log(`  False negatives: ${falseNegatives}/${totalWideningTests}`);
