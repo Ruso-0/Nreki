@@ -346,6 +346,7 @@ export class CircuitBreaker {
         return cycles;
     }
 
+    // TODO: Make test tool detection configurable instead of hardcoded list.
     /**
      * Heuristic: does this tool call look like a test/build invocation?
      */

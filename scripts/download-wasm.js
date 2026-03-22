@@ -24,6 +24,7 @@ if (!existsSync(WASM_DIR)) {
 
 if (existsSync(WASMS_PKG)) {
     // Copy from tree-sitter-wasms npm package
+    // TODO: Add SHA-256 checksum verification after copy to detect supply chain tampering.
     for (const name of NEEDED) {
         const src = join(WASMS_PKG, name);
         const dest = join(WASM_DIR, name);

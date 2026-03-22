@@ -158,7 +158,8 @@ export function applySemanticSplice(
     // Verify tree-sitter byte position against actual content
     let startIdx = startIndex;
     if (content.substring(startIdx, startIdx + rawCode.length) !== rawCode) {
-        // Search in a local window of ±500 bytes around the AST-reported position
+        // NOTE: ±500 byte search window. If duplicate symbols exist within this range,
+        // the wrong occurrence may be matched. Increase if false mismatches are reported.
         const windowStart = Math.max(0, startIdx - 500);
         const windowEnd = Math.min(content.length, startIdx + rawCode.length + 500);
         const searchWindow = content.substring(windowStart, windowEnd);

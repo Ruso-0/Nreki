@@ -285,13 +285,7 @@ export class SpectralMath {
     public static analyzeTopology(N: number, edges: SparseEdge[]): { fiedler: number; volume: number } {
         if (N <= 1) return { fiedler: 0, volume: 0 };
 
-        const degree = new Float64Array(N);
-        const adj: number[][] = Array.from({ length: N }, () => []);
-        const weights: number[][] = Array.from({ length: N }, () => []);
-
-        let maxDegree = 0;
-        let volume = 0;
-
+        // --- Edge deduplication ---
         const edgeMap = new Map<number, Map<number, number>>();
 
         for (let i = 0; i < edges.length; i++) {
@@ -311,22 +305,42 @@ export class SpectralMath {
             if (e.weight > currentW) row.set(max, e.weight);
         }
 
+        // --- CSR construction pass 1: count neighbors, degree, volume, seed ---
+        const degree = new Float64Array(N);
+        const neighborCount = new Int32Array(N);
+        let maxDegree = 0;
+        let volume = 0;
         let seed = N * 2654435761;
 
         for (const [u, row] of edgeMap.entries()) {
             for (const [v, w] of row.entries()) {
-                adj[u].push(v); weights[u].push(w); degree[u] += w;
-                adj[v].push(u); weights[v].push(w); degree[v] += w;
-
+                neighborCount[u]++; neighborCount[v]++;
+                degree[u] += w; degree[v] += w;
                 volume += w;
-
                 if (degree[u] > maxDegree) maxDegree = degree[u];
                 if (degree[v] > maxDegree) maxDegree = degree[v];
-
                 seed = ((seed << 5) - seed + (w * 1000 | 0)) | 0;
             }
         }
 
+        // Prefix sum → rowPtr
+        const rowPtr = new Int32Array(N + 1);
+        for (let i = 0; i < N; i++) rowPtr[i + 1] = rowPtr[i] + neighborCount[i];
+        const nnz = rowPtr[N];
+
+        // --- CSR construction pass 2: fill colIdx + values ---
+        const colIdx = new Int32Array(nnz);
+        const csrValues = new Float64Array(nnz);
+        for (let i = 0; i < N; i++) neighborCount[i] = rowPtr[i]; // reuse as cursor
+
+        for (const [u, row] of edgeMap.entries()) {
+            for (const [v, w] of row.entries()) {
+                colIdx[neighborCount[u]] = v; csrValues[neighborCount[u]++] = w;
+                colIdx[neighborCount[v]] = u; csrValues[neighborCount[v]++] = w;
+            }
+        }
+
+        // --- Initialization ---
         const c = maxDegree * 2.0 + 1.0;
 
         const vec = new Float64Array(N);
@@ -339,39 +353,38 @@ export class SpectralMath {
         let mu = 0;
         let prev_mu = -1;
 
+        // --- Fused power iteration (CSR SpMV + Rayleigh quotient) ---
         for (let iter = 0; iter < 100; iter++) {
+            // Center vec
             let sum = 0;
             for (let i = 0; i < N; i++) sum += vec[i];
             const mean = sum / N;
-            for (let i = 0; i < N; i++) vec[i] -= mean;
 
+            // Center + compute norm² for re-normalization
+            let normSq = 0;
+            for (let i = 0; i < N; i++) { vec[i] -= mean; normSq += vec[i] * vec[i]; }
+            if (normSq < 1e-18) return { fiedler: 0, volume };
+            const rNorm = 1.0 / Math.sqrt(normSq);
+            for (let i = 0; i < N; i++) vec[i] *= rNorm;
+
+            // Fused SpMV + Rayleigh (vec is unit-norm → mu = vᵀ(cI−L)v)
             let norm = 0;
+            mu = 0;
             for (let i = 0; i < N; i++) {
                 let Lv_i = degree[i] * vec[i];
-                const neighbors = adj[i];
-                const wList = weights[i];
-                for (let k = 0; k < neighbors.length; k++) {
-                    Lv_i -= wList[k] * vec[neighbors[k]];
+                const end = rowPtr[i + 1];
+                for (let k = rowPtr[i]; k < end; k++) {
+                    Lv_i -= csrValues[k] * vec[colIdx[k]];
                 }
                 const val = c * vec[i] - Lv_i;
                 v_next[i] = val;
                 norm += val * val;
+                mu += vec[i] * val;
             }
 
             norm = Math.sqrt(norm);
             if (norm < 1e-9) return { fiedler: 0, volume };
             for (let i = 0; i < N; i++) vec[i] = v_next[i] / norm;
-
-            mu = 0;
-            for (let i = 0; i < N; i++) {
-                let Lv_i = degree[i] * vec[i];
-                const neighbors = adj[i];
-                const wList = weights[i];
-                for (let k = 0; k < neighbors.length; k++) {
-                    Lv_i -= wList[k] * vec[neighbors[k]];
-                }
-                mu += vec[i] * (c * vec[i] - Lv_i);
-            }
 
             if (Math.abs(mu - prev_mu) < 1e-7) break;
             prev_mu = mu;
