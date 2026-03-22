@@ -119,6 +119,8 @@ export class NrekiKernel {
     private compilerOptions!: ts.CompilerOptions;
     private rootNames!: Set<string>;
     private host!: ts.CompilerHost;
+    private originalReadFile!: (fileName: string) => string | undefined;
+    private originalFileExists!: (fileName: string) => boolean;
     private builderProgram?: ts.EmitAndSemanticDiagnosticsBuilderProgram;
     private booted = false;
     public healingStats = { applied: 0, failed: 0 };
@@ -282,6 +284,8 @@ export class NrekiKernel {
 
         const originalReadFile = this.host.readFile;
         const originalFileExists = this.host.fileExists;
+        this.originalReadFile = originalReadFile;
+        this.originalFileExists = originalFileExists;
         const originalGetModifiedTime = (this.host as any).getModifiedTime || ts.sys.getModifiedTime;
         const originalDirectoryExists = this.host.directoryExists || ts.sys.directoryExists;
 
@@ -390,48 +394,11 @@ export class NrekiKernel {
         };
 
         // ─── LanguageService: VS Code's brain connected to our VFS ───
-        const lsHost: ts.LanguageServiceHost = {
-            getCompilationSettings: () => this.compilerOptions,
-            getScriptFileNames: () => Array.from(this.rootNames),
-            getScriptVersion: (fileName) => {
-                const posixPath = this.toPosix(path.resolve(this.projectRoot, fileName));
-                return this.vfsClock.get(posixPath)?.getTime().toString() || "1";
-            },
-            getScriptSnapshot: (fileName) => {
-                const posixPath = this.toPosix(path.resolve(this.projectRoot, fileName));
-
-                // HOLOGRAM INTERCEPT: serve shadow content for .d.ts
-                if (this.mode === "hologram" && fileName.endsWith(".d.ts")) {
-                    const tsPath = posixPath.replace(/\.d\.ts$/, ".ts");
-                    const shadow = this.shadowContent.get(tsPath);
-                    if (shadow !== undefined) return ts.ScriptSnapshot.fromString(shadow);
-                    const tsxPath = posixPath.replace(/\.d\.ts$/, ".tsx");
-                    const shadow2 = this.shadowContent.get(tsxPath);
-                    if (shadow2 !== undefined) return ts.ScriptSnapshot.fromString(shadow2);
-                }
-
-                if (this.vfs.has(posixPath)) {
-                    const content = this.vfs.get(posixPath);
-                    if (content === null || content === undefined) return undefined;
-                    return ts.ScriptSnapshot.fromString(content);
-                }
-                if (!originalFileExists.call(this.host, fileName)) return undefined;
-                const content = originalReadFile.call(this.host, fileName);
-                if (!content) return undefined;
-                return ts.ScriptSnapshot.fromString(content);
-            },
-            getCurrentDirectory: () => this.projectRoot,
-            getDefaultLibFileName: (options) => ts.getDefaultLibFilePath(options),
-            fileExists: this.host.fileExists,
-            readFile: this.host.readFile,
-            directoryExists: this.host.directoryExists,
-            readDirectory: ts.sys.readDirectory,
-        };
         this.documentRegistry = ts.createDocumentRegistry(
             ts.sys.useCaseSensitiveFileNames,
             this.projectRoot
         );
-        this.languageService = ts.createLanguageService(lsHost, this.documentRegistry);
+        this.languageService = ts.createLanguageService(this.createLSHost(), this.documentRegistry);
         // ──────────────────────────────────────────────────────────────
 
         // Incremental cache: try to load previous build state for warm boot
@@ -487,12 +454,61 @@ export class NrekiKernel {
         return this.booted;
     }
 
+    private createLSHost(): ts.LanguageServiceHost {
+        return {
+            getCompilationSettings: () => this.compilerOptions,
+            getScriptFileNames: () => Array.from(this.rootNames),
+            getScriptVersion: (fileName) => {
+                const posixPath = this.toPosix(path.resolve(this.projectRoot, fileName));
+                return this.vfsClock.get(posixPath)?.getTime().toString() || "1";
+            },
+            getScriptSnapshot: (fileName) => {
+                const posixPath = this.toPosix(path.resolve(this.projectRoot, fileName));
+
+                // HOLOGRAM INTERCEPT: serve shadow content for .d.ts
+                if (this.mode === "hologram" && fileName.endsWith(".d.ts")) {
+                    const tsPath = posixPath.replace(/\.d\.ts$/, ".ts");
+                    const shadow = this.shadowContent.get(tsPath);
+                    if (shadow !== undefined) return ts.ScriptSnapshot.fromString(shadow);
+                    const tsxPath = posixPath.replace(/\.d\.ts$/, ".tsx");
+                    const shadow2 = this.shadowContent.get(tsxPath);
+                    if (shadow2 !== undefined) return ts.ScriptSnapshot.fromString(shadow2);
+                }
+
+                if (this.vfs.has(posixPath)) {
+                    const content = this.vfs.get(posixPath);
+                    if (content === null || content === undefined) return undefined;
+                    return ts.ScriptSnapshot.fromString(content);
+                }
+                if (!this.originalFileExists.call(this.host, fileName)) return undefined;
+                const content = this.originalReadFile.call(this.host, fileName);
+                if (!content) return undefined;
+                return ts.ScriptSnapshot.fromString(content);
+            },
+            getCurrentDirectory: () => this.projectRoot,
+            getDefaultLibFileName: (options) => ts.getDefaultLibFilePath(options),
+            fileExists: this.host.fileExists,
+            readFile: this.host.readFile,
+            directoryExists: this.host.directoryExists,
+            readDirectory: ts.sys.readDirectory,
+        };
+    }
+
     // P11 + P19: Periodic GC with counter reset
     private updateProgram(): void {
         // Purge corrupted builder after early exit
         if (this.isStateCorrupted) {
-            console.error("[NREKI] Purging builder after early exit. Warm rebuild ~2-5s.");
+            console.error("[NREKI] Purging builder and LanguageService after early exit. Warm rebuild ~2-5s.");
             this.builderProgram = undefined;
+
+            // FIX OOM: DocumentRegistry retains AST references from the corrupted
+            // builder. Recreating it allows V8 GC to reclaim the dead ASTs.
+            this.documentRegistry = ts.createDocumentRegistry(
+                ts.sys.useCaseSensitiveFileNames,
+                this.projectRoot
+            );
+            this.languageService = ts.createLanguageService(this.createLSHost(), this.documentRegistry);
+
             this.isStateCorrupted = false;
         } else if (++this.editCount >= this.gcThreshold) {
             this.builderProgram = undefined;
