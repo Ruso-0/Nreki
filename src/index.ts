@@ -66,7 +66,7 @@ export function detectMode(dir: string): "syntax" | "file" | "project" | "hologr
                 }
             } else if (
                 /\.(ts|tsx|js|jsx|mts|cts|mjs|cjs)$/i.test(entry.name) &&
-                !entry.name.endsWith(".d.ts")
+                !/\.d\.[mc]?ts$/i.test(entry.name)
             ) {
                 count++;
             }
