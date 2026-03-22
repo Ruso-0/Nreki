@@ -152,11 +152,22 @@ export class TokenMonitor {
             return this.entries;
         }
 
+        let fd: number;
         try {
-            const content = fs.readFileSync(this.config.logPath, "utf-8");
-            const newContent = content.slice(this.lastReadPosition);
+            fd = fs.openSync(this.config.logPath, "r");
+        } catch {
+            return this.entries;
+        }
 
-            if (newContent.trim()) {
+        try {
+            const stat = fs.fstatSync(fd);
+            const bytesToRead = stat.size - this.lastReadPosition;
+
+            if (bytesToRead > 0) {
+                const buffer = Buffer.allocUnsafe(bytesToRead);
+                fs.readSync(fd, buffer, 0, bytesToRead, this.lastReadPosition);
+
+                const newContent = buffer.toString("utf-8");
                 const newLines = newContent
                     .split("\n")
                     .filter((line) => line.trim())
@@ -170,13 +181,14 @@ export class TokenMonitor {
                     .filter((entry): entry is UsageEntry => entry !== null);
 
                 this.entries.push(...newLines);
+                this.lastReadPosition = stat.size;
             }
-
-            this.lastReadPosition = content.length;
         } catch (err) {
             console.error(
                 `[NREKI] Failed to read usage log: ${(err as Error).message}`
             );
+        } finally {
+            fs.closeSync(fd);
         }
 
         return this.entries;

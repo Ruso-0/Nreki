@@ -180,7 +180,7 @@ export class CircuitBreaker {
         // Ring buffer: keep last MAX_HISTORY entries
         this.state.history.push(record);
         if (this.state.history.length > MAX_HISTORY) {
-            this.state.history = this.state.history.slice(-MAX_HISTORY);
+            this.state.history.shift();
         }
 
         this.stats.totalToolCalls++;
@@ -224,11 +224,27 @@ export class CircuitBreaker {
             };
         }
 
-        // TTL eviction: remove entries older than 5 minutes
+        // TTL eviction: in-place removal of expired entries
         const now = Date.now();
-        this.state.history = this.state.history.filter(
-            (r) => now - r.timestamp <= HISTORY_TTL_MS
-        );
+        let expireIdx = 0;
+        while (expireIdx < this.state.history.length &&
+               now - this.state.history[expireIdx].timestamp > HISTORY_TTL_MS) {
+            expireIdx++;
+        }
+        if (expireIdx > 0) this.state.history.splice(0, expireIdx);
+
+        // GC: purge perFileFailures for files no longer referenced in active history.
+        // Without this, file failure counts survive TTL eviction and accumulate
+        // phantom failures across sessions, causing false Pattern 4 trips.
+        const activeFiles = new Set<string>();
+        for (const r of this.state.history) {
+            if (r.filePath) activeFiles.add(r.filePath);
+        }
+        for (const file of this.state.perFileFailures.keys()) {
+            if (!activeFiles.has(file)) {
+                this.state.perFileFailures.delete(file);
+            }
+        }
 
         const history = this.state.history;
 
