@@ -1112,4 +1112,5 @@ export class NrekiDB {
 export { fastSimilarity };
 
 // Backward-compat alias
+/** @deprecated Use NrekiDB instead. Will be removed in v7.0.0 */
 export { NrekiDB as TokenGuardDB };

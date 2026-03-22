@@ -765,5 +765,13 @@ export class NrekiEngine {
 }
 
 // Backward-compat aliases
+/** @deprecated Use NrekiEngine instead. Will be removed in v7.0.0 */
 export { NrekiEngine as NREKIEngine };
-export { NrekiEngine as TokenGuardEngine };
+
+/** @deprecated Use NrekiEngine instead. Will be removed in v7.0.0 */
+export class TokenGuardEngine extends NrekiEngine {
+    constructor(config: EngineConfig = {}) {
+        console.warn("\x1b[33m[NREKI DEPRECATION] TokenGuardEngine is deprecated. Use NrekiEngine.\x1b[0m");
+        super(config);
+    }
+}

@@ -270,7 +270,7 @@ nreki_code action:"batch_edit" edits:[{path:"src/auth.ts", symbol:"getUserId", n
 nreki_navigate action:"prepare_refactor" file:"src/auth.ts" symbol:"getUserId"
 
 # Pin a persistent rule
-nreki_guard action:"pin" name:"no-any" rule:"Never use 'any' type in this project"
+nreki_guard action:"pin" text:"Never use 'any' type in this project"
 
 # Check token budget
 nreki_guard action:"status"

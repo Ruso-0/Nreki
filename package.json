@@ -63,6 +63,7 @@
   "files": [
     "dist/",
     "wasm/",
+    "templates/",
     "scripts/download-wasm.js",
     "README.md",
     "LICENSE",
