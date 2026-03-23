@@ -16,6 +16,21 @@
 
 ---
 
+## What's New in v6.1: Spectral Gate
+
+NREKI v6.1 adds a spectral topology gate that detects when AI agents silently destroy type safety. Using algebraic graph theory (Fiedler value of the graph Laplacian), it measures the structural damage of every proposed edit before it touches disk.
+
+**11/11 real-world projects pass.** 55/55 detection. 0/55 false positives. Max latency 95.8ms.
+
+Key additions:
+- **Spectral Gate**: Phi = lambda2 * density detects type widening, ghost nodes, and hub destruction
+- **CSR Sparse Matrix**: L1 cache-friendly power iteration with fused Rayleigh quotient
+- **Hologram Shield 2**: Dependent files now evaluated semantically in hologram mode
+- **TTRD hardened**: TypeFlags-only toxicity scoring, no more string truncation bypass
+- **25+ bug fixes and performance improvements** (see CHANGELOG)
+
+---
+
 ## What's New in v6.0: JIT Holography
 
 When an LLM forgets an import, drops an `async` keyword, or leaves an interface incomplete, NREKI now **auto-corrects the error in RAM** using TypeScript's CodeFix API - the same engine behind VS Code's "Quick Fix" lightbulb. The LLM never sees the error. Zero tokens wasted on fix-retry loops.
