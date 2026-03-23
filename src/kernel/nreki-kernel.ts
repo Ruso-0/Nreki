@@ -599,7 +599,7 @@ export class NrekiKernel {
      * WARNING: getSemanticDiagnosticsOfNextAffectedFile() is a stateful iterator.
      *          Do NOT call this method twice without updateProgram() in between.
      */
-    private getFatalErrors(explicitlyEditedFiles: Set<string>): ts.Diagnostic[] {
+    private getFatalErrors(explicitlyEditedFiles: Set<string>, filesToEvaluate: Set<string>): ts.Diagnostic[] {
         const currentFrequencies = new Map<string, number>();
         const fatalErrors: ts.Diagnostic[] = [];
         const program = this.builderProgram!.getProgram();
@@ -627,15 +627,15 @@ export class NrekiKernel {
             for (const diag of program.getOptionsDiagnostics()) processDiag(diag);
         }
 
-        // Shield 2: Syntactic + local semantic for edited files
-        for (const posixPath of explicitlyEditedFiles) {
+        // Shield 2: Syntactic (edited files only) + Semantic (all evaluated files)
+        for (const posixPath of filesToEvaluate) {
             const sf = program.getSourceFile(posixPath);
             if (sf) {
-                for (const diag of program.getSyntacticDiagnostics(sf)) processDiag(diag);
-
-                // FILE/HOLOGRAM mode: semantic check ONLY on edited files. No cascade.
-                // Hologram gets cross-file safety via shadows in the type graph,
-                // not through NREKI's cascade walker.
+                // Syntactic: only on files the LLM actually edited
+                if (explicitlyEditedFiles.has(posixPath)) {
+                    for (const diag of program.getSyntacticDiagnostics(sf)) processDiag(diag);
+                }
+                // Semantic: on ALL evaluated files (edited + dependents)
                 if (this.mode === "file" || this.mode === "hologram") {
                     for (const diag of program.getSemanticDiagnostics(sf)) processDiag(diag);
                 }
@@ -912,7 +912,8 @@ export class NrekiKernel {
      */
     private attemptAutoHealing(
         initialErrors: ts.Diagnostic[],
-        parentEditedFiles: Set<string>
+        parentEditedFiles: Set<string>,
+        filesToEvaluate: Set<string>
     ): { healed: boolean; appliedFixes: string[]; newlyTouchedFiles: Set<string>; finalErrors: ts.Diagnostic[] } {
         if (!this.languageService || initialErrors.length === 0) {
             return { healed: false, appliedFixes: [], newlyTouchedFiles: new Set(), finalErrors: initialErrors };
@@ -1020,7 +1021,9 @@ export class NrekiKernel {
                     // Recompile after fix (~20ms)
                     this.logicalTime += 1000;
                     this.updateProgram();
-                    const newErrors = this.getFatalErrors(localEditedFiles);
+                    const newEvaluate = new Set(filesToEvaluate);
+                    for (const f of localEditedFiles) newEvaluate.add(f);
+                    const newErrors = this.getFatalErrors(localEditedFiles, newEvaluate);
 
                     // Fix must reduce error count. If not, rollback.
                     if (newErrors.length >= currentErrors.length) {
@@ -1237,14 +1240,14 @@ export class NrekiKernel {
             // BUG 3 FIXED: Compute AI errors exactly ONCE.
             // getFatalErrors consumes the stateful getSemanticDiagnosticsOfNextAffectedFile iterator.
             // Cannot call it again without updateProgram() in between.
-            const originalFatalErrors = this.getFatalErrors(explicitlyEditedFiles);
+            const originalFatalErrors = this.getFatalErrors(explicitlyEditedFiles, filesToEvaluate);
 
             // PHASE 4: Verdict
             if (originalFatalErrors.length > 0) {
 
                 // ─── NREKI L3.3: Iterative Auto-Healing ─────────────────
                 const tHealStart = performance.now();
-                const healing = this.attemptAutoHealing(originalFatalErrors, explicitlyEditedFiles);
+                const healing = this.attemptAutoHealing(originalFatalErrors, explicitlyEditedFiles, filesToEvaluate);
 
                 if (healing.healed) {
                     const latency = (performance.now() - t0).toFixed(2);
