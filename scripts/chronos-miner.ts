@@ -79,7 +79,7 @@ async function mineSpectralHistory(repoUrl: string, maxCommits?: number) {
     }
 
     // Get commit history: Hash|Message (oldest first)
-    const logRaw = execSync('git log --format="%H|%s" --reverse', { cwd: cloneDir })
+    const logRaw = execSync('git log --format="%H|%s" --reverse', { cwd: cloneDir, maxBuffer: 100 * 1024 * 1024 })
         .toString().trim().split('\n').filter(Boolean);
 
     const totalCommits = maxCommits ? Math.min(logRaw.length, maxCommits) : logRaw.length;
@@ -113,7 +113,7 @@ async function mineSpectralHistory(repoUrl: string, maxCommits?: number) {
             const prevHash = logRaw[i - 1].split('|')[0];
             let diff: string[] = [];
             try {
-                diff = execSync(`git diff --name-only ${prevHash} ${hash}`, { cwd: cloneDir })
+                diff = execSync(`git diff --name-only ${prevHash} ${hash}`, { cwd: cloneDir, maxBuffer: 50 * 1024 * 1024 })
                     .toString().trim().split('\n').filter(l => l.trim());
             } catch { /* merge commits may fail diff */ }
 
@@ -121,11 +121,64 @@ async function mineSpectralHistory(repoUrl: string, maxCommits?: number) {
             for (const key of fileChurn.keys()) fileChurn.set(key, fileChurn.get(key)! * 0.95);
 
             // BARE-METAL: No NREKI VFS, just TypeScript Compiler API
-            const tsConfigPath = ts.findConfigFile(wtPath, ts.sys.fileExists, 'tsconfig.json');
+            // Recursive tsconfig search: root first, then src/*, packages/*
+            let tsConfigPath: string | undefined = ts.findConfigFile(wtPath, ts.sys.fileExists, 'tsconfig.json');
+            let tsConfigDir = wtPath;
+
+            if (!tsConfigPath) {
+                // Search common subdirectories for monorepos and complex projects
+                const searchDirs: string[] = [];
+
+                // Add src/* subdirectories
+                const srcDir = path.join(wtPath, 'src');
+                if (fs.existsSync(srcDir)) {
+                    try {
+                        for (const entry of fs.readdirSync(srcDir)) {
+                            const full = path.join(srcDir, entry);
+                            try { if (fs.statSync(full).isDirectory()) searchDirs.push(path.join('src', entry)); } catch {}
+                        }
+                    } catch {}
+                    searchDirs.push('src');
+                }
+
+                // Add packages/* subdirectories
+                const pkgDir = path.join(wtPath, 'packages');
+                if (fs.existsSync(pkgDir)) {
+                    try {
+                        for (const entry of fs.readdirSync(pkgDir)) {
+                            const full = path.join(pkgDir, entry);
+                            try { if (fs.statSync(full).isDirectory()) searchDirs.push(path.join('packages', entry)); } catch {}
+                        }
+                    } catch {}
+                }
+
+                // Add lib/
+                searchDirs.push('lib');
+
+                // Pick the tsconfig with the most files
+                let maxFiles = 0;
+                for (const sub of searchDirs) {
+                    const candidate = path.join(wtPath, sub, 'tsconfig.json');
+                    if (fs.existsSync(candidate)) {
+                        try {
+                            const parsed = ts.parseJsonConfigFileContent(
+                                ts.readConfigFile(candidate, ts.sys.readFile).config,
+                                ts.sys, path.join(wtPath, sub)
+                            );
+                            if (parsed.fileNames.length > maxFiles) {
+                                maxFiles = parsed.fileNames.length;
+                                tsConfigPath = candidate;
+                                tsConfigDir = path.join(wtPath, sub);
+                            }
+                        } catch {}
+                    }
+                }
+            }
+
             if (!tsConfigPath) { skipped++; continue; }
 
             const parsedConfig = ts.parseJsonConfigFileContent(
-                ts.readConfigFile(tsConfigPath, ts.sys.readFile).config, ts.sys, wtPath
+                ts.readConfigFile(tsConfigPath, ts.sys.readFile).config, ts.sys, tsConfigDir
             );
 
             const program = ts.createProgram(parsedConfig.fileNames, parsedConfig.options);

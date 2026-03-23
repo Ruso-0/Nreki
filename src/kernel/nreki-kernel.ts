@@ -1518,7 +1518,26 @@ export class NrekiKernel {
                     }
                 } catch { /* Cascade panic - best effort */ }
             }
-            throw new Error(`[NREKI] Physical ACID commit failed. Repository restored. Reason: ${error}`);
+
+            // VFS ZOMBIE FIX: Purge RAM state that never reached disk.
+            // Without this, the next readFile() serves ghost content
+            // desynchronized from the real filesystem.
+            this.vfs.clear();
+            this.vfsClock.clear();
+            this.vfsDirectories.clear();
+            this.logicalTime += 1000;
+
+            // Force cold rebuild from disk reality
+            this.builderProgram = undefined;
+            try {
+                this.updateProgram();
+                this.captureBaseline();
+            } catch {
+                // If rebuild also fails, mark kernel for full reconstruction
+                this.isStateCorrupted = true;
+            }
+
+            throw new Error(`[NREKI] Physical ACID commit failed. Repository and VFS restored. Reason: ${error}`);
         }
         });
     }

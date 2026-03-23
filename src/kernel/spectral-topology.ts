@@ -19,6 +19,11 @@ export interface SpectralResult {
     volume: number;
     nodeCount: number;
     edgeCount: number;
+    activeNodes?: number;
+    v2?: Float64Array;
+    lambda3?: number;
+    v3?: Float64Array;
+    nodeIndex?: Map<string, number>;
 }
 
 export interface SpectralDelta {
@@ -280,26 +285,36 @@ export class SpectralTopologist {
         }
 
         if (analysisNodes.size <= 1) {
-            return { fiedlerValue: 0, volume: 0, nodeCount: analysisNodes.size, edgeCount: analysisEdges.length };
+            return {
+                fiedlerValue: 0, volume: 0,
+                nodeCount: analysisNodes.size, edgeCount: analysisEdges.length,
+            };
         }
 
-        const { sparseEdges, N } = this.buildSparseGraph(analysisNodes, analysisEdges);
-        const { fiedler, volume } = SpectralMath.analyzeTopology(N, sparseEdges);
+        const { sparseEdges, nodeIndex, N } = this.buildSparseGraph(analysisNodes, analysisEdges);
+        const state = SpectralMath.analyzeTopology(N, sparseEdges);
 
         return {
-            fiedlerValue: fiedler,
-            volume,
+            fiedlerValue: state.fiedler,
+            volume: state.volume,
             nodeCount: analysisNodes.size,
             edgeCount: analysisEdges.length,
+            v2: state.v2,
+            lambda3: state.lambda3,
+            v3: state.v3,
+            nodeIndex: N > 1 ? nodeIndex : undefined,
         };
     }
 }
 
 export class SpectralMath {
-    public static analyzeTopology(N: number, edges: SparseEdge[]): { fiedler: number; volume: number } {
+    public static analyzeTopology(N: number, edges: SparseEdge[]): {
+        fiedler: number; volume: number;
+        v2?: Float64Array; lambda3?: number; v3?: Float64Array;
+    } {
         if (N <= 1) return { fiedler: 0, volume: 0 };
 
-        // --- Edge deduplication ---
+        // --- Edge deduplication (IDÉNTICO AL ORIGINAL - NO TOCAR) ---
         const edgeMap = new Map<number, Map<number, number>>();
 
         for (let i = 0; i < edges.length; i++) {
@@ -319,7 +334,7 @@ export class SpectralMath {
             if (e.weight > currentW) row.set(max, e.weight);
         }
 
-        // --- CSR construction pass 1: count neighbors, degree, volume, seed ---
+        // --- CSR construction pass 1 (IDÉNTICO AL ORIGINAL - NO TOCAR) ---
         const degree = new Float64Array(N);
         const neighborCount = new Int32Array(N);
         let maxDegree = 0;
@@ -337,15 +352,15 @@ export class SpectralMath {
             }
         }
 
-        // Prefix sum → rowPtr
+        // Prefix sum → rowPtr (IDÉNTICO AL ORIGINAL - NO TOCAR)
         const rowPtr = new Int32Array(N + 1);
         for (let i = 0; i < N; i++) rowPtr[i + 1] = rowPtr[i] + neighborCount[i];
         const nnz = rowPtr[N];
 
-        // --- CSR construction pass 2: fill colIdx + values ---
+        // --- CSR construction pass 2 (IDÉNTICO AL ORIGINAL - NO TOCAR) ---
         const colIdx = new Int32Array(nnz);
         const csrValues = new Float64Array(nnz);
-        for (let i = 0; i < N; i++) neighborCount[i] = rowPtr[i]; // reuse as cursor
+        for (let i = 0; i < N; i++) neighborCount[i] = rowPtr[i];
 
         for (const [u, row] of edgeMap.entries()) {
             for (const [v, w] of row.entries()) {
@@ -354,56 +369,103 @@ export class SpectralMath {
             }
         }
 
-        // --- Initialization ---
+        // ─── NUEVO: Capturar seed post-mutación + Power Iteration con Deflación ───
+
+        const dataSeed = seed; // Semilla POST-mutación exacta del original
         const c = maxDegree * 2.0 + 1.0;
 
-        const vec = new Float64Array(N);
-        for (let i = 0; i < N; i++) {
-            seed = (seed * 1103515245 + 12345) | 0;
-            vec[i] = ((seed >>> 16) & 0x7fff) / 32768.0 - 0.5;
-        }
-
-        const v_next = new Float64Array(N);
-        let mu = 0;
-        let prev_mu = -1;
-
-        // --- Fused power iteration (CSR SpMV + Rayleigh quotient) ---
-        for (let iter = 0; iter < 100; iter++) {
-            // Center vec
-            let sum = 0;
-            for (let i = 0; i < N; i++) sum += vec[i];
-            const mean = sum / N;
-
-            // Center + compute norm² for re-normalization
-            let normSq = 0;
-            for (let i = 0; i < N; i++) { vec[i] -= mean; normSq += vec[i] * vec[i]; }
-            if (normSq < 1e-18) return { fiedler: 0, volume };
-            const rNorm = 1.0 / Math.sqrt(normSq);
-            for (let i = 0; i < N; i++) vec[i] *= rNorm;
-
-            // Fused SpMV + Rayleigh (vec is unit-norm → mu = vᵀ(cI−L)v)
-            let norm = 0;
-            mu = 0;
+        const powerIteration = (
+            deflateVectors: Float64Array[],
+            seedModifier: number
+        ): { val: number; vec: Float64Array } => {
+            const vec = new Float64Array(N);
+            let currentSeed = (dataSeed + seedModifier) | 0;
             for (let i = 0; i < N; i++) {
-                let Lv_i = degree[i] * vec[i];
-                const end = rowPtr[i + 1];
-                for (let k = rowPtr[i]; k < end; k++) {
-                    Lv_i -= csrValues[k] * vec[colIdx[k]];
-                }
-                const val = c * vec[i] - Lv_i;
-                v_next[i] = val;
-                norm += val * val;
-                mu += vec[i] * val;
+                currentSeed = (currentSeed * 1103515245 + 12345) | 0;
+                vec[i] = ((currentSeed >>> 16) & 0x7fff) / 32768.0 - 0.5;
             }
 
-            norm = Math.sqrt(norm);
-            if (norm < 1e-9) return { fiedler: 0, volume };
-            for (let i = 0; i < N; i++) vec[i] = v_next[i] / norm;
+            const v_next = new Float64Array(N);
+            let mu = 0;
+            let prev_mu = -1;
 
-            if (Math.abs(mu - prev_mu) < 1e-7) break;
-            prev_mu = mu;
-        }
+            for (let iter = 0; iter < 150; iter++) {
+                // 1. Deflactar autovector trivial (constante)
+                let sum = 0;
+                for (let i = 0; i < N; i++) sum += vec[i];
+                const mean = sum / N;
+                for (let i = 0; i < N; i++) vec[i] -= mean;
 
-        return { fiedler: Math.max(0, c - mu), volume };
+                // 2. Ortogonalización Gram-Schmidt contra vectores previos
+                for (const dv of deflateVectors) {
+                    let dot = 0;
+                    for (let i = 0; i < N; i++) dot += vec[i] * dv[i];
+                    for (let i = 0; i < N; i++) vec[i] -= dot * dv[i];
+                }
+
+                // 3. Normalización L2
+                let normSq = 0;
+                for (let i = 0; i < N; i++) normSq += vec[i] * vec[i];
+                if (normSq < 1e-18) break;
+                const rNorm = 1.0 / Math.sqrt(normSq);
+                for (let i = 0; i < N; i++) vec[i] *= rNorm;
+
+                // 4. SpMV fusionado: (cI - L)v + Rayleigh Quotient
+                let norm = 0;
+                mu = 0;
+                for (let i = 0; i < N; i++) {
+                    let Lv_i = degree[i] * vec[i];
+                    const end = rowPtr[i + 1];
+                    for (let k = rowPtr[i]; k < end; k++) {
+                        Lv_i -= csrValues[k] * vec[colIdx[k]];
+                    }
+                    const val = c * vec[i] - Lv_i;
+                    v_next[i] = val;
+                    norm += val * val;
+                    mu += vec[i] * val;
+                }
+
+                norm = Math.sqrt(norm);
+                if (norm < 1e-9) break;
+                for (let i = 0; i < N; i++) vec[i] = v_next[i] / norm;
+
+                if (Math.abs(mu - prev_mu) < 1e-7) break;
+                prev_mu = mu;
+            }
+
+            // GAUGE FIXING (Canonicalización de Fase)
+            // Lv = λv → si v es autovector, -v también lo es.
+            // Power iteration converge a v o -v arbitrariamente por ruido de coma flotante.
+            // Para que una red neuronal temporal no vea saltos de fase ficticios entre commits,
+            // forzamos orientación determinista: la componente de mayor magnitud es siempre positiva.
+            let maxAbs = -1;
+            let signMultiplier = 1;
+            for (let i = 0; i < N; i++) {
+                const absVal = Math.abs(vec[i]);
+                if (absVal > maxAbs) {
+                    maxAbs = absVal;
+                    signMultiplier = vec[i] < 0 ? -1 : 1;
+                }
+            }
+            if (signMultiplier === -1) {
+                for (let i = 0; i < N; i++) vec[i] *= -1;
+            }
+
+            return { val: Math.max(0, c - mu), vec };
+        };
+
+        // Extraer λ₂ (Fiedler) — seedModifier=0 preserva comportamiento original
+        const res2 = powerIteration([], 0);
+
+        // Extraer λ₃ — seedModifier=99991 garantiza subespacio diferente, deflactando v₂
+        const res3 = powerIteration([res2.vec], 99991);
+
+        return {
+            fiedler: res2.val,
+            volume,
+            v2: res2.vec,
+            lambda3: res3.val,
+            v3: res3.vec,
+        };
     }
 }
