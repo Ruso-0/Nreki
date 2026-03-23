@@ -32,7 +32,11 @@ export interface RepoMap {
     graph?: DependencyGraph;
 }
 
+/** Cache format version. Bump when CachedRepoMap structure changes. */
+const CACHE_FORMAT_VERSION = 1;
+
 export interface CachedRepoMap {
+    formatVersion?: number;
     digest: string;
     map: RepoMap;
     text: string;
@@ -79,8 +83,9 @@ export function extractSignature(rawCode: string): string {
 
     let parenDepth = 0;
     let angleDepth = 0;
+    let braceDepthInTemplate = 0;
     let inString: string | null = null;
-    let templateExprDepth = 0; // Track ${...} nesting in template literals
+    let inTemplateExpr = false;
 
     for (let i = 0; i < rawCode.length; i++) {
         const ch = rawCode[i];
@@ -91,7 +96,8 @@ export function extractSignature(rawCode: string): string {
                 i++; // Skip escaped character
             } else if (inString === '`' && ch === '$' && i + 1 < rawCode.length && rawCode[i + 1] === '{') {
                 // Enter template expression ${...}
-                templateExprDepth++;
+                inTemplateExpr = true;
+                braceDepthInTemplate = 1;
                 inString = null;
                 i++; // skip the {
             } else if (ch === inString) {
@@ -100,10 +106,21 @@ export function extractSignature(rawCode: string): string {
             continue;
         }
 
-        // Track closing of template expressions
-        if (templateExprDepth > 0 && ch === '}') {
-            templateExprDepth--;
-            inString = '`'; // Re-enter template literal
+        // Track closing of template expressions with proper brace nesting
+        if (inTemplateExpr) {
+            if (ch === '{') {
+                braceDepthInTemplate++;
+            } else if (ch === '}') {
+                braceDepthInTemplate--;
+                if (braceDepthInTemplate === 0) {
+                    inTemplateExpr = false;
+                    inString = '`'; // Re-enter template literal
+                }
+            }
+            // Track strings inside template expressions too
+            if (ch === '"' || ch === "'" || ch === '`') {
+                inString = ch;
+            }
             continue;
         }
 
@@ -627,8 +644,7 @@ function computeFileDigest(projectRoot: string): string {
         try {
             const stat = fs.statSync(file);
             const rel = path.relative(projectRoot, file).replace(/\\/g, "/");
-            // M-04: Use only rel:size - mtimeMs causes full cache invalidation on git clone
-            hash.update(`${rel}:${stat.size}\n`);
+            hash.update(`${rel}:${stat.size}:${Math.floor(stat.mtimeMs)}\n`);
         } catch {
             // Skip
         }
@@ -653,7 +669,7 @@ export async function getOrGenerateRepoMap(
             const cached: CachedRepoMap = JSON.parse(
                 fs.readFileSync(cachePath, "utf-8")
             );
-            if (cached.digest === currentDigest) {
+            if (cached.digest === currentDigest && (cached.formatVersion ?? 0) === CACHE_FORMAT_VERSION) {
                 // Restore graph from cached serialized form
                 if (cached.graph) {
                     cached.map.graph = deserializeGraph(cached.graph);
@@ -676,7 +692,7 @@ export async function getOrGenerateRepoMap(
     const graphData = map.graph ? serializeGraph(map.graph) : undefined;
     // Strip non-serializable graph from the map for JSON storage
     const mapForCache = { ...map, graph: undefined };
-    const cacheData: CachedRepoMap = { digest: currentDigest, map: mapForCache, text, graph: graphData };
+    const cacheData: CachedRepoMap = { formatVersion: CACHE_FORMAT_VERSION, digest: currentDigest, map: mapForCache, text, graph: graphData };
     fs.writeFileSync(cachePath, JSON.stringify(cacheData));
 
     return { map, text, fromCache: false };

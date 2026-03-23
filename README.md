@@ -1,9 +1,9 @@
-# NREKI - 3 Tools. 680 Tests. Pre-write validation for AI agents.
+# NREKI - 3 Tools. 696 Tests. Pre-write validation for AI agents.
 
 <p align="center">
   <img src="https://img.shields.io/badge/MCP-Plugin-blue?style=for-the-badge" alt="MCP Plugin">
   <img src="https://img.shields.io/badge/Tools-3-blueviolet?style=for-the-badge" alt="3 Tools">
-  <img src="https://img.shields.io/badge/Tests-680-brightgreen?style=for-the-badge" alt="680 Tests">
+  <img src="https://img.shields.io/badge/Tests-696-brightgreen?style=for-the-badge" alt="696 Tests">
   <img src="https://img.shields.io/badge/Cloud-Zero-orange?style=for-the-badge" alt="Zero Cloud">
   <img src="https://img.shields.io/badge/License-MIT-yellow?style=for-the-badge" alt="MIT License">
   <img src="https://img.shields.io/badge/TypeScript-5.9-3178C6?style=for-the-badge" alt="TypeScript 5.9">
@@ -13,6 +13,21 @@
 <p align="center">
   <b>MCP server that validates AI agent edits in RAM before they reach disk. Cross-file semantic checks, auto-fixes for structural errors, and type regression detection.</b>
 </p>
+
+---
+
+## What's New in v6.1: Spectral Gate
+
+NREKI v6.1 adds a spectral topology gate that detects when AI agents silently destroy type safety. Using algebraic graph theory (Fiedler value of the graph Laplacian), it measures the structural damage of every proposed edit before it touches disk.
+
+**11/11 real-world projects pass.** 55/55 detection. 0/55 false positives. Max latency 95.8ms.
+
+Key additions:
+- **Spectral Gate**: Phi = lambda2 * density detects type widening, ghost nodes, and hub destruction
+- **CSR Sparse Matrix**: L1 cache-friendly power iteration with fused Rayleigh quotient
+- **Hologram Shield 2**: Dependent files now evaluated semantically in hologram mode
+- **TTRD hardened**: TypeFlags-only toxicity scoring, no more string truncation bypass
+- **25+ bug fixes and performance improvements** (see CHANGELOG)
 
 ---
 
@@ -270,7 +285,7 @@ nreki_code action:"batch_edit" edits:[{path:"src/auth.ts", symbol:"getUserId", n
 nreki_navigate action:"prepare_refactor" file:"src/auth.ts" symbol:"getUserId"
 
 # Pin a persistent rule
-nreki_guard action:"pin" name:"no-any" rule:"Never use 'any' type in this project"
+nreki_guard action:"pin" text:"Never use 'any' type in this project"
 
 # Check token budget
 nreki_guard action:"status"
@@ -280,7 +295,7 @@ nreki_guard action:"status"
 
 ## Tests
 
-**680 tests across 42 suites. Zero failures.**
+**696 tests across 43 suites. Zero failures.**
 
 | Suite | Tests | What It Covers |
 |-------|-------|---------------|
@@ -335,7 +350,7 @@ nreki_guard action:"status"
 
 | Metric | Value |
 |--------|-------|
-| Tests | 680 (42 suites) |
+| Tests | 696 (43 suites) |
 | Failure modes sealed | 32 (P1-P32) |
 | Audit findings resolved | 30/30 |
 | OpenDota benchmark | 6/6 correct verdicts |

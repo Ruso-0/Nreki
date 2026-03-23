@@ -1,6 +1,6 @@
 {
   "name": "@ruso-0/nreki",
-  "version": "6.0.2",
+  "version": "6.1.0",
   "description": "MCP server that validates AI agent edits in RAM before they reach disk. Cross-file semantic checks via TypeScript Compiler API. Auto-fixes structural errors. Zero cloud dependencies.",
   "main": "dist/index.js",
   "type": "module",
@@ -14,7 +14,10 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "postinstall": "node scripts/download-wasm.js",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "benchmark:spectral": "tsx tests/benchmark-spectral.ts",
+    "benchmark:external": "tsx tests/benchmark-spectral-external.ts",
+    "benchmark:precision": "tsx tests/benchmark-precision.ts"
   },
   "keywords": [
     "nreki",
@@ -60,6 +63,7 @@
   "files": [
     "dist/",
     "wasm/",
+    "templates/",
     "scripts/download-wasm.js",
     "README.md",
     "LICENSE",

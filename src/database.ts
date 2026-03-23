@@ -18,6 +18,7 @@ import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 import { codeTokenize } from "./utils/code-tokenizer.js";
+import { escapeRegExp } from "./utils/imports.js";
 
 // ─── Types ───────────────────────────────────────────────────────────
 
@@ -169,169 +170,7 @@ class VectorIndex {
     }
 }
 
-// ─── Porter Stemmer ─────────────────────────────────────────────────
-
-/**
- * Full Porter stemming algorithm in pure TypeScript.
- * Based on the original 1980 paper by Martin Porter.
- */
-class PorterStemmer {
-    private static isConsonant(word: string, i: number): boolean {
-        if (i < 0 || i >= word.length) return false;
-        const c = word[i];
-        if (/[aeiou]/.test(c)) return false;
-        if (c === "y") return i === 0 || !PorterStemmer.isConsonant(word, i - 1);
-        return true;
-    }
-
-    /** Measure: count VC sequences in the stem. */
-    private static measure(stem: string): number {
-        let m = 0;
-        let i = 0;
-        const len = stem.length;
-        // Skip leading consonants
-        while (i < len && PorterStemmer.isConsonant(stem, i)) i++;
-        while (i < len) {
-            // Count vowel sequence
-            while (i < len && !PorterStemmer.isConsonant(stem, i)) i++;
-            if (i >= len) break;
-            // Count consonant sequence
-            while (i < len && PorterStemmer.isConsonant(stem, i)) i++;
-            m++;
-        }
-        return m;
-    }
-
-    private static containsVowel(stem: string): boolean {
-        for (let i = 0; i < stem.length; i++) {
-            if (!PorterStemmer.isConsonant(stem, i)) return true;
-        }
-        return false;
-    }
-
-    private static endsWithDouble(word: string): boolean {
-        if (word.length < 2) return false;
-        return word[word.length - 1] === word[word.length - 2] &&
-            PorterStemmer.isConsonant(word, word.length - 1);
-    }
-
-    /** Ends with consonant-vowel-consonant where last C is not w, x, or y. */
-    private static cvc(word: string): boolean {
-        const len = word.length;
-        if (len < 3) return false;
-        const last = word[len - 1];
-        if (!PorterStemmer.isConsonant(word, len - 1)) return false;
-        if (PorterStemmer.isConsonant(word, len - 2)) return false;
-        if (!PorterStemmer.isConsonant(word, len - 3)) return false;
-        return last !== "w" && last !== "x" && last !== "y";
-    }
-
-    static stem(word: string): string {
-        if (!word || word.length <= 2) return word || "";
-        let w = word.toLowerCase();
-
-        // Step 1a: Plurals
-        if (w.endsWith("sses")) w = w.slice(0, -2);
-        else if (w.endsWith("ies")) w = w.slice(0, -2);
-        else if (!w.endsWith("ss") && w.endsWith("s")) w = w.slice(0, -1);
-
-        // Step 1b: Past participles / gerunds
-        let step1bFlag = false;
-        if (w.endsWith("eed")) {
-            const stem = w.slice(0, -3);
-            if (PorterStemmer.measure(stem) > 0) w = w.slice(0, -1); // eed -> ee
-        } else if (w.endsWith("ed")) {
-            const stem = w.slice(0, -2);
-            if (PorterStemmer.containsVowel(stem)) { w = stem; step1bFlag = true; }
-        } else if (w.endsWith("ing")) {
-            const stem = w.slice(0, -3);
-            if (PorterStemmer.containsVowel(stem)) { w = stem; step1bFlag = true; }
-        }
-
-        if (step1bFlag) {
-            if (w.endsWith("at") || w.endsWith("bl") || w.endsWith("iz")) {
-                w += "e";
-            } else if (PorterStemmer.endsWithDouble(w) &&
-                !/[lsz]$/.test(w)) {
-                w = w.slice(0, -1);
-            } else if (PorterStemmer.measure(w) === 1 && PorterStemmer.cvc(w)) {
-                w += "e";
-            }
-        }
-
-        // Step 1c: y -> i
-        if (w.endsWith("y") && PorterStemmer.containsVowel(w.slice(0, -1))) {
-            w = w.slice(0, -1) + "i";
-        }
-
-        // Step 2: Double suffixes
-        const step2: [string, string][] = [
-            ["ational", "ate"], ["tional", "tion"], ["enci", "ence"],
-            ["anci", "ance"], ["izer", "ize"], ["abli", "able"],
-            ["alli", "al"], ["entli", "ent"], ["eli", "e"],
-            ["ousli", "ous"], ["ization", "ize"], ["ation", "ate"],
-            ["ator", "ate"], ["alism", "al"], ["iveness", "ive"],
-            ["fulness", "ful"], ["ousness", "ous"], ["aliti", "al"],
-            ["iviti", "ive"], ["biliti", "ble"],
-        ];
-        for (const [suffix, replacement] of step2) {
-            if (w.endsWith(suffix)) {
-                const stem = w.slice(0, -suffix.length);
-                if (PorterStemmer.measure(stem) > 0) w = stem + replacement;
-                break;
-            }
-        }
-
-        // Step 3
-        const step3: [string, string][] = [
-            ["icate", "ic"], ["ative", ""], ["alize", "al"],
-            ["iciti", "ic"], ["ical", "ic"], ["ful", ""], ["ness", ""],
-        ];
-        for (const [suffix, replacement] of step3) {
-            if (w.endsWith(suffix)) {
-                const stem = w.slice(0, -suffix.length);
-                if (PorterStemmer.measure(stem) > 0) w = stem + replacement;
-                break;
-            }
-        }
-
-        // Step 4: Remove suffixes
-        const step4 = [
-            "al", "ance", "ence", "er", "ic", "able", "ible", "ant",
-            "ement", "ment", "ent", "ion", "ou", "ism", "ate", "iti",
-            "ous", "ive", "ize",
-        ];
-        for (const suffix of step4) {
-            if (w.endsWith(suffix)) {
-                const stem = w.slice(0, -suffix.length);
-                if (PorterStemmer.measure(stem) > 1) {
-                    if (suffix === "ion") {
-                        if (stem.endsWith("s") || stem.endsWith("t")) w = stem;
-                    } else {
-                        w = stem;
-                    }
-                }
-                break;
-            }
-        }
-
-        // Step 5a: Remove trailing e
-        if (w.endsWith("e")) {
-            const stem = w.slice(0, -1);
-            const m = PorterStemmer.measure(stem);
-            if (m > 1 || (m === 1 && !PorterStemmer.cvc(stem))) {
-                w = stem;
-            }
-        }
-
-        // Step 5b: Remove double l
-        if (w.endsWith("ll") && PorterStemmer.measure(w) > 1) {
-            w = w.slice(0, -1);
-        }
-
-        return w;
-    }
-}
+import { PorterStemmer } from "./utils/porter-stemmer.js";
 
 // ─── In-Memory Keyword Index ─────────────────────────────────────────
 
@@ -675,13 +514,15 @@ export class NrekiDB {
     /** Read a metadata value by key, or null if not set. */
     getMetadata(key: string): string | null {
         const stmt = this.db.prepare("SELECT value FROM metadata WHERE key = ?");
-        stmt.bind([key]);
-        let result: string | null = null;
-        if (stmt.step()) {
-            result = (stmt.getAsObject() as { value: string }).value;
+        try {
+            stmt.bind([key]);
+            if (stmt.step()) {
+                return (stmt.getAsObject() as { value: string }).value;
+            }
+            return null;
+        } finally {
+            stmt.free();
         }
-        stmt.free();
-        return result;
     }
 
     /** Write a metadata key-value pair (upsert). */
@@ -745,15 +586,16 @@ export class NrekiDB {
     fileNeedsUpdate(filePath: string, content: string): boolean {
         const newHash = crypto.createHash("sha256").update(content).digest("hex");
         const stmt = this.db.prepare("SELECT hash FROM files WHERE path = ?");
-        stmt.bind([filePath]);
-
-        if (stmt.step()) {
-            const row = stmt.getAsObject() as { hash: string };
+        try {
+            stmt.bind([filePath]);
+            if (stmt.step()) {
+                const row = stmt.getAsObject() as { hash: string };
+                return row.hash !== newHash;
+            }
+            return true;
+        } finally {
             stmt.free();
-            return row.hash !== newHash;
         }
-        stmt.free();
-        return true;
     }
 
     hashContent(content: string): string {
@@ -769,14 +611,16 @@ export class NrekiDB {
 
     clearChunks(filePath: string): void {
         const stmt = this.db.prepare("SELECT id FROM chunks WHERE path = ?");
-        stmt.bind([filePath]);
-
         const ids: number[] = [];
-        while (stmt.step()) {
-            const row = stmt.getAsObject() as { id: number };
-            ids.push(row.id);
+        try {
+            stmt.bind([filePath]);
+            while (stmt.step()) {
+                const row = stmt.getAsObject() as { id: number };
+                ids.push(row.id);
+            }
+        } finally {
+            stmt.free();
         }
-        stmt.free();
 
         if (ids.length > 0) {
             this.vecIndex.deleteBulk(ids);
@@ -879,12 +723,15 @@ export class NrekiDB {
         const stmt = this.db.prepare(
             `SELECT id, path FROM chunks WHERE id IN (${placeholders})`,
         );
-        stmt.bind(ids);
-        while (stmt.step()) {
-            const row = stmt.getAsObject() as { id: number; path: string };
-            result.set(row.id, row.path);
+        try {
+            stmt.bind(ids);
+            while (stmt.step()) {
+                const row = stmt.getAsObject() as { id: number; path: string };
+                result.set(row.id, row.path);
+            }
+        } finally {
+            stmt.free();
         }
-        stmt.free();
         return result;
     }
 
@@ -900,23 +747,26 @@ export class NrekiDB {
             `SELECT id, path, shorthand, raw_code, node_type, start_line, end_line, start_index, end_index, symbol_name
              FROM chunks WHERE id IN (${placeholders})`,
         );
-        stmt.bind(ids);
-        while (stmt.step()) {
-            const row = stmt.getAsObject() as Record<string, number | string>;
-            result.set(row.id as number, {
-                id: row.id as number,
-                path: row.path as string,
-                shorthand: row.shorthand as string,
-                raw_code: row.raw_code as string,
-                node_type: row.node_type as string,
-                start_line: row.start_line as number,
-                end_line: row.end_line as number,
-                start_index: (row.start_index as number) ?? 0,
-                end_index: (row.end_index as number) ?? 0,
-                symbol_name: (row.symbol_name as string) ?? "",
-            });
+        try {
+            stmt.bind(ids);
+            while (stmt.step()) {
+                const row = stmt.getAsObject() as Record<string, number | string>;
+                result.set(row.id as number, {
+                    id: row.id as number,
+                    path: row.path as string,
+                    shorthand: row.shorthand as string,
+                    raw_code: row.raw_code as string,
+                    node_type: row.node_type as string,
+                    start_line: row.start_line as number,
+                    end_line: row.end_line as number,
+                    start_index: (row.start_index as number) ?? 0,
+                    end_index: (row.end_index as number) ?? 0,
+                    symbol_name: (row.symbol_name as string) ?? "",
+                });
+            }
+        } finally {
+            stmt.free();
         }
-        stmt.free();
         return result;
     }
 
@@ -1036,9 +886,6 @@ export class NrekiDB {
         const results: Array<{ raw: string; path: string }> = [];
         const seenSymbols = new Set<string>();
 
-        const escapeRegex = (s: string) =>
-            s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
         for (const dep of deps) {
             if (seenSymbols.has(dep.symbol)) continue;
             seenSymbols.add(dep.symbol);
@@ -1055,7 +902,7 @@ export class NrekiDB {
             if (hits.length > 0) {
                 // Final validation: symbol must appear textually in the shorthand
                 // Uses safe boundaries (not \b) to handle $store etc.
-                const safeSym = escapeRegex(dep.symbol);
+                const safeSym = escapeRegExp(dep.symbol);
                 const exactRegex = new RegExp(
                     `(^|[^a-zA-Z0-9_$])${safeSym}(?=[^a-zA-Z0-9_$]|$)`,
                 );
@@ -1132,20 +979,23 @@ export class NrekiDB {
       FROM usage_log ${whereClause}`
         );
 
-        if (params.length > 0) stmt.bind(params);
+        try {
+            if (params.length > 0) stmt.bind(params);
 
-        let result = { total_input: 0, total_output: 0, total_saved: 0, tool_calls: 0 };
-        if (stmt.step()) {
-            const row = stmt.getAsObject() as Record<string, number>;
-            result = {
-                total_input: row.total_input ?? 0,
-                total_output: row.total_output ?? 0,
-                total_saved: row.total_saved ?? 0,
-                tool_calls: row.tool_calls ?? 0,
-            };
+            let result = { total_input: 0, total_output: 0, total_saved: 0, tool_calls: 0 };
+            if (stmt.step()) {
+                const row = stmt.getAsObject() as Record<string, number>;
+                result = {
+                    total_input: row.total_input ?? 0,
+                    total_output: row.total_output ?? 0,
+                    total_saved: row.total_saved ?? 0,
+                    tool_calls: row.tool_calls ?? 0,
+                };
+            }
+            return result;
+        } finally {
+            stmt.free();
         }
-        stmt.free();
-        return result;
     }
 
     /**
@@ -1161,18 +1011,21 @@ export class NrekiDB {
             ORDER BY total_chars DESC
             LIMIT ?
         `);
-        stmt.bind([limit]);
+        try {
+            stmt.bind([limit]);
 
-        const results: Array<{ path: string; estimated_tokens: number }> = [];
-        while (stmt.step()) {
-            const row = stmt.getAsObject() as { path: string; total_chars: number };
-            results.push({
-                path: row.path,
-                estimated_tokens: Math.ceil(row.total_chars / 3.5),
-            });
+            const results: Array<{ path: string; estimated_tokens: number }> = [];
+            while (stmt.step()) {
+                const row = stmt.getAsObject() as { path: string; total_chars: number };
+                results.push({
+                    path: row.path,
+                    estimated_tokens: Math.ceil(row.total_chars / 3.5),
+                });
+            }
+            return results;
+        } finally {
+            stmt.free();
         }
-        stmt.free();
-        return results;
     }
 
     // ─── Statistics ──────────────────────────────────────────────
@@ -1230,16 +1083,22 @@ export class NrekiDB {
         if (!this._ready) return [];
         // C-04 + A-07: Escape backslashes first, then LIKE wildcards
         const escaped = symbolName.replace(/\\/g, '\\\\').replace(/[%_]/g, '\\$&');
+        // TODO: Migrate to FTS5 or in-memory inverted index for O(1) lookups.
+        // Current LIKE %term% is O(N×M) full table scan. Acceptable for <50K chunks
+        // but trades off native binary dependency (FTS5 may require compilation).
         const stmt = this.db.prepare(
             `SELECT DISTINCT path FROM chunks WHERE raw_code LIKE ? ESCAPE '\\'`
         );
-        stmt.bind([`%${escaped}%`]);
-        const paths: string[] = [];
-        while (stmt.step()) {
-            paths.push(stmt.getAsObject().path as string);
+        try {
+            stmt.bind([`%${escaped}%`]);
+            const paths: string[] = [];
+            while (stmt.step()) {
+                paths.push(stmt.getAsObject().path as string);
+            }
+            return paths;
+        } finally {
+            stmt.free();
         }
-        stmt.free();
-        return paths;
     }
 
     close(): void {
@@ -1253,4 +1112,5 @@ export class NrekiDB {
 export { fastSimilarity };
 
 // Backward-compat alias
+/** @deprecated Use NrekiDB instead. Will be removed in v7.0.0 */
 export { NrekiDB as TokenGuardDB };

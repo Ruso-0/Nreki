@@ -18,8 +18,9 @@ import { ASTParser, type ParsedChunk } from "./parser.js";
 import { AstSandbox } from "./ast-sandbox.js";
 import { Embedder } from "./embedder.js";
 import { readSource } from "./utils/read-source.js";
-import { saveBackup } from "./undo.js";
+import { saveBackup, getBackupPath } from "./undo.js";
 import { extractSignature, cleanSignature } from "./repo-map.js";
+import crypto from "crypto";
 
 // ─── Types ───────────────────────────────────────────────────────────
 
@@ -96,8 +97,12 @@ function detectLanguage(filePath: string): string | null {
     const map: Record<string, string> = {
         ".ts": "typescript",
         ".tsx": "typescript",
+        ".mts": "typescript",
+        ".cts": "typescript",
         ".js": "javascript",
         ".jsx": "javascript",
+        ".mjs": "javascript",
+        ".cjs": "javascript",
         ".py": "python",
         ".go": "go",
     };
@@ -153,14 +158,26 @@ export function applySemanticSplice(
     // Verify tree-sitter byte position against actual content
     let startIdx = startIndex;
     if (content.substring(startIdx, startIdx + rawCode.length) !== rawCode) {
-        // Search in a local window of ±500 bytes around the AST-reported position
+        // NOTE: ±500 byte search window. If duplicate symbols exist within this range,
+        // the wrong occurrence may be matched. Increase if false mismatches are reported.
         const windowStart = Math.max(0, startIdx - 500);
         const windowEnd = Math.min(content.length, startIdx + rawCode.length + 500);
         const searchWindow = content.substring(windowStart, windowEnd);
-        const localOffset = searchWindow.indexOf(rawCode);
+        let bestOffset = -1;
+        let minDistance = Infinity;
+        let currentOffset = searchWindow.indexOf(rawCode);
+        while (currentOffset >= 0) {
+            const absolutePos = windowStart + currentOffset;
+            const distance = Math.abs(absolutePos - startIndex);
+            if (distance < minDistance) {
+                minDistance = distance;
+                bestOffset = currentOffset;
+            }
+            currentOffset = searchWindow.indexOf(rawCode, currentOffset + 1);
+        }
 
-        if (localOffset >= 0) {
-            startIdx = windowStart + localOffset;
+        if (bestOffset >= 0) {
+            startIdx = windowStart + bestOffset;
         } else {
             // M-05: No global fallback - risk of matching wrong occurrence in large files
             startIdx = -1;
@@ -181,21 +198,31 @@ export function applySemanticSplice(
     const indentMatch = content.slice(lineStart, startIdx).match(/^[ \t]*/);
     const baseIndent = indentMatch ? indentMatch[0] : "";
 
-    // Calculate minimum indentation in the new code
+    // Calculate minimum indentation in the new code (SKIP first line)
     const newLines = newCode.split("\n");
-    const nonBlank = newLines.filter(l => l.trim().length > 0);
+    const nonBlankInterior = newLines.filter((l, i) => i > 0 && l.trim().length > 0);
     let minClaudeIndent = Infinity;
-    for (const line of nonBlank) {
+    for (const line of nonBlankInterior) {
         const match = line.match(/^[ \t]*/);
         if (match && match[0].length < minClaudeIndent) minClaudeIndent = match[0].length;
     }
     if (minClaudeIndent === Infinity) minClaudeIndent = 0;
 
     // Relative rebase: strip Claude's indent, apply baseIndent
+    // First line is excluded from minClaudeIndent calc, so don't strip it
     const formattedNewCode = newLines.map((line, i) => {
         if (line.trim() === "") return "";
-        const strippedLine = line.slice(minClaudeIndent);
-        if (mode === "replace" && i === 0) return strippedLine;
+        if (mode === "replace" && i === 0) return line.trimStart();
+
+        // SAFE SLICE: never cut into actual text content.
+        // If a line has fewer leading spaces than minClaudeIndent
+        // (e.g. inside template strings, multiline comments),
+        // only strip its actual whitespace prefix.
+        const actualIndentMatch = line.match(/^[ \t]*/);
+        const actualIndentLength = actualIndentMatch ? actualIndentMatch[0].length : 0;
+        const safeSliceLength = Math.min(minClaudeIndent, actualIndentLength);
+
+        const strippedLine = line.slice(safeSliceLength);
         return baseIndent + strippedLine;
     }).join("\n");
 
@@ -369,13 +396,60 @@ export async function batchSemanticEdit(
         }
     }
 
-    // 5. COMMIT: all passed validation → write to disk (if not dry run)
+    // 5. COMMIT: Two-Phase Atomic Write with Unbreakable Rollback
     const writtenFiles: string[] = [];
     if (!dryRun) {
-        for (const [filePath, virtualContent] of vfs.entries()) {
-            try { saveBackup(projectRoot, filePath); } catch { /* non-fatal */ }
-            fs.writeFileSync(filePath, virtualContent, "utf-8");
-            writtenFiles.push(path.relative(projectRoot, filePath));
+        const tmpFiles = new Map<string, string>();
+        const renamedFiles: string[] = [];
+
+        try {
+            // PHASE 1: PREPARE — Mandatory backups + entropy-named temps
+            for (const [filePath, virtualContent] of vfs.entries()) {
+                const entropy = crypto.randomBytes(4).toString("hex");
+                const tmpPath = `${filePath}.nreki-${Date.now()}-${entropy}.tmp`;
+
+                // Backup is MANDATORY for rollback safety.
+                // If backup fails (disk full), abort BEFORE any rename.
+                if (fs.existsSync(filePath)) {
+                    try {
+                        saveBackup(projectRoot, filePath);
+                    } catch (backupErr) {
+                        for (const tp of tmpFiles.values()) {
+                            if (fs.existsSync(tp)) try { fs.unlinkSync(tp); } catch {}
+                        }
+                        throw new Error(`Backup failed for ${filePath}: ${(backupErr as Error).message}`);
+                    }
+                }
+
+                fs.writeFileSync(tmpPath, virtualContent, "utf-8");
+                tmpFiles.set(filePath, tmpPath);
+            }
+
+            // PHASE 2: COMMIT — Atomic POSIX inode rename
+            for (const [filePath, tmpPath] of tmpFiles.entries()) {
+                fs.renameSync(tmpPath, filePath);
+                renamedFiles.push(filePath);
+                writtenFiles.push(path.relative(projectRoot, filePath));
+            }
+        } catch (fatalErr) {
+            // PHASE 3: ROLLBACK — Revert successful renames from backup
+            for (const donePath of renamedFiles) {
+                const backupPath = getBackupPath(projectRoot, donePath);
+                if (fs.existsSync(backupPath)) {
+                    try { fs.copyFileSync(backupPath, donePath); } catch {}
+                }
+            }
+            // Clean remaining temp files
+            for (const tmpPath of tmpFiles.values()) {
+                if (fs.existsSync(tmpPath)) try { fs.unlinkSync(tmpPath); } catch {}
+            }
+            return {
+                success: false,
+                editCount: edits.length,
+                fileCount: editsByFile.size,
+                files: [],
+                error: `ACID commit aborted: ${(fatalErr as Error).message}. ${renamedFiles.length} files reverted from backup.`,
+            };
         }
     } else {
         for (const filePath of vfs.keys()) {

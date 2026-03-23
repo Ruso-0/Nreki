@@ -22,7 +22,6 @@ import { Embedder, getEmbedder } from "./embedder.js";
 import { ASTParser, type ParseResult } from "./parser.js";
 import { Compressor, type CompressionResult } from "./compressor.js";
 import { AdvancedCompressor, type CompressionLevel, type AdvancedCompressionResult } from "./compressor-advanced.js";
-import { safePath } from "./utils/path-jail.js";
 import { shouldProcess } from "./utils/file-filter.js";
 import { readSource } from "./utils/read-source.js";
 import { getOrGenerateRepoMap, type RepoMap, type DependencyGraph } from "./repo-map.js";
@@ -766,5 +765,13 @@ export class NrekiEngine {
 }
 
 // Backward-compat aliases
+/** @deprecated Use NrekiEngine instead. Will be removed in v7.0.0 */
 export { NrekiEngine as NREKIEngine };
-export { NrekiEngine as TokenGuardEngine };
+
+/** @deprecated Use NrekiEngine instead. Will be removed in v7.0.0 */
+export class TokenGuardEngine extends NrekiEngine {
+    constructor(config: EngineConfig = {}) {
+        console.warn("\x1b[33m[NREKI DEPRECATION] TokenGuardEngine is deprecated. Use NrekiEngine.\x1b[0m");
+        super(config);
+    }
+}

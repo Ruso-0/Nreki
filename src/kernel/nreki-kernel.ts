@@ -3,6 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
 import { isSensitivePath } from "../utils/path-jail.js";
+import { readSource } from "../utils/read-source.js";
 import { escapeRegExp } from "../utils/imports.js";
 
 // ─── Async FIFO Mutex (P10) ────────────────────────────────────────
@@ -10,59 +11,43 @@ import { escapeRegExp } from "../utils/imports.js";
 export class AsyncMutex {
     private queue: (() => void)[] = [];
     private locked = false;
-    async lock(timeoutMs: number = 30_000): Promise<() => void> {
+
+    async lock(queueTimeoutMs: number = 60_000): Promise<() => void> {
         return new Promise((resolve, reject) => {
+            let settled = false;
+            let timer: NodeJS.Timeout;
             const release = () => {
                 if (this.queue.length > 0) this.queue.shift()!();
                 else this.locked = false;
             };
+            const doResolve = () => {
+                if (!settled) {
+                    settled = true;
+                    clearTimeout(timer);
+                    resolve(release);
+                }
+            };
             if (!this.locked) {
                 this.locked = true;
-                resolve(release);
+                doResolve();
             } else {
-                let settled = false;
-                const timer = setTimeout(() => {
+                timer = setTimeout(() => {
                     if (!settled) {
                         settled = true;
                         const idx = this.queue.indexOf(doResolve);
-                        if (idx >= 0) this.queue.splice(idx, 1);
-                        reject(new Error(`[NREKI] AsyncMutex timeout after ${timeoutMs}ms - possible deadlock`));
+                        if (idx !== -1) this.queue.splice(idx, 1);
+                        reject(new Error(`[NREKI] Mutex queue timeout after ${queueTimeoutMs}ms - deadlock prevented`));
                     }
-                }, timeoutMs);
-                const doResolve = () => {
-                    if (!settled) {
-                        settled = true;
-                        clearTimeout(timer);
-                        resolve(release);
-                    }
-                };
+                }, queueTimeoutMs);
                 this.queue.push(doResolve);
             }
         });
     }
 
-    /**
-     * Acquire lock, execute fn, release lock. Always releases even on throw/timeout.
-     * Execution timeout fires from the event loop - if the holder livelocks,
-     * Promise.race resolves with the timeout and the finally block releases the lock.
-     */
-    async withLock<T>(fn: () => Promise<T> | T, executionTimeoutMs: number = 30_000): Promise<T> {
+    async withLock<T>(fn: () => Promise<T> | T): Promise<T> {
         const unlock = await this.lock();
-        let timer: ReturnType<typeof setTimeout> | undefined;
         try {
-            const result = await Promise.race([
-                Promise.resolve().then(fn),
-                new Promise<never>((_, reject) => {
-                    timer = setTimeout(() => reject(
-                        new Error(`[NREKI] Execution timeout after ${executionTimeoutMs}ms. Forcing lock release.`)
-                    ), executionTimeoutMs);
-                }),
-            ]);
-            clearTimeout(timer);
-            return result;
-        } catch (err) {
-            clearTimeout(timer);
-            throw err;
+            return await Promise.resolve().then(fn);
         } finally {
             unlock();
         }
@@ -97,13 +82,24 @@ export interface NrekiInterceptResult {
 export type NrekiMode = "auto" | "syntax" | "file" | "project" | "hologram";
 
 // ─── Environment file classifier (Performance Modes) ─────────────
+const ENV_FILE_BASENAMES = new Set([
+    "tsconfig.json", "jsconfig.json", "package.json",
+    "jest.config.ts", "jest.config.js", "jest.config.mjs",
+    "vitest.config.ts", "vitest.config.js", "vitest.config.mts",
+    "webpack.config.js", "webpack.config.ts",
+    "vite.config.ts", "vite.config.js", "vite.config.mts",
+    "rollup.config.js", "rollup.config.ts", "rollup.config.mjs",
+    "eslint.config.js", "eslint.config.mjs",
+    ".eslintrc.json", ".eslintrc.js",
+    "prettier.config.js", ".prettierrc.json",
+    "babel.config.js", "babel.config.json",
+    "next.config.js", "next.config.mjs", "next.config.ts",
+    "tailwind.config.js", "tailwind.config.ts",
+]);
+
 const isEnvironmentFile = (filePath: string): boolean => {
     const base = path.basename(filePath).toLowerCase();
-    return base.endsWith('.d.ts') ||
-           base.endsWith('.json') ||
-           base.includes('config') ||
-           base.includes('setup') ||
-           base.startsWith('.');
+    return base.endsWith(".d.ts") || base.startsWith(".") || ENV_FILE_BASENAMES.has(base);
 };
 
 // ─── NREKI Kernel ─────────────────────────────────────────────────
@@ -113,6 +109,12 @@ const isEnvironmentFile = (filePath: string): boolean => {
 // Validates edits before they touch disk. Rolls back on failure.
 //
 // @author Jherson Eddie Tintaya Holguin (Ruso-0)
+
+interface PreEditContract {
+    typeStr: string;    // Visual truncado para logs (150 chars max)
+    toxicity: number;   // Toxicidad exacta via TypeFlags O(1)
+    isUntyped: boolean; // true si el tipo es bare any o unknown
+}
 
 export class NrekiKernel {
     private projectRoot!: string;
@@ -129,9 +131,16 @@ export class NrekiKernel {
     private compilerOptions!: ts.CompilerOptions;
     private rootNames!: Set<string>;
     private host!: ts.CompilerHost;
+    private originalReadFile!: (fileName: string) => string | undefined;
+    private originalFileExists!: (fileName: string) => boolean;
     private builderProgram?: ts.EmitAndSemanticDiagnosticsBuilderProgram;
     private booted = false;
-    public healingStats = { applied: 0, failed: 0 };
+    private _healingStats = { applied: 0, failed: 0 };
+
+    /** Read-only view of healing statistics. */
+    public get healingStats(): Readonly<{ applied: number; failed: number }> {
+        return { applied: this._healingStats.applied, failed: this._healingStats.failed };
+    }
     private languageService!: ts.LanguageService;
     private documentRegistry!: ts.DocumentRegistry;
     private mutatedFiles = new Set<string>();
@@ -141,6 +150,11 @@ export class NrekiKernel {
     // Performance Modes
     public mode: "file" | "project" | "hologram" = "project";
     private isStateCorrupted = false;
+
+    /** Max file size for JIT classification. Files larger than this are
+     *  skipped to prevent synchronous event loop blocking during
+     *  TypeScript's module resolution (readFileSync + Tree-sitter parse). */
+    private static readonly JIT_MAX_FILE_SIZE = 150_000; // 150KB
 
     // ─── Hologram mode ─────────────────────────────────
     private prunedFiles = new Set<string>();
@@ -292,6 +306,8 @@ export class NrekiKernel {
 
         const originalReadFile = this.host.readFile;
         const originalFileExists = this.host.fileExists;
+        this.originalReadFile = originalReadFile;
+        this.originalFileExists = originalFileExists;
         const originalGetModifiedTime = (this.host as any).getModifiedTime || ts.sys.getModifiedTime;
         const originalDirectoryExists = this.host.directoryExists || ts.sys.directoryExists;
 
@@ -400,48 +416,11 @@ export class NrekiKernel {
         };
 
         // ─── LanguageService: VS Code's brain connected to our VFS ───
-        const lsHost: ts.LanguageServiceHost = {
-            getCompilationSettings: () => this.compilerOptions,
-            getScriptFileNames: () => Array.from(this.rootNames),
-            getScriptVersion: (fileName) => {
-                const posixPath = this.toPosix(path.resolve(this.projectRoot, fileName));
-                return this.vfsClock.get(posixPath)?.getTime().toString() || "1";
-            },
-            getScriptSnapshot: (fileName) => {
-                const posixPath = this.toPosix(path.resolve(this.projectRoot, fileName));
-
-                // HOLOGRAM INTERCEPT: serve shadow content for .d.ts
-                if (this.mode === "hologram" && fileName.endsWith(".d.ts")) {
-                    const tsPath = posixPath.replace(/\.d\.ts$/, ".ts");
-                    const shadow = this.shadowContent.get(tsPath);
-                    if (shadow !== undefined) return ts.ScriptSnapshot.fromString(shadow);
-                    const tsxPath = posixPath.replace(/\.d\.ts$/, ".tsx");
-                    const shadow2 = this.shadowContent.get(tsxPath);
-                    if (shadow2 !== undefined) return ts.ScriptSnapshot.fromString(shadow2);
-                }
-
-                if (this.vfs.has(posixPath)) {
-                    const content = this.vfs.get(posixPath);
-                    if (content === null || content === undefined) return undefined;
-                    return ts.ScriptSnapshot.fromString(content);
-                }
-                if (!originalFileExists.call(this.host, fileName)) return undefined;
-                const content = originalReadFile.call(this.host, fileName);
-                if (!content) return undefined;
-                return ts.ScriptSnapshot.fromString(content);
-            },
-            getCurrentDirectory: () => this.projectRoot,
-            getDefaultLibFileName: (options) => ts.getDefaultLibFilePath(options),
-            fileExists: this.host.fileExists,
-            readFile: this.host.readFile,
-            directoryExists: this.host.directoryExists,
-            readDirectory: ts.sys.readDirectory,
-        };
         this.documentRegistry = ts.createDocumentRegistry(
             ts.sys.useCaseSensitiveFileNames,
             this.projectRoot
         );
-        this.languageService = ts.createLanguageService(lsHost, this.documentRegistry);
+        this.languageService = ts.createLanguageService(this.createLSHost(), this.documentRegistry);
         // ──────────────────────────────────────────────────────────────
 
         // Incremental cache: try to load previous build state for warm boot
@@ -472,15 +451,11 @@ export class NrekiKernel {
         if (this.mode === "project") {
             this.captureBaseline();
         }
-        // D2: Clean orphaned .nreki-bak-* files from previous crashes
-        try {
-            const entries = fs.readdirSync(this.projectRoot);
-            for (const entry of entries) {
-                if (entry.includes(".nreki-bak-") || (entry.includes(".nreki-") && entry.endsWith(".tmp"))) {
-                    try { fs.unlinkSync(path.join(this.projectRoot, entry)); } catch { /* best effort */ }
-                }
-            }
-        } catch { /* non-fatal */ }
+        // D2: Clean orphaned transaction backups from previous crashes
+        const txDir = path.join(this.projectRoot, ".nreki", "transactions");
+        if (fs.existsSync(txDir)) {
+            try { fs.rmSync(txDir, { recursive: true, force: true }); } catch { /* best effort */ }
+        }
 
         // Capture initial error count at boot (immutable after this point)
         this.bootErrorCount = this.getBaselineErrorCount();
@@ -497,12 +472,61 @@ export class NrekiKernel {
         return this.booted;
     }
 
+    private createLSHost(): ts.LanguageServiceHost {
+        return {
+            getCompilationSettings: () => this.compilerOptions,
+            getScriptFileNames: () => Array.from(this.rootNames),
+            getScriptVersion: (fileName) => {
+                const posixPath = this.toPosix(path.resolve(this.projectRoot, fileName));
+                return this.vfsClock.get(posixPath)?.getTime().toString() || "1";
+            },
+            getScriptSnapshot: (fileName) => {
+                const posixPath = this.toPosix(path.resolve(this.projectRoot, fileName));
+
+                // HOLOGRAM INTERCEPT: serve shadow content for .d.ts
+                if (this.mode === "hologram" && fileName.endsWith(".d.ts")) {
+                    const tsPath = posixPath.replace(/\.d\.ts$/, ".ts");
+                    const shadow = this.shadowContent.get(tsPath);
+                    if (shadow !== undefined) return ts.ScriptSnapshot.fromString(shadow);
+                    const tsxPath = posixPath.replace(/\.d\.ts$/, ".tsx");
+                    const shadow2 = this.shadowContent.get(tsxPath);
+                    if (shadow2 !== undefined) return ts.ScriptSnapshot.fromString(shadow2);
+                }
+
+                if (this.vfs.has(posixPath)) {
+                    const content = this.vfs.get(posixPath);
+                    if (content === null || content === undefined) return undefined;
+                    return ts.ScriptSnapshot.fromString(content);
+                }
+                if (!this.originalFileExists.call(this.host, fileName)) return undefined;
+                const content = this.originalReadFile.call(this.host, fileName);
+                if (!content) return undefined;
+                return ts.ScriptSnapshot.fromString(content);
+            },
+            getCurrentDirectory: () => this.projectRoot,
+            getDefaultLibFileName: (options) => ts.getDefaultLibFilePath(options),
+            fileExists: this.host.fileExists,
+            readFile: this.host.readFile,
+            directoryExists: this.host.directoryExists,
+            readDirectory: ts.sys.readDirectory,
+        };
+    }
+
     // P11 + P19: Periodic GC with counter reset
     private updateProgram(): void {
         // Purge corrupted builder after early exit
         if (this.isStateCorrupted) {
-            console.error("[NREKI] Purging builder after early exit. Warm rebuild ~2-5s.");
+            console.error("[NREKI] Purging builder and LanguageService after early exit. Warm rebuild ~2-5s.");
             this.builderProgram = undefined;
+
+            // FIX OOM: DocumentRegistry retains AST references from the corrupted
+            // builder. Recreating it allows V8 GC to reclaim the dead ASTs.
+            this.documentRegistry = ts.createDocumentRegistry(
+                ts.sys.useCaseSensitiveFileNames,
+                this.projectRoot
+            );
+            this.languageService = ts.createLanguageService(this.createLSHost(), this.documentRegistry);
+
             this.isStateCorrupted = false;
         } else if (++this.editCount >= this.gcThreshold) {
             this.builderProgram = undefined;
@@ -521,8 +545,10 @@ export class NrekiKernel {
             : "GLOBAL";
         let msg = ts.flattenDiagnosticMessageText(diag.messageText, "\n");
         const nativeRoot = path.resolve(this.projectRoot);
+        const nativePosix = nativeRoot.replace(/\\/g, "/");
         msg = msg.replace(new RegExp(escapeRegExp(this.projectRoot), "ig"), "<ROOT>");
         msg = msg.replace(new RegExp(escapeRegExp(nativeRoot), "ig"), "<ROOT>");
+        msg = msg.replace(new RegExp(escapeRegExp(nativePosix), "ig"), "<ROOT>");
         return crypto.createHash("sha256").update(`${file}|TS${diag.code}|${msg}`).digest("hex");
     }
 
@@ -572,7 +598,7 @@ export class NrekiKernel {
      * WARNING: getSemanticDiagnosticsOfNextAffectedFile() is a stateful iterator.
      *          Do NOT call this method twice without updateProgram() in between.
      */
-    private getFatalErrors(explicitlyEditedFiles: Set<string>): ts.Diagnostic[] {
+    private getFatalErrors(explicitlyEditedFiles: Set<string>, filesToEvaluate: Set<string>): ts.Diagnostic[] {
         const currentFrequencies = new Map<string, number>();
         const fatalErrors: ts.Diagnostic[] = [];
         const program = this.builderProgram!.getProgram();
@@ -600,15 +626,15 @@ export class NrekiKernel {
             for (const diag of program.getOptionsDiagnostics()) processDiag(diag);
         }
 
-        // Shield 2: Syntactic + local semantic for edited files
-        for (const posixPath of explicitlyEditedFiles) {
+        // Shield 2: Syntactic (edited files only) + Semantic (all evaluated files)
+        for (const posixPath of filesToEvaluate) {
             const sf = program.getSourceFile(posixPath);
             if (sf) {
-                for (const diag of program.getSyntacticDiagnostics(sf)) processDiag(diag);
-
-                // FILE/HOLOGRAM mode: semantic check ONLY on edited files. No cascade.
-                // Hologram gets cross-file safety via shadows in the type graph,
-                // not through NREKI's cascade walker.
+                // Syntactic: only on files the LLM actually edited
+                if (explicitlyEditedFiles.has(posixPath)) {
+                    for (const diag of program.getSyntacticDiagnostics(sf)) processDiag(diag);
+                }
+                // Semantic: on ALL evaluated files (edited + dependents)
                 if (this.mode === "file" || this.mode === "hologram") {
                     for (const diag of program.getSemanticDiagnostics(sf)) processDiag(diag);
                 }
@@ -658,8 +684,8 @@ export class NrekiKernel {
      * Uses TypeChecker to read resolved types, not AST text.
      * Cost: O(K) where K = exports in the given files only.
      */
-    private extractCanonicalTypes(files: Set<string>): Map<string, Map<string, string>> {
-        const contracts = new Map<string, Map<string, string>>();
+    private extractCanonicalTypes(files: Set<string>): Map<string, Map<string, PreEditContract>> {
+        const contracts = new Map<string, Map<string, PreEditContract>>();
         if (!this.builderProgram) return contracts;
 
         const program = this.builderProgram.getProgram();
@@ -672,7 +698,7 @@ export class NrekiKernel {
             const fileSymbol = checker.getSymbolAtLocation(sf);
             if (!fileSymbol || !fileSymbol.exports) continue;
 
-            const fileContracts = new Map<string, string>();
+            const fileContracts = new Map<string, PreEditContract>();
             const exports = checker.getExportsOfModule(fileSymbol);
 
             for (const exp of exports) {
@@ -689,21 +715,16 @@ export class NrekiKernel {
                     type = checker.getTypeOfSymbolAtLocation(exp, decl);
                 }
 
-                // UseFullyQualifiedType but NOT NoTruncation.
-                // NoTruncation can produce multi-megabyte strings for deeply nested
-                // generics (Prisma Client, tRPC). Default truncation is safe here.
-                let typeStr = checker.typeToString(
-                    type,
-                    undefined,
-                    ts.TypeFormatFlags.UseFullyQualifiedType
-                );
+                // MATH TRUTH: Calculate toxicity from TypeFlags bits, not strings
+                const toxicity = this.getToxicityScoreFromType(type, checker);
+                const isUntyped = (type.flags & ts.TypeFlags.Any) !== 0 || (type.flags & ts.TypeFlags.Unknown) !== 0;
 
-                // Hard limit at 500 chars. Detecting any/unknown/object does not
-                // require the full expanded type string.
+                // Visual string for human logs only (truncated safely — never used for scoring)
+                let typeStr = checker.typeToString(type, undefined, ts.TypeFormatFlags.UseFullyQualifiedType);
                 const cleanType = typeStr.replace(/\s+/g, " ");
-                const safeType = cleanType.length > 500 ? cleanType.substring(0, 497) + "..." : cleanType;
+                const safeType = cleanType.length > 150 ? cleanType.substring(0, 147) + "..." : cleanType;
 
-                fileContracts.set(exp.getName(), safeType);
+                fileContracts.set(exp.getName(), { typeStr: safeType, toxicity, isUntyped });
             }
             if (fileContracts.size > 0) contracts.set(posixPath, fileContracts);
         }
@@ -744,8 +765,15 @@ export class NrekiKernel {
         depth: number = 0,
         visited: Set<ts.Type> = new Set()
     ): number {
-        if (depth > 3 || visited.has(type)) return 0;
-        visited.add(type);
+        if (depth > 3) return 0;
+        // FIX SINGLETONS: Only track Object types in visited for cycle prevention.
+        // Primitive singletons (any, unknown, string, number) are shared instances
+        // in the TS compiler. Adding them to visited would skip scoring after
+        // the first occurrence, making (a: any, b: any) score the same as (a: any).
+        if (type.flags & ts.TypeFlags.Object) {
+            if (visited.has(type)) return 0;
+            visited.add(type);
+        }
 
         let score = 0;
 
@@ -797,29 +825,6 @@ export class NrekiKernel {
         return score;
     }
 
-    /**
-     * String-based toxicity for pre-edit types (compiler state no longer exists).
-     * Uses asymmetric weights matching the TypeFlags scoring.
-     */
-    private getStringBasedToxicity(typeStr: string): number {
-        let score = 0;
-        const anyMatches = typeStr.match(/\bany\b/g);
-        if (anyMatches) score += anyMatches.length * 10;
-        const unknownMatches = typeStr.match(/\bunknown\b/g);
-        if (unknownMatches) score += unknownMatches.length * 2;
-        const funcMatches = typeStr.match(/\bFunction\b/g);
-        if (funcMatches) score += funcMatches.length * 5;
-
-        // Bare empty types: object, {}
-        const stripped = typeStr.replace(/\s/g, "");
-        if (typeStr.trim() === "object" || stripped === "{}") score += 2;
-
-        // Wrapper primitives (String vs string): code smell, lower weight
-        const wrappers = typeStr.match(/\b(String|Number|Boolean|Object|Symbol)\b/g);
-        if (wrappers) score += wrappers.length * 0.5;
-
-        return score;
-    }
 
     /**
      * Compare pre-edit and post-edit resolved types using toxicity scoring.
@@ -831,68 +836,55 @@ export class NrekiKernel {
      *   unknown=2, any=10. Score delta = 8. Regression fires.
      */
     private computeTypeRegressions(
-        preContracts: Map<string, Map<string, string>>,
-        postContracts: Map<string, Map<string, string>>
+        preContracts: Map<string, Map<string, PreEditContract>>,
+        postContracts: Map<string, Map<string, PreEditContract>>
     ): TypeRegression[] {
         const regressions: TypeRegression[] = [];
-
-        // Bare untyped: the entire type is just "any" or "unknown", nothing else
-        const isUntyped = (t: string) => /^(any|unknown)$/.test(t.trim());
-
-        // Try to get TypeChecker for TypeFlags-based scoring of post-edit types
-        const checker = this.builderProgram?.getProgram().getTypeChecker();
-        const program = this.builderProgram?.getProgram();
 
         for (const [filePath, preSymbols] of preContracts.entries()) {
             const postSymbols = postContracts.get(filePath);
             if (!postSymbols) continue;
 
-            // Try to get module exports for TypeFlags-based scoring
-            const sf = program?.getSourceFile(filePath);
-            const fileSymbol = sf ? checker?.getSymbolAtLocation(sf) : undefined;
-            const moduleExports = fileSymbol && checker
-                ? checker.getExportsOfModule(fileSymbol)
-                : [];
-            const exportMap = new Map(moduleExports.map(e => [e.getName(), e]));
+            for (const [symbol, oldData] of preSymbols.entries()) {
+                const newData = postSymbols.get(symbol);
+                if (!newData) continue;
 
-            for (const [symbol, oldType] of preSymbols.entries()) {
-                const newType = postSymbols.get(symbol);
-                if (!newType) continue; // Symbol deleted = refactor, not regression
-                if (oldType === newType) continue;
-
-                const oldTox = this.getStringBasedToxicity(oldType);
-
-                // Prefer TypeFlags scoring for post-edit types
-                let newTox: number;
-                const exportSym = exportMap.get(symbol);
-                if (checker && exportSym) {
-                    const decl = exportSym.valueDeclaration || exportSym.declarations?.[0];
-                    if (decl) {
-                        let type: ts.Type;
-                        if (exportSym.flags & ts.SymbolFlags.TypeAlias || exportSym.flags & ts.SymbolFlags.Interface) {
-                            type = checker.getDeclaredTypeOfSymbol(exportSym);
-                        } else {
-                            type = checker.getTypeOfSymbolAtLocation(exportSym, decl);
-                        }
-                        newTox = this.getToxicityScoreFromType(type, checker);
-                    } else {
-                        newTox = this.getStringBasedToxicity(newType);
-                    }
-                } else {
-                    newTox = this.getStringBasedToxicity(newType);
+                if (newData.toxicity > oldData.toxicity || (newData.isUntyped && !oldData.isUntyped)) {
+                    regressions.push({
+                        filePath, symbol,
+                        oldType: oldData.typeStr,
+                        newType: newData.typeStr,
+                    });
                 }
+            }
 
-                const oldIsBare = isUntyped(oldType);
-                const newIsBare = isUntyped(newType);
-
-                // Regression if:
-                // 1. Toxicity increased (string -> any, Map<K,V> -> Map<K,any>)
-                // 2. Structural collapse (Promise<any> -> any: was wrapped, now bare)
-                if (newTox > oldTox || (newIsBare && !oldIsBare)) {
-                    regressions.push({ filePath, symbol, oldType, newType });
+            // DETECT NEW TOXIC EXPORTS injected by AI to bypass TTRD
+            for (const [symbol, newData] of postSymbols.entries()) {
+                if (preSymbols.has(symbol)) continue;
+                if (newData.toxicity > 0 || newData.isUntyped) {
+                    regressions.push({
+                        filePath, symbol,
+                        oldType: "(new export)",
+                        newType: newData.typeStr,
+                    });
                 }
             }
         }
+
+        // Detect toxic exports in entirely NEW files
+        for (const [filePath, postSymbols] of postContracts.entries()) {
+            if (preContracts.has(filePath)) continue;
+            for (const [symbol, newData] of postSymbols.entries()) {
+                if (newData.toxicity > 0 || newData.isUntyped) {
+                    regressions.push({
+                        filePath, symbol,
+                        oldType: "(new file)",
+                        newType: newData.typeStr,
+                    });
+                }
+            }
+        }
+
         return regressions;
     }
 
@@ -918,7 +910,8 @@ export class NrekiKernel {
      */
     private attemptAutoHealing(
         initialErrors: ts.Diagnostic[],
-        parentEditedFiles: Set<string>
+        parentEditedFiles: Set<string>,
+        filesToEvaluate: Set<string>
     ): { healed: boolean; appliedFixes: string[]; newlyTouchedFiles: Set<string>; finalErrors: ts.Diagnostic[] } {
         if (!this.languageService || initialErrors.length === 0) {
             return { healed: false, appliedFixes: [], newlyTouchedFiles: new Set(), finalErrors: initialErrors };
@@ -1026,7 +1019,9 @@ export class NrekiKernel {
                     // Recompile after fix (~20ms)
                     this.logicalTime += 1000;
                     this.updateProgram();
-                    const newErrors = this.getFatalErrors(localEditedFiles);
+                    const newEvaluate = new Set(filesToEvaluate);
+                    for (const f of localEditedFiles) newEvaluate.add(f);
+                    const newErrors = this.getFatalErrors(localEditedFiles, newEvaluate);
 
                     // Fix must reduce error count. If not, rollback.
                     if (newErrors.length >= currentErrors.length) {
@@ -1086,12 +1081,12 @@ export class NrekiKernel {
                 this.updateProgram();
             }
 
-            this.healingStats.failed++;
+            this._healingStats.failed++;
             // BUG 3 FIXED: Return initialErrors, do NOT recalculate (semantic iterator was consumed)
             return { healed: false, appliedFixes: [], newlyTouchedFiles: new Set(), finalErrors: initialErrors };
         }
 
-        this.healingStats.applied++;
+        this._healingStats.applied++;
         // On success: merge newly touched files into the parent's edited set
         for (const file of localEditedFiles) parentEditedFiles.add(file);
 
@@ -1111,6 +1106,13 @@ export class NrekiKernel {
     public async interceptAtomicBatch(edits: NrekiEdit[], dependents: string[] = []): Promise<NrekiInterceptResult> {
         if (!this.booted) throw new Error("[NREKI] Kernel not booted");
         if (!edits || edits.length === 0) return { safe: true, exitCode: 0, latencyMs: "0.00" };
+
+        // Corruption guard: if a previous timeout left the VFS in a partial state, rebuild
+        if (this.isStateCorrupted) {
+            this.isStateCorrupted = false;
+            this.builderProgram = undefined;
+            console.error("[NREKI] Rebuilding after timeout-corrupted state.");
+        }
 
         return this.mutex.withLock(async () => {
         const t0 = performance.now();
@@ -1236,14 +1238,14 @@ export class NrekiKernel {
             // BUG 3 FIXED: Compute AI errors exactly ONCE.
             // getFatalErrors consumes the stateful getSemanticDiagnosticsOfNextAffectedFile iterator.
             // Cannot call it again without updateProgram() in between.
-            const originalFatalErrors = this.getFatalErrors(explicitlyEditedFiles);
+            const originalFatalErrors = this.getFatalErrors(explicitlyEditedFiles, filesToEvaluate);
 
             // PHASE 4: Verdict
             if (originalFatalErrors.length > 0) {
 
                 // ─── NREKI L3.3: Iterative Auto-Healing ─────────────────
                 const tHealStart = performance.now();
-                const healing = this.attemptAutoHealing(originalFatalErrors, explicitlyEditedFiles);
+                const healing = this.attemptAutoHealing(originalFatalErrors, explicitlyEditedFiles, filesToEvaluate);
 
                 if (healing.healed) {
                     const latency = (performance.now() - t0).toFixed(2);
@@ -1293,7 +1295,11 @@ export class NrekiKernel {
                             healing.appliedFixes.join("\n") +
                             patchNotice,
                         regressions: regressions.length > 0 ? regressions : undefined,
-                        postContracts: postContracts.size > 0 ? postContracts : undefined,
+                        postContracts: postContracts.size > 0
+                            ? new Map([...postContracts].map(([file, syms]) =>
+                                [file, new Map([...syms].map(([sym, contract]) => [sym, contract.typeStr]))]
+                              ))
+                            : undefined,
                     };
                 }
                 // ─── END Auto-Healing ────────────────────────────────────
@@ -1317,11 +1323,6 @@ export class NrekiKernel {
                 this.logicalTime = savedLogicalTime;
                 // A-02: Restore vfsDirectories
                 this.vfsDirectories = savedDirectories;
-                // BUG 5: Clear mutatedFiles for rolled-back edits
-                for (const posixPath of rollbackState.keys()) {
-                    this.mutatedFiles.delete(posixPath);
-                }
-
                 // P17 + P2 WARM-PATH: Advance clock instead of destroying program.
                 this.logicalTime += 1000;
                 for (const [posixPath] of rollbackState.entries()) {
@@ -1378,7 +1379,11 @@ export class NrekiKernel {
                 exitCode: 0,
                 latencyMs: (performance.now() - t0).toFixed(2),
                 regressions: regressions.length > 0 ? regressions : undefined,
-                postContracts: postContracts.size > 0 ? postContracts : undefined,
+                postContracts: postContracts.size > 0
+                    ? new Map([...postContracts].map(([file, syms]) =>
+                        [file, new Map([...syms].map(([sym, contract]) => [sym, contract.typeStr]))]
+                      ))
+                    : undefined,
             };
 
             } catch (phaseError) {
@@ -1394,10 +1399,6 @@ export class NrekiKernel {
                 // A-02: Restore vfsDirectories
                 this.vfsDirectories = savedDirectories;
                 this.logicalTime = savedLogicalTime;
-                // BUG 5: Clear mutatedFiles for rolled-back edits
-                for (const posixPath of rollbackState.keys()) {
-                    this.mutatedFiles.delete(posixPath);
-                }
                 // Restore hologram veil on failure
                 if (this.mode === "hologram" && temporarilyUnveiled.size > 0) {
                     for (const file of temporarilyUnveiled) {
@@ -1412,7 +1413,7 @@ export class NrekiKernel {
                 this.currentEditTargets.clear();
                 throw phaseError;
             }
-        }, 60_000); // 60s: auto-healing can be slow
+        });
     }
 
     /**
@@ -1431,7 +1432,9 @@ export class NrekiKernel {
             for (const posixPath of this.vfs.keys()) {
                 const osPath = path.normalize(posixPath);
                 if (fs.existsSync(osPath)) {
-                    const bak = `${osPath}.nreki-bak-${crypto.randomBytes(4).toString("hex")}`;
+                    const txDir = path.join(this.projectRoot, ".nreki", "transactions");
+                    if (!fs.existsSync(txDir)) fs.mkdirSync(txDir, { recursive: true });
+                    const bak = path.join(txDir, `${crypto.randomBytes(4).toString("hex")}.bak`);
                     fs.copyFileSync(osPath, bak);
                     physicalUndoLog.push({ target: osPath, backup: bak });
                 } else {
@@ -1517,7 +1520,7 @@ export class NrekiKernel {
             }
             throw new Error(`[NREKI] Physical ACID commit failed. Repository restored. Reason: ${error}`);
         }
-        }, 30_000);
+        });
     }
 
     /** Emergency rollback - purge all staged changes (P3). */
@@ -1530,11 +1533,18 @@ export class NrekiKernel {
             // BUG 1: In hologram mode, re-filter rootNames
             if (this.mode === "hologram") {
                 if (this.jitMode) {
-                    // JIT mode: clear caches, re-classify lazily on next access
-                    this.jitClassifiedCache.clear();
-                    this.prunedFiles.clear();
-                    this.shadowContent.clear();
+                    // SURGICAL JIT CACHE INVALIDATION:
+                    // jitClassifyFile() reads from DISK, not VFS. Classifications
+                    // remain valid after rollback because disk content is unchanged.
+                    // Only invalidate files that were being edited in this transaction.
+                    // This preserves the ~1.94s of accumulated JIT work.
+                    for (const target of this.currentEditTargets) {
+                        this.jitClassifiedCache.delete(target);
+                        this.prunedFiles.delete(target);
+                        this.shadowContent.delete(target);
+                    }
                     this.buildShadowLookups();
+                    this.currentEditTargets.clear();
                     this.rootNames = new Set(
                         [...this.rootNames].filter(f => f.endsWith(".d.ts")),
                     );
@@ -1556,7 +1566,7 @@ export class NrekiKernel {
             // Release stale AST versions from DocumentRegistry
             this.releaseMutatedDocuments();
             console.error("[NREKI] Hard rollback executed. VFS purged.");
-        }, 10_000);
+        });
     }
 
     // ─── Utilities ─────────────────────────────────────────────────
@@ -1742,7 +1752,7 @@ export class NrekiKernel {
     /** Receive shadow scan results BEFORE boot(). */
     public setShadows(
         prunable: Map<string, string>,
-        unprunable: Set<string>,
+        _unprunable: Set<string>,
         ambientFiles: string[],
     ): void {
         this.prunedFiles = new Set(prunable.keys());
@@ -1797,8 +1807,16 @@ export class NrekiKernel {
         if (!this.jitParser || !this.jitTsLanguage || !this.jitClassifyFn) return false;
 
         this.jitClassifiedCache.add(tsPath);
+
+        // SIZE GUARD: Skip large auto-generated files (GraphQL codegen,
+        // Prisma client, protobuf output) that would block the event loop.
+        try {
+            const stat = fs.statSync(path.normalize(tsPath));
+            if (stat.size > NrekiKernel.JIT_MAX_FILE_SIZE) return false;
+        } catch { return false; }
+
         let content: string;
-        try { content = fs.readFileSync(path.normalize(tsPath), "utf-8"); }
+        try { content = readSource(path.normalize(tsPath)); }
         catch { return false; }
 
         const result = this.jitClassifyFn(tsPath, content, this.jitParser, this.jitTsLanguage);

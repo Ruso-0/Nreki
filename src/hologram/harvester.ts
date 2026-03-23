@@ -9,7 +9,6 @@
  * TS4023 errors: marks file as UNPRUNABLE_FOREVER in the cache.
  */
 
-import * as ts from "typescript";
 import type { NrekiKernel } from "../kernel/nreki-kernel.js";
 import type { ShadowCache } from "./shadow-cache.js";
 
@@ -70,42 +69,44 @@ export class DtsHarvester {
         const files = Array.from(this.queue);
         this.queue.clear();
 
-        for (let i = 0; i < files.length; i += BATCH_SIZE) {
-            // Abort check: stop if abort() was called or a new edit has arrived
-            if (!this.isHarvesting || this.kernel.getLogicalTime() !== epochId) {
-                this.isHarvesting = false;
-                return {
-                    filesHarvested,
-                    filesMarkedUnprunable,
-                    aborted: true,
-                    durationMs: performance.now() - t0,
-                };
-            }
+        try {
+            for (let i = 0; i < files.length; i += BATCH_SIZE) {
+                // Abort check: stop if abort() was called or a new edit has arrived
+                if (!this.isHarvesting || this.kernel.getLogicalTime() !== epochId) {
+                    return {
+                        filesHarvested,
+                        filesMarkedUnprunable,
+                        aborted: true,
+                        durationMs: performance.now() - t0,
+                    };
+                }
 
-            const batch = files.slice(i, i + BATCH_SIZE);
+                const batch = files.slice(i, i + BATCH_SIZE);
 
-            for (const filePath of batch) {
-                const result = this.harvestSingleFile(filePath);
-                if (result === "harvested") {
-                    filesHarvested++;
-                } else if (result === "unprunable") {
-                    filesMarkedUnprunable++;
+                for (const filePath of batch) {
+                    const result = this.harvestSingleFile(filePath);
+                    if (result === "harvested") {
+                        filesHarvested++;
+                    } else if (result === "unprunable") {
+                        filesMarkedUnprunable++;
+                    }
+                }
+
+                // Yield event loop for cooperative scheduling
+                if (i + BATCH_SIZE < files.length) {
+                    await new Promise<void>(resolve => {
+                        if (typeof globalThis.setImmediate === "function") {
+                            setImmediate(resolve);
+                        } else {
+                            setTimeout(resolve, 0);
+                        }
+                    });
                 }
             }
-
-            // Yield event loop for cooperative scheduling
-            if (i + BATCH_SIZE < files.length) {
-                await new Promise<void>(resolve => {
-                    if (typeof globalThis.setImmediate === "function") {
-                        setImmediate(resolve);
-                    } else {
-                        setTimeout(resolve, 0);
-                    }
-                });
-            }
+        } finally {
+            this.isHarvesting = false;
         }
 
-        this.isHarvesting = false;
         return {
             filesHarvested,
             filesMarkedUnprunable,

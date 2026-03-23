@@ -101,6 +101,7 @@ function stripCallStatements(text: string, pattern: RegExp): string {
             while (end < text.length && (text[end] === " " || text[end] === "\t")) end++;
             if (end < text.length && text[end] === "\n") end++;
             toRemove.push({ start: lineStart, end });
+            pattern.lastIndex = end;
         }
     }
 
@@ -579,11 +580,9 @@ async function structuralCompress(
 
 export class AdvancedCompressor {
     private parser: ASTParser;
-    private embedder: Embedder;
 
-    constructor(parser: ASTParser, embedder: Embedder) {
+    constructor(parser: ASTParser, _embedder: Embedder) {
         this.parser = parser;
-        this.embedder = embedder;
     }
 
     /**

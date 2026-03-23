@@ -2,6 +2,73 @@
 
 All notable changes to NREKI will be documented in this file.
 
+## v6.1.0 - Spectral Gate + Surgical Architecture (2026-03-22)
+
+### Performance
+- CSR sparse matrix with fused Rayleigh quotient in SpMV power iteration (L1 cache friendly)
+- Pre-computed sourceFile/targetFile on TopologicalEdge eliminates millions of split("::") allocations
+- fd-based incremental log reading in TokenMonitor (no more full-file readFileSync)
+- In-place ring buffer (shift) and TTL eviction (splice) in CircuitBreaker — zero array allocations per tool call
+- Radical AST pruning in findDependencies: 8 node types short-circuited, arrow/fn bodies skipped
+- Eliminated redundant extractConstraintGraph calls in benchmark — O(E) RAM filtering
+
+### Spectral Gate
+- Density-weighted Phi = lambda2 * (2V / (N*(N-1))) for star topology detection
+- Conditional formula: density when N unchanged (ghost/expansion), original lambda2/N when N decreases (decoupling)
+- 11/11 real-world projects ALL PASS: 55/55 detection, 0/55 false positives, max 95.8ms
+
+### Security
+- NFC Unicode normalization in safePath prevents macOS NFD bypass of .env blocklist
+- Removed settings.py and wp-config.php from sensitive file blocklist (false positives for Django/WordPress)
+- healingStats encapsulated behind private field + readonly getter
+- CircuitBreaker accepts projectRoot in constructor instead of dynamic process.cwd()
+- Middleware singletons encapsulated in CircuitBreakerMiddleware class
+
+### Bug Fixes
+- Hologram Shield 2 now evaluates semantic diagnostics on dependents, not just edited files
+- TTRD: removed truncated typeStr bypass — TypeFlags toxicity is sole authority
+- applySemanticSplice: closest-match indexOf picks nearest occurrence to AST offset
+- stripCallStatements: regex lastIndex advanced to prevent overlapping matches on nested calls
+- Surgical JIT cache invalidation in rollbackAll — only edit targets cleared, not entire cache
+- DocumentRegistry + LanguageService recreated on corruption to prevent OOM
+- Safe slice in applySemanticSplice caps indent stripping at actual whitespace
+- jitClassifyFile size guard (150KB) prevents event loop blocking on auto-generated files
+- perFileFailures GC synced with history TTL eviction
+- Centralized backup files in .nreki/transactions/ directory
+- Windows fingerprint POSIX normalization in getFingerprint
+- BOM-safe readSource in jitClassifyFile
+
+### Code Quality
+- PorterStemmer extracted to src/utils/porter-stemmer.ts
+- Deduplicated escapeRegex in database.ts (uses escapeRegExp from utils/imports)
+- detectMode filters .d.mts/.d.cts files
+- detectLanguage supports .mts/.cts/.mjs/.cjs extensions
+- Deprecation warnings on TokenGuardEngine and TokenGuardDB aliases
+- CLAUDE.md externalized to templates/CLAUDE.md
+- noUnusedLocals and noUnusedParameters enabled — 14 dead code items removed
+- Test parallelism enabled (fileParallelism: true)
+- CI: npm audit, npm run lint, continue-on-error for Node 24
+- inferSimpleType returns "unknown" instead of "any" in shadow generation
+- Cache format versioning (CACHE_FORMAT_VERSION) in repo-map
+- mtimeMs included in computeFileDigest for stale cache detection
+- isEnvironmentFile uses exact basename matching instead of substring
+
+### Benchmarks (11 projects, 55 test cases)
+
+| Project | Files | Nodes | Edges | Max Latency | FN | FP | Result |
+|---------|-------|-------|-------|-------------|----|----|--------|
+| NREKI | 38 | 195 | 373 | 44.0ms | 0/5 | 0/5 | ALL PASS |
+| Zod | 195 | 2,251 | 6,242 | 32.2ms | 0/5 | 0/5 | ALL PASS |
+| tRPC | 89 | 828 | 1,790 | 41.3ms | 0/5 | 0/5 | ALL PASS |
+| Prisma | 1,970 | 3,546 | 5,319 | 7.7ms | 0/5 | 0/5 | ALL PASS |
+| ts-pattern | 18 | 360 | 1,425 | 10.0ms | 0/5 | 0/5 | ALL PASS |
+| Next.js | 1,445 | 5,024 | 7,589 | 27.0ms | 0/5 | 0/5 | ALL PASS |
+| Hono | 186 | 1,414 | 10,188 | 35.7ms | 0/5 | 0/5 | ALL PASS |
+| Drizzle ORM | 447 | 3,521 | 17,021 | 70.3ms | 0/5 | 0/5 | ALL PASS |
+| date-fns | 1,238 | 1,905 | 3,129 | 15.2ms | 0/5 | 0/5 | ALL PASS |
+| VS Code | 4,697 | 24,204 | 111,994 | 29.1ms | 0/5 | 0/5 | ALL PASS |
+| Effect | 362 | 10,935 | 72,723 | 95.8ms | 0/5 | 0/5 | ALL PASS |
+
 ## [6.0.1] - 2026-03-21
 
 ### Fixed

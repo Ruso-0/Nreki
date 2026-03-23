@@ -275,6 +275,7 @@ export class Compressor {
 
     // ─── Relevance Ranking ────────────────────────────────────────
 
+    // TODO: Batch embedding calls instead of sequential per-chunk. O(N) API calls for N chunks.
     /** Rank chunks by semantic similarity to a focus query. */
     private async rankByRelevance(
         chunks: ParsedChunk[],

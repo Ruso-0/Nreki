@@ -22,7 +22,7 @@ function getBackupsDir(projectRoot: string): string {
     return path.join(projectRoot, ".nreki", "backups");
 }
 
-function getBackupPath(projectRoot: string, filePath: string): string {
+export function getBackupPath(projectRoot: string, filePath: string): string {
     return path.join(getBackupsDir(projectRoot), encodeFilePath(filePath));
 }
 

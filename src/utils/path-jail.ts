@@ -30,8 +30,6 @@ const SENSITIVE_PATTERNS: RegExp[] = [
     /[/\\]\.htpasswd$/i,               // Apache password file
     /[/\\]\.git-credentials$/i,         // Git credential file
     /[/\\]\.kube[/\\]config$/i,         // Kubernetes config
-    /[/\\]wp-config\.php$/i,            // WordPress secrets
-    /[/\\]settings\.py$/i,              // Django secrets
 ];
 
 /**
@@ -58,7 +56,9 @@ export function isSensitivePath(filePath: string): boolean {
  */
 export function safePath(workspaceRoot: string, inputPath: string): string {
     // Normalize backslashes to forward slashes so traversal detection works on Linux/macOS
-    const normalized = inputPath.replace(/\\/g, "/");
+    // NFC normalization: macOS uses NFD (decomposed), Linux uses NFC.
+    // Without this, an attacker can bypass .env blocklist with NFD-encoded paths.
+    const normalized = inputPath.normalize("NFC").replace(/\\/g, "/");
     const resolved = path.resolve(workspaceRoot, normalized);
     const resolvedRoot = path.resolve(workspaceRoot);
 
@@ -87,8 +87,31 @@ export function safePath(workspaceRoot: string, inputPath: string): string {
             throw new Error(`Symlink escape blocked: ${inputPath} resolves outside workspace`);
         }
     } catch (err) {
-        // File doesn't exist yet (e.g., new file creation) - skip symlink check
-        if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+            // File doesn't exist yet — resolve parent chain to catch symlink escapes
+            let parent = path.dirname(resolved);
+            // Walk up until we find an existing directory
+            while (!fs.existsSync(parent) && parent !== path.dirname(parent)) {
+                parent = path.dirname(parent);
+            }
+            try {
+                const realParent = fs.realpathSync(parent);
+                let realRoot: string;
+                try {
+                    realRoot = fs.realpathSync(resolvedRoot);
+                } catch {
+                    realRoot = resolvedRoot;
+                }
+                if (!realParent.startsWith(realRoot + path.sep) && realParent !== realRoot) {
+                    throw new Error(`Symlink escape blocked in parent directory: ${inputPath}`);
+                }
+            } catch (parentErr) {
+                if ((parentErr as Error).message.includes("Symlink escape blocked")) {
+                    throw parentErr;
+                }
+                // Parent resolution failed for other reason — allow (conservative)
+            }
+        } else {
             throw err;
         }
     }
