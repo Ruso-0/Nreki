@@ -27,7 +27,7 @@ const fullGraph = SpectralTopologist.extractConstraintGraph(program, allFiles);
 
 const fileEdgeCount = new Map<string, number>();
 for (const edge of fullGraph.edges) {
-    const file = edge.sourceId.split("::")[0];
+    const file = edge.sourceFile;
     fileEdgeCount.set(file, (fileEdgeCount.get(file) || 0) + 1);
 }
 const candidateFiles = Array.from(fileEdgeCount.entries())
@@ -55,8 +55,8 @@ for (const file of candidateFiles) {
     const nodes = new Set<string>();
     const edges: TopologicalEdge[] = [];
     for (const edge of fullGraph.edges) {
-        const srcFile = edge.sourceId.split("::")[0];
-        const tgtFile = edge.targetId.split("::")[0];
+        const srcFile = edge.sourceFile;
+        const tgtFile = edge.targetFile;
         if (blanketFiles.has(srcFile) && (blanketFiles.has(tgtFile) || tgtFile.startsWith("EXTERNAL"))) {
             nodes.add(edge.sourceId);
             nodes.add(edge.targetId);
@@ -91,8 +91,8 @@ for (const file of candidateFiles) {
     const preNodes = new Set<string>();
     const preEdges: TopologicalEdge[] = [];
     for (const edge of fullGraph.edges) {
-        const srcFile = edge.sourceId.split("::")[0];
-        const tgtFile = edge.targetId.split("::")[0];
+        const srcFile = edge.sourceFile;
+        const tgtFile = edge.targetFile;
         if (blanketFiles.has(srcFile) && (blanketFiles.has(tgtFile) || tgtFile.startsWith("EXTERNAL"))) {
             preNodes.add(edge.sourceId);
             preNodes.add(edge.targetId);
@@ -105,7 +105,7 @@ for (const file of candidateFiles) {
     const N_AST_pre = preCrown.crownNodes.size;
     const preResult = { fiedlerValue: pre.fiedler, volume: pre.volume, nodeCount: N_AST_pre, edgeCount: preCrown.crownEdges.length };
 
-    const postEdges = preCrown.crownEdges.filter(e => e.sourceId.split("::")[0] !== file);
+    const postEdges = preCrown.crownEdges.filter(e => e.sourceFile !== file);
     const postSparse = SpectralTopologist.buildSparseGraph(preCrown.crownNodes, postEdges);
     const post = SpectralMath.analyzeTopology(postSparse.N, postSparse.sparseEdges);
     const N_AST_post = preCrown.crownNodes.size;

@@ -3,6 +3,8 @@ import * as ts from "typescript";
 export interface TopologicalEdge {
     sourceId: string;
     targetId: string;
+    sourceFile: string;
+    targetFile: string;
     weight: number;
 }
 
@@ -92,11 +94,11 @@ export class SpectralTopologist {
                                 if (!targetPath.includes("/node_modules/")) {
                                     const targetId = `${targetPath}::${targetSymbol.getName()}`;
                                     nodes.add(targetId);
-                                    edges.push({ sourceId, targetId, weight: 1.0 });
+                                    edges.push({ sourceId, targetId, sourceFile: posixPath, targetFile: targetPath, weight: 1.0 });
                                 } else {
                                     const extId = `EXTERNAL::${targetSymbol.getName()}`;
                                     nodes.add(extId);
-                                    edges.push({ sourceId, targetId: extId, weight: 1.0 });
+                                    edges.push({ sourceId, targetId: extId, sourceFile: posixPath, targetFile: "EXTERNAL", weight: 1.0 });
                                 }
                             }
                         }
@@ -199,13 +201,13 @@ export class SpectralTopologist {
         blanket.add(targetFile);
 
         for (const edge of edges) {
-            const sourceFile = edge.sourceId.split("::")[0];
-            const targetFileFromEdge = edge.targetId.split("::")[0];
+            const sourceFile = edge.sourceFile;
+            const targetFileFromEdge = edge.targetFile;
 
-            if (sourceFile === targetFile && !targetFileFromEdge.startsWith("EXTERNAL::")) {
+            if (sourceFile === targetFile && !targetFileFromEdge.startsWith("EXTERNAL")) {
                 blanket.add(targetFileFromEdge);
             }
-            if (targetFileFromEdge === targetFile && !sourceFile.startsWith("EXTERNAL::")) {
+            if (targetFileFromEdge === targetFile && !sourceFile.startsWith("EXTERNAL")) {
                 blanket.add(sourceFile);
             }
         }
@@ -255,8 +257,8 @@ export class SpectralTopologist {
             analysisNodes = new Set<string>();
             analysisEdges = [];
             for (const edge of edges) {
-                const sourceFile = edge.sourceId.split("::")[0];
-                const targetFileFromEdge = edge.targetId.split("::")[0];
+                const sourceFile = edge.sourceFile;
+                const targetFileFromEdge = edge.targetFile;
                 if (blanket.has(sourceFile) && (blanket.has(targetFileFromEdge) || targetFileFromEdge.startsWith("EXTERNAL"))) {
                     analysisNodes.add(edge.sourceId);
                     analysisNodes.add(edge.targetId);
