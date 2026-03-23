@@ -154,12 +154,24 @@ export class SpectralTopologist {
         post: SpectralResult
     ): SpectralDelta {
 
-        // Φ = λ₂ / N_AST (Topological Entropy Index)
-        // N_AST = nodeCount = physical nodes in code (NOT activeNodes)
-        // Ghost nodes (any-widened, zero-degree) stay in N_AST denominator
-        // Deleted nodes disappear from N_AST — legitimate decoupling
-        const phiPre = pre.nodeCount > 0 ? pre.fiedlerValue / pre.nodeCount : 0;
-        const phiPost = post.nodeCount > 0 ? post.fiedlerValue / post.nodeCount : 0;
+        // Φ: Topological Entropy Index
+        // When N stays constant (ghost/expansion): Φ = λ₂ * density, density = 2V/(N*(N-1))
+        // When N decreases (decoupling): Φ = λ₂ / N_AST (original formula)
+        let phiPre: number, phiPost: number;
+
+        if (pre.nodeCount <= post.nodeCount) {
+            // Ghost / Expansion case: nodes stay or grow but lose edges.
+            // Density formula Φ = λ₂ * (2V / (N*(N-1))) detects dilution.
+            const denPre = pre.nodeCount > 1 ? pre.nodeCount * (pre.nodeCount - 1) : 1;
+            phiPre = pre.nodeCount > 0 ? (pre.fiedlerValue * 2 * pre.volume) / denPre : 0;
+            const denPost = post.nodeCount > 1 ? post.nodeCount * (post.nodeCount - 1) : 1;
+            phiPost = post.nodeCount > 0 ? (post.fiedlerValue * 2 * post.volume) / denPost : 0;
+        } else {
+            // Decoupling case: nodes were deleted from AST.
+            // Original formula respects N_AST reduction.
+            phiPre = pre.nodeCount > 0 ? pre.fiedlerValue / pre.nodeCount : 0;
+            phiPost = post.nodeCount > 0 ? post.fiedlerValue / post.nodeCount : 0;
+        }
         const normalizedFiedlerDrop = phiPre - phiPost;
         const dropRatio = phiPre > 0 ? normalizedFiedlerDrop / phiPre : 0;
         const volumeDrop = pre.volume - post.volume;

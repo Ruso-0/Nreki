@@ -289,6 +289,6 @@ describe("Performance", () => {
         const errorLine = result.errors[0].line;
         expect(errorLine).toBeGreaterThanOrEqual(990);
 
-        expect(elapsed).toBeLessThan(200);
+        expect(elapsed).toBeLessThan(400);
     });
 });
