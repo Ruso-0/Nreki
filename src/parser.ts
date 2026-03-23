@@ -135,10 +135,11 @@ const LANGUAGE_CONFIGS: Record<string, LanguageConfig> = {
 export class ASTParser {
     private parser!: Parser;
     private languageCache = new Map<string, Parser.Language>();
-    private languagePromises = new Map<string, Promise<Parser.Language | null>>();
+    private loadGate: Promise<unknown> = Promise.resolve();
     private queryCache = new Map<string, Parser.Query>();
     private wasmDir: string;
     private initialized = false;
+    private initGate: Promise<void> | null = null;
 
     constructor(wasmDir?: string) {
         // Default: look for wasm/ relative to this file's directory
@@ -149,9 +150,13 @@ export class ASTParser {
     /** Initialize the Tree-sitter WASM runtime. Must be called once. */
     async initialize(): Promise<void> {
         if (this.initialized) return;
-        await Parser.init();
-        this.parser = new Parser();
-        this.initialized = true;
+        if (!this.initGate) {
+            this.initGate = Parser.init().then(() => {
+                this.parser = new Parser();
+                this.initialized = true;
+            });
+        }
+        return this.initGate;
     }
 
     // ─── Language Loading ──────────────────────────────────────────
@@ -166,21 +171,20 @@ export class ASTParser {
         return Object.keys(LANGUAGE_CONFIGS);
     }
 
-    /** Load a Tree-sitter language grammar from WASM. A-08: Deduplicates concurrent loads. */
+    /** Load a Tree-sitter language grammar from WASM. A-08: Serializes concurrent loads. */
     private async loadLanguage(ext: string): Promise<Parser.Language | null> {
         if (this.languageCache.has(ext)) {
             return this.languageCache.get(ext)!;
         }
 
-        // A-08: Return in-flight promise if another caller is already loading this language
-        if (this.languagePromises.has(ext)) {
-            return this.languagePromises.get(ext)!;
-        }
+        const load = this.loadGate.then(async () => {
+            if (this.languageCache.has(ext)) {
+                return this.languageCache.get(ext)!;
+            }
 
-        const config = LANGUAGE_CONFIGS[ext];
-        if (!config) return null;
+            const config = LANGUAGE_CONFIGS[ext];
+            if (!config) return null;
 
-        const promise = (async (): Promise<Parser.Language | null> => {
             try {
                 const wasmPath = path.join(this.wasmDir, config.wasmFile);
                 const language = await Parser.Language.load(wasmPath);
@@ -191,13 +195,11 @@ export class ASTParser {
                     `[NREKI] Failed to load grammar for ${ext}: ${(err as Error).message}`
                 );
                 return null;
-            } finally {
-                this.languagePromises.delete(ext);
             }
-        })();
+        });
 
-        this.languagePromises.set(ext, promise);
-        return promise;
+        this.loadGate = load.then(() => {}, () => {});
+        return load;
     }
 
     /** Get or create a Tree-sitter query for a language. */

@@ -61,9 +61,10 @@ const EXT_TO_LANGUAGE: Record<string, string> = {
 export class AstSandbox {
     private pool: ParserPool;
     private languageCache = new Map<string, Parser.Language>();
-    private languagePromises = new Map<string, Promise<Parser.Language | null>>();
+    private loadGate: Promise<unknown> = Promise.resolve();
     private wasmDir: string;
     private initialized = false;
+    private initGate: Promise<void> | null = null;
 
     constructor(wasmDir?: string) {
         const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -74,8 +75,12 @@ export class AstSandbox {
     /** Initialize the Tree-sitter WASM runtime. Must be called once. */
     async initialize(): Promise<void> {
         if (this.initialized) return;
-        await this.pool.initialize();
-        this.initialized = true;
+        if (!this.initGate) {
+            this.initGate = this.pool.initialize().then(() => {
+                this.initialized = true;
+            });
+        }
+        return this.initGate;
     }
 
     /** Get supported language names. */
@@ -91,20 +96,20 @@ export class AstSandbox {
 
     // ─── Language Loading ──────────────────────────────────────────
 
-    /** A-08: Deduplicates concurrent WASM loads. */
+    /** A-08: Serializes WASM loads — concurrent Parser.Language.load() is unsafe. */
     private async loadLanguage(language: string): Promise<Parser.Language | null> {
         if (this.languageCache.has(language)) {
             return this.languageCache.get(language)!;
         }
 
-        if (this.languagePromises.has(language)) {
-            return this.languagePromises.get(language)!;
-        }
+        const load = this.loadGate.then(async () => {
+            if (this.languageCache.has(language)) {
+                return this.languageCache.get(language)!;
+            }
 
-        const wasmFile = LANGUAGE_MAP[language];
-        if (!wasmFile) return null;
+            const wasmFile = LANGUAGE_MAP[language];
+            if (!wasmFile) return null;
 
-        const promise = (async (): Promise<Parser.Language | null> => {
             try {
                 const wasmPath = path.join(this.wasmDir, wasmFile);
                 const lang = await Parser.Language.load(wasmPath);
@@ -112,13 +117,11 @@ export class AstSandbox {
                 return lang;
             } catch {
                 return null;
-            } finally {
-                this.languagePromises.delete(language);
             }
-        })();
+        });
 
-        this.languagePromises.set(language, promise);
-        return promise;
+        this.loadGate = load.then(() => {}, () => {});
+        return load;
     }
 
     // ─── Validation ────────────────────────────────────────────────

@@ -15,6 +15,7 @@ export class ParserPool {
     private waiters = new Map<string, Array<(p: Parser) => void>>();
     private readonly maxPerLang: number;
     private initialized = false;
+    private initGate: Promise<void> | null = null;
 
     constructor(maxPerLang: number = 4) {
         this.maxPerLang = maxPerLang;
@@ -23,8 +24,12 @@ export class ParserPool {
     /** Initialize the WASM runtime. Idempotent. */
     async initialize(): Promise<void> {
         if (this.initialized) return;
-        await Parser.init();
-        this.initialized = true;
+        if (!this.initGate) {
+            this.initGate = Parser.init().then(() => {
+                this.initialized = true;
+            });
+        }
+        return this.initGate;
     }
 
     /**
