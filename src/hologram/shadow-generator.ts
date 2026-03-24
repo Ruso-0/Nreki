@@ -556,10 +556,17 @@ function cleanSingleParam(param: string): string {
 
     // Find "=" at depth 0 (the default value).
     // Only track () [] {} - not <> (arrow => would corrupt depth).
+    // AUDIT FIX: Track string state to skip "=" inside string literals.
     let depth = 0;
     let eqIdx = -1;
+    let inString: string | null = null;
     for (let i = 0; i < param.length; i++) {
         const ch = param[i];
+        if (inString) {
+            if (ch === inString && param[i - 1] !== "\\") inString = null;
+            continue;
+        }
+        if (ch === '"' || ch === "'" || ch === '`') { inString = ch; continue; }
         if (ch === "(" || ch === "[" || ch === "{") depth++;
         if (ch === ")" || ch === "]" || ch === "}") depth--;
         if (ch === "=" && depth === 0 && param[i - 1] !== "!" && param[i + 1] !== ">") {
@@ -752,18 +759,19 @@ function emitVariableShadow(
         if (typeNode) {
             // Has type annotation: emit without value
             const typeText = nodeText(content, typeNode);
-            parts.push(`${emitKw} ${name}${typeText}`);
+            parts.push(`${name}${typeText}`);
         } else if (valueNode && isSimpleLiteral(valueNode)) {
             // Primitive literal
             const litType = literalTypeString(valueNode, isConst);
-            parts.push(`${emitKw} ${name}: ${litType}`);
+            parts.push(`${name}: ${litType}`);
         } else {
             // Fallback for complex expressions - use any
-            parts.push(`${emitKw} ${name}: any`);
+            parts.push(`${name}: any`);
         }
     }
 
-    return `export declare ${parts.join(", ")};`;
+    // Keyword goes ONCE here, not inside the loop
+    return `export declare ${emitKw} ${parts.join(", ")};`;
 }
 
 // ─── Main Classification + Generation ────────────────────────────────

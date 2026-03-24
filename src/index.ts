@@ -72,7 +72,10 @@ export function detectMode(dir: string): "syntax" | "file" | "project" | "hologr
             }
         }
     }
-    return count < 50 ? "syntax" : "project";
+    // Escala por costo computacional: syntax < file < project < hologram
+    if (count < 50) return "syntax";       // O(0) - AST parsing only, kernel off
+    if (count <= 200) return "file";       // O(K) - Semantic checks on touched files only
+    return "project";                       // O(N) - Full cascade evaluation
 }
 
 // ─── CLI Flag Parsing ───────────────────────────────────────────────

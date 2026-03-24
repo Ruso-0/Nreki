@@ -164,10 +164,11 @@ export class TokenMonitor {
             const bytesToRead = stat.size - this.lastReadPosition;
 
             if (bytesToRead > 0) {
-                const buffer = Buffer.allocUnsafe(bytesToRead);
-                fs.readSync(fd, buffer, 0, bytesToRead, this.lastReadPosition);
+                // AUDIT FIX: alloc zeroes memory; subarray trims to actual bytes read
+                const buffer = Buffer.alloc(bytesToRead);
+                const bytesRead = fs.readSync(fd, buffer, 0, bytesToRead, this.lastReadPosition);
 
-                const newContent = buffer.toString("utf-8");
+                const newContent = buffer.subarray(0, bytesRead).toString("utf-8");
                 const newLines = newContent
                     .split("\n")
                     .filter((line) => line.trim())

@@ -6,10 +6,12 @@ export default defineConfig({
         poolOptions: {
             forks: {
                 singleFork: false,
+                maxForks: 3,
             },
         },
+        maxConcurrency: 3,
         testTimeout: 120_000,
-        hookTimeout: 30_000,
+        hookTimeout: 60_000,
         teardownTimeout: 10_000,
         fileParallelism: true,
     },

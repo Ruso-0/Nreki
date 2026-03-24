@@ -67,7 +67,7 @@ describe("TTRD: silent type degradation", () => {
         // Use toContain, not toBe. TypeChecker string format changes between TS versions.
         expect(reg.oldType).toContain("RetryConfig");
         expect(reg.oldType).not.toContain("any");
-        expect(reg.newType).toContain("any");
+        expect(reg.newType).toMatch(/\bany\b/);
         expect(reg.newType).not.toContain("RetryConfig");
     });
 });

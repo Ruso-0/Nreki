@@ -153,6 +153,10 @@ export class NrekiEngine {
             enableEmbeddings: config.enableEmbeddings ?? false,
         };
 
+        if (this.config.watchPaths.length === 0) {
+            throw new Error("[NREKI] watchPaths cannot be empty");
+        }
+
         this.db = new NrekiDB(this.config.dbPath);
         this.embedder = getEmbedder();
         this.parser = new ASTParser(
@@ -552,7 +556,7 @@ export class NrekiEngine {
     /** Get a comprehensive session savings report. */
     getSessionReport(): SessionReport {
         const durationMs = Date.now() - this.sessionSavings.startTime;
-        const durationMinutes = Math.max(1, durationMs / 60_000);
+        const durationMinutes = durationMs / 60_000;
         const totalSaved = this.sessionSavings.totalTokensSaved;
         const totalOriginal = this.sessionSavings.totalOriginalTokens;
 

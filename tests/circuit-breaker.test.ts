@@ -237,7 +237,6 @@ describe("CircuitBreaker", () => {
 
             const stats = cb.getStats();
             expect(stats.loopsDetected).toBe(1);
-            expect(stats.loopsPrevented).toBe(1);
         });
 
         it("should estimate tokens saved when loop is detected", () => {

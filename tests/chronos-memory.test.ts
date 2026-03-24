@@ -252,10 +252,10 @@ describe("NREKI Chronos Memory", () => {
         let state = JSON.parse(fs.readFileSync(path.join(dir, ".nreki", "chronos-history.json"), "utf-8"));
         expect(state.globalTechDebt).toBe(3);
 
-        // Next sync: Initial: 10. Current: 7. Delta: -3. Cumulative: 0
+        // Next sync: lastKnownErrors is 13, current: 7. Delta: -6. Cumulative: 3 + (-6) = -3
         chronos.syncTechDebt(10, 7);
         state = JSON.parse(fs.readFileSync(path.join(dir, ".nreki", "chronos-history.json"), "utf-8"));
-        expect(state.globalTechDebt).toBe(0);
+        expect(state.globalTechDebt).toBe(-3);
     });
 
     it("14. Persistence: JSON survives reload (new ChronosMemory on same dir)", () => {

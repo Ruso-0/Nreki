@@ -33,6 +33,7 @@ export class ChronosMemory {
     private projectRoot: string;
     private persistTimer: NodeJS.Timeout | null = null;
     private uncompressedReads = new Set<string>();
+    private lastKnownErrors: number | null = null;
 
     // CFI Weights & Decay Configuration
     private readonly SESSION_DECAY = 0.85;
@@ -212,6 +213,10 @@ export class ChronosMemory {
         const f = this.state.files[norm];
         if (!f || !f.unpaidTypeDebts || f.unpaidTypeDebts.length === 0) return [];
 
+        // AUDIT FIX: If contracts unavailable (syntax error, parse failure),
+        // preserve all debts intact. Without this, a syntax error erases all penalties.
+        if (!currentContracts) return [];
+
         const paidSymbols: string[] = [];
 
         f.unpaidTypeDebts = f.unpaidTypeDebts.filter(debt => {
@@ -246,7 +251,10 @@ export class ChronosMemory {
 
     // Tech debt tracking
     public syncTechDebt(initialErrors: number, currentErrors: number): void {
-        this.state.globalTechDebt += (currentErrors - initialErrors);
+        // AUDIT FIX: Accumulate delta since LAST sync, not since boot
+        const baseline = this.lastKnownErrors ?? initialErrors;
+        this.state.globalTechDebt += (currentErrors - baseline);
+        this.lastKnownErrors = currentErrors;
         this.forcePersist();
     }
 

@@ -27,7 +27,7 @@ export interface FilterResult {
 // ─── ANSI Stripping ─────────────────────────────────────────────────
 
 // Matches all ANSI escape sequences: CSI (ESC[), OSC (ESC]), and SGR params
-const ANSI_RE = /\x1b\[[0-9;]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[()][A-Z0-9]|\x1b[=>]|\x1b\[[\d;]*m/g;
+const ANSI_RE = /\x1b\[[0-9;]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[()][A-Z0-9]|\x1b[=>]/g;
 
 export function stripAnsiCodes(text: string): string {
     return text.replace(ANSI_RE, "");
@@ -168,11 +168,11 @@ export function filterNodeModules(lines: string[]): string[] {
 
 // Common error patterns
 const TS_ERROR_RE = /error TS(\d+):\s*(.+)/;
-const JEST_FAIL_RE = /(?:FAIL|✕|×|✗)\s+(.+)/;
-const VITEST_FAIL_RE = /(?:FAIL|×)\s+(tests?\/.+|src\/.+)/;
+const JEST_FAIL_RE = /(?:FAIL|✕|×|✗)\s+([\w/.-]+\.(?:ts|tsx|js|jsx|py|go|mjs|cjs|mts|cts))/;
+const VITEST_FAIL_RE = /(?:FAIL|×)\s+([\w/.-]+\.(?:ts|tsx|js|jsx|py|go|mjs|cjs|mts|cts))/;
 const NODE_ERROR_RE = /^(\w*Error):\s*(.+)/;
 const NPM_ERR_RE = /^npm (?:ERR!|error)\s*(.+)/i;
-const FILE_PATH_RE = /(?:^|\s)((?:src|lib|test|tests|app)\/[\w/.-]+\.\w+)/g;
+const FILE_PATH_RE = /(?:^|\s)([\w/.-]+\.(?:ts|tsx|js|jsx|py|go|mjs|cjs|mts|cts))\b/g;
 
 export function extractErrorSummary(text: string): ErrorSummary {
     const lines = text.split("\n");

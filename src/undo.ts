@@ -23,7 +23,10 @@ function getBackupsDir(projectRoot: string): string {
 }
 
 export function getBackupPath(projectRoot: string, filePath: string): string {
-    return path.join(getBackupsDir(projectRoot), encodeFilePath(filePath));
+    // AUDIT FIX: Always normalize to absolute path relative to projectRoot
+    // before encoding, so "src/foo.ts" and "/abs/path/src/foo.ts" produce same key
+    const normalized = path.resolve(projectRoot, filePath);
+    return path.join(getBackupsDir(projectRoot), encodeFilePath(normalized));
 }
 
 // ─── Public API ─────────────────────────────────────────────────────

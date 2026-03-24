@@ -46,7 +46,6 @@ export interface LoopCheckResult {
 export interface CircuitBreakerStats {
     totalToolCalls: number;
     loopsDetected: number;
-    loopsPrevented: number;
     estimatedTokensSaved: number;
     sessionStartTime: number;
     redirectsIssued: number;
@@ -144,7 +143,6 @@ export class CircuitBreaker {
     private stats: CircuitBreakerStats = {
         totalToolCalls: 0,
         loopsDetected: 0,
-        loopsPrevented: 0,
         estimatedTokensSaved: 0,
         sessionStartTime: Date.now(),
         redirectsIssued: 0,
@@ -186,7 +184,7 @@ export class CircuitBreaker {
         // Ring buffer: keep last MAX_HISTORY entries
         this.state.history.push(record);
         if (this.state.history.length > MAX_HISTORY) {
-            this.state.history.shift();
+            this.state.history = this.state.history.slice(-MAX_HISTORY);
         }
 
         this.stats.totalToolCalls++;
@@ -230,14 +228,9 @@ export class CircuitBreaker {
             };
         }
 
-        // TTL eviction: in-place removal of expired entries
+        // TTL eviction: functional filter (single pass, no splice)
         const now = Date.now();
-        let expireIdx = 0;
-        while (expireIdx < this.state.history.length &&
-               now - this.state.history[expireIdx].timestamp > HISTORY_TTL_MS) {
-            expireIdx++;
-        }
-        if (expireIdx > 0) this.state.history.splice(0, expireIdx);
+        this.state.history = this.state.history.filter(r => now - r.timestamp <= HISTORY_TTL_MS);
 
         // GC: purge perFileFailures for files no longer referenced in active history.
         // Without this, file failure counts survive TTL eviction and accumulate
@@ -346,12 +339,12 @@ export class CircuitBreaker {
         return cycles;
     }
 
-    // TODO: Make test tool detection configurable instead of hardcoded list.
     /**
      * Heuristic: does this tool call look like a test/build invocation?
      */
     private isTestLikeCall(record: ToolCallRecord): boolean {
-        const testTools = ["bash", "terminal", "nreki_terminal", "run_command"];
+        // AUDIT FIX: Match actual tool:action names from v3.0+ router
+        const testTools = ["bash", "filter_output", "nreki_code:filter_output", "run_command"];
         return testTools.includes(record.toolName.toLowerCase()) || record.errorHash !== null;
     }
 
@@ -374,7 +367,6 @@ export class CircuitBreaker {
         this.state.lastTrippedSymbol = lastEntry?.symbolName ?? null;
 
         this.stats.loopsDetected++;
-        this.stats.loopsPrevented++;
         if (newLevel < MAX_ESCALATION_LEVEL) {
             this.stats.redirectsIssued++;
         }

@@ -9,6 +9,8 @@
  * Cache directory: .nreki/shadows/
  * Manifest file:   .nreki/shadows/manifest.json
  */
+// NOTE: This module is the eager-scan fallback for JIT Holography (v6.1+).
+// Only executes when JIT parser initialization fails. See router.ts ensureHologramReady().
 
 import fs from "fs";
 import path from "path";

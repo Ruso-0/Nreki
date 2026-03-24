@@ -158,28 +158,31 @@ export function applySemanticSplice(
     // Verify tree-sitter byte position against actual content
     let startIdx = startIndex;
     if (content.substring(startIdx, startIdx + rawCode.length) !== rawCode) {
-        // NOTE: ±500 byte search window. If duplicate symbols exist within this range,
-        // the wrong occurrence may be matched. Increase if false mismatches are reported.
+        // ±500 byte search window. Duplicate symbols within range are detected and rejected.
         const windowStart = Math.max(0, startIdx - 500);
         const windowEnd = Math.min(content.length, startIdx + rawCode.length + 500);
         const searchWindow = content.substring(windowStart, windowEnd);
+        let matchCount = 0;
         let bestOffset = -1;
-        let minDistance = Infinity;
-        let currentOffset = searchWindow.indexOf(rawCode);
-        while (currentOffset >= 0) {
-            const absolutePos = windowStart + currentOffset;
-            const distance = Math.abs(absolutePos - startIndex);
-            if (distance < minDistance) {
-                minDistance = distance;
-                bestOffset = currentOffset;
-            }
-            currentOffset = searchWindow.indexOf(rawCode, currentOffset + 1);
+        let scanPos = searchWindow.indexOf(rawCode);
+        while (scanPos >= 0) {
+            matchCount++;
+            if (matchCount === 1) bestOffset = scanPos;
+            if (matchCount > 1) break;
+            scanPos = searchWindow.indexOf(rawCode, scanPos + 1);
+        }
+
+        // AUDIT FIX: Abort if multiple identical symbols exist in the search window
+        if (matchCount > 1) {
+            throw new Error(
+                `Ambiguous AST match: ${matchCount} occurrences of "${target.symbolName}" found within ±500 bytes. ` +
+                `Use nreki_navigate action:"outline" to identify exact lines and use batch_edit.`
+            );
         }
 
         if (bestOffset >= 0) {
             startIdx = windowStart + bestOffset;
         } else {
-            // M-05: No global fallback - risk of matching wrong occurrence in large files
             startIdx = -1;
         }
 

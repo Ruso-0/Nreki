@@ -205,7 +205,7 @@ describe("Preprocessing (Stage 1)", () => {
 describe("Token Scoring (Stage 2)", () => {
     it("should assign low scores to common English words", () => {
         const scored = scoreTokens("the a is are was in for on", 0.7);
-        const nonBreak = scored.filter(t => !t.lineBreak);
+        const nonBreak = scored.filter(t => !t.lineBreak && !/^\s+$/.test(t.token));
         // Common words should have LOW self-information (high probability)
         for (const t of nonBreak) {
             // Common words have high probability -> low self-info -> low score at alpha=0.7

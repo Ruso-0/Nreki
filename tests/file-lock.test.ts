@@ -63,13 +63,13 @@ describe("File Lock", () => {
         }
     });
 
-    it("should auto-expire stale locks after 30 seconds", () => {
+    it("should auto-expire stale locks after 5 minutes", () => {
         // Acquire a lock
         acquireFileLock("/project/src/stale.ts", "nreki_code:edit");
 
-        // Mock time to 31 seconds later
+        // Mock time to 5 minutes + 1 second later
         const originalNow = Date.now;
-        Date.now = () => originalNow() + 31_000;
+        Date.now = () => originalNow() + 301_000;
 
         try {
             // Should reclaim the stale lock
@@ -80,7 +80,7 @@ describe("File Lock", () => {
         }
     });
 
-    it("should not expire locks before 30 seconds", () => {
+    it("should not expire locks before 5 minutes", () => {
         acquireFileLock("/project/src/fresh.ts", "nreki_code:edit");
 
         const originalNow = Date.now;

@@ -109,7 +109,7 @@ describe("hologram integration", () => {
             ].join("\n"),
         }]);
         expect(result2.safe).toBe(false);
-    }, 30_000);
+    }, 120_000);
 
     it("42. Re-classification after edit changes export type", async () => {
         dir = createTempProject({

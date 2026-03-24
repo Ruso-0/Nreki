@@ -61,9 +61,15 @@ describe("detectMode", () => {
         expect(detectMode(dir)).toBe("syntax");
     });
 
-    it("2. returns 'project' for project with 200 .ts files", () => {
+    it("2. returns 'file' for project with 200 .ts files", () => {
         dir = fs.mkdtempSync(path.join(os.tmpdir(), "nreki-mode-"));
         generateFiles(dir, 200, ".ts");
+        expect(detectMode(dir)).toBe("file");
+    });
+
+    it("2b. returns 'project' for project with 201 .ts files", () => {
+        dir = fs.mkdtempSync(path.join(os.tmpdir(), "nreki-mode-"));
+        generateFiles(dir, 201, ".ts");
         expect(detectMode(dir)).toBe("project");
     });
 
@@ -114,8 +120,8 @@ describe("detectMode", () => {
         generateFiles(dir, 10, ".tsx");
         generateFiles(dir, 10, ".jsx");
         generateFiles(dir, 10, ".mts");
-        // 50 total -> project
-        expect(detectMode(dir)).toBe("project");
+        // 50 total -> file (>= 50 and <= 200)
+        expect(detectMode(dir)).toBe("file");
     });
 
     it("excludes .d.ts files from count", () => {

@@ -181,7 +181,10 @@ export class NrekiKernel {
     // P30: Only TypeScript-compatible files enter rootNames
     private isTypeScriptFile(filePath: string): boolean {
         // A-05: Specific patterns (d.ts) before general (tsx?) to avoid shadowing
-        return /\.(d\.ts|d\.mts|d\.cts|tsx?|jsx?|mts|mjs|cts|cjs)$/i.test(filePath);
+        if (/\.(d\.ts|d\.mts|d\.cts|tsx?|mts|cts)$/i.test(filePath)) return true;
+        // AUDIT FIX: Only allow JS files if tsconfig.json explicitly enables allowJs
+        if (this.compilerOptions?.allowJs && /\.(jsx?|mjs|cjs)$/i.test(filePath)) return true;
+        return false;
     }
 
     // DRY: Config loading used by boot() and rollbackAll()
@@ -279,10 +282,10 @@ export class NrekiKernel {
         // Hologram mode: override rootNames and compilerOptions
         if (this.mode === "hologram") {
             if (this.hasJitHologram() && this.prunedFiles.size === 0) {
-                // JIT mode: no pre-computed shadows. Keep only .d.ts from rootNames.
+                // JIT mode: no pre-computed shadows. Keep only .d.ts/.d.mts/.d.cts from rootNames.
                 this.jitMode = true;
                 this.rootNames = new Set(
-                    [...this.rootNames].filter(f => f.endsWith(".d.ts")),
+                    [...this.rootNames].filter(f => /\.d\.[mc]?ts$/i.test(f)),
                 );
                 console.error(`[NREKI] JIT Holography active. rootNames: ${this.rootNames.size} (.d.ts only). Shadows on-demand.`);
             } else {
@@ -321,13 +324,13 @@ export class NrekiKernel {
 
             // HOLOGRAM INTERCEPT: serve shadow .d.ts or hide pruned .ts
             if (this.mode === "hologram") {
-                if (fileName.endsWith(".d.ts")) {
-                    // Map .d.ts path back to .ts to find shadow content
-                    const tsPath = posixPath.replace(/\.d\.ts$/, ".ts");
+                if (/\.d\.[mc]?ts$/i.test(fileName)) {
+                    // Map .d.ts/.d.mts/.d.cts path back to source to find shadow content
+                    const tsPath = posixPath.replace(/\.d\.([mc]?)ts$/i, ".$1ts");
                     const shadow = this.shadowContent.get(tsPath);
                     if (shadow !== undefined) return shadow;
                     // Try .tsx variant
-                    const tsxPath = posixPath.replace(/\.d\.ts$/, ".tsx");
+                    const tsxPath = posixPath.replace(/\.d\.([mc]?)ts$/i, ".$1tsx");
                     const shadow2 = this.shadowContent.get(tsxPath);
                     if (shadow2 !== undefined) return shadow2;
                     // JIT fallback: classify on-demand if not yet cached
@@ -377,16 +380,16 @@ export class NrekiKernel {
                 // ── JIT: classify on-demand ──
                 if (this.jitMode) {
                     // TS asks for a .ts/.tsx → classify, maybe hide it
-                    if (/\.tsx?$/.test(fileName) && !fileName.endsWith(".d.ts")) {
+                    if (/\.tsx?$/.test(fileName) && !/\.d\.[mc]?ts$/i.test(fileName)) {
                         if (originalFileExists.call(this.host, fileName)) {
                             this.jitClassifyFile(posixPath);
                             if (this.prunedTsLookup.has(posixPath)) return false;
                         }
                     }
-                    // TS asks for a .d.ts → check if we can generate a shadow
-                    if (fileName.endsWith(".d.ts")) {
-                        const tsPath = posixPath.replace(/\.d\.ts$/, ".ts");
-                        const tsxPath = posixPath.replace(/\.d\.ts$/, ".tsx");
+                    // TS asks for a .d.ts/.d.mts/.d.cts → check if we can generate a shadow
+                    if (/\.d\.[mc]?ts$/i.test(fileName)) {
+                        const tsPath = posixPath.replace(/\.d\.([mc]?)ts$/i, ".$1ts");
+                        const tsxPath = posixPath.replace(/\.d\.([mc]?)ts$/i, ".$1tsx");
                         if (!this.jitClassifiedCache.has(tsPath) && originalFileExists.call(this.host, tsPath)) {
                             if (this.jitClassifyFile(tsPath)) return true;
                         }
@@ -483,12 +486,12 @@ export class NrekiKernel {
             getScriptSnapshot: (fileName) => {
                 const posixPath = this.toPosix(path.resolve(this.projectRoot, fileName));
 
-                // HOLOGRAM INTERCEPT: serve shadow content for .d.ts
-                if (this.mode === "hologram" && fileName.endsWith(".d.ts")) {
-                    const tsPath = posixPath.replace(/\.d\.ts$/, ".ts");
+                // HOLOGRAM INTERCEPT: serve shadow content for .d.ts/.d.mts/.d.cts
+                if (this.mode === "hologram" && /\.d\.[mc]?ts$/i.test(fileName)) {
+                    const tsPath = posixPath.replace(/\.d\.([mc]?)ts$/i, ".$1ts");
                     const shadow = this.shadowContent.get(tsPath);
                     if (shadow !== undefined) return ts.ScriptSnapshot.fromString(shadow);
-                    const tsxPath = posixPath.replace(/\.d\.ts$/, ".tsx");
+                    const tsxPath = posixPath.replace(/\.d\.([mc]?)ts$/i, ".$1tsx");
                     const shadow2 = this.shadowContent.get(tsxPath);
                     if (shadow2 !== undefined) return ts.ScriptSnapshot.fromString(shadow2);
                 }
@@ -1162,7 +1165,7 @@ export class NrekiKernel {
                     filesToEvaluate.add(posixDep);
                     if (this.prunedTsLookup.has(posixDep)) {
                         this.prunedTsLookup.delete(posixDep);
-                        this.shadowDtsLookup.delete(posixDep.replace(/\.tsx?$/, ".d.ts"));
+                        this.shadowDtsLookup.delete(posixDep.replace(/\.([mc]?)tsx?$/, ".d.$1ts"));
                         if (!this.rootNames.has(posixDep)) {
                             this.rootNames.add(posixDep);
                         }
@@ -1275,7 +1278,7 @@ export class NrekiKernel {
                     if (this.mode === "hologram" && temporarilyUnveiled.size > 0) {
                         for (const file of temporarilyUnveiled) {
                             this.prunedTsLookup.add(file);
-                            this.shadowDtsLookup.add(file.replace(/\.tsx?$/, ".d.ts"));
+                            this.shadowDtsLookup.add(file.replace(/\.([mc]?)tsx?$/, ".d.$1ts"));
                             this.rootNames.delete(file);
                             this.vfsClock.set(file, new Date(this.logicalTime + 1));
                             // JIT: force re-classify on next access (content may have changed)
@@ -1336,7 +1339,7 @@ export class NrekiKernel {
                 if (this.mode === "hologram" && temporarilyUnveiled.size > 0) {
                     for (const file of temporarilyUnveiled) {
                         this.prunedTsLookup.add(file);
-                        this.shadowDtsLookup.add(file.replace(/\.tsx?$/, ".d.ts"));
+                        this.shadowDtsLookup.add(file.replace(/\.([mc]?)tsx?$/, ".d.$1ts"));
                         this.rootNames.delete(file);
                         this.vfsClock.set(file, new Date(this.logicalTime + 1));
                         // JIT: force re-classify on next access (content may have changed)
@@ -1365,7 +1368,7 @@ export class NrekiKernel {
             if (this.mode === "hologram" && temporarilyUnveiled.size > 0) {
                 for (const file of temporarilyUnveiled) {
                     this.prunedTsLookup.add(file);
-                    this.shadowDtsLookup.add(file.replace(/\.tsx?$/, ".d.ts"));
+                    this.shadowDtsLookup.add(file.replace(/\.([mc]?)tsx?$/, ".d.$1ts"));
                     this.rootNames.delete(file);
                     this.vfsClock.set(file, new Date(this.logicalTime + 1));
                     // JIT: force re-classify on next access (content may have changed)
@@ -1403,7 +1406,7 @@ export class NrekiKernel {
                 if (this.mode === "hologram" && temporarilyUnveiled.size > 0) {
                     for (const file of temporarilyUnveiled) {
                         this.prunedTsLookup.add(file);
-                        this.shadowDtsLookup.add(file.replace(/\.tsx?$/, ".d.ts"));
+                        this.shadowDtsLookup.add(file.replace(/\.([mc]?)tsx?$/, ".d.$1ts"));
                         this.rootNames.delete(file);
                         this.vfsClock.set(file, new Date(this.logicalTime + 1));
                         // JIT: force re-classify on next access (content may have changed)
@@ -1426,6 +1429,7 @@ export class NrekiKernel {
     public async commitToDisk(): Promise<void> {
         return this.mutex.withLock(async () => {
         const physicalUndoLog: { target: string; backup: string | null }[] = [];
+        const createdTmps: string[] = [];
 
         try {
             // PHASE 1: Physical backup
@@ -1452,7 +1456,9 @@ export class NrekiKernel {
                     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
                     const tmp = `${osPath}.nreki-${crypto.randomBytes(4).toString("hex")}.tmp`;
                     fs.writeFileSync(tmp, content, "utf-8");
+                    createdTmps.push(tmp);
                     fs.renameSync(tmp, osPath);
+                    createdTmps.pop(); // Rename succeeded — no longer orphan
                 }
             }
 
@@ -1509,6 +1515,12 @@ export class NrekiKernel {
         } catch (error) {
             // PHYSICAL ROLLBACK
             console.error(`[NREKI FATAL] OS write failure! Physical rollback: ${error}`);
+
+            // AUDIT FIX: Clean orphan .tmp files written before the crash
+            for (const tmpPath of createdTmps) {
+                try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath); } catch { /* best effort */ }
+            }
+
             for (const log of physicalUndoLog) {
                 try {
                     if (log.backup) {
@@ -1565,7 +1577,7 @@ export class NrekiKernel {
                     this.buildShadowLookups();
                     this.currentEditTargets.clear();
                     this.rootNames = new Set(
-                        [...this.rootNames].filter(f => f.endsWith(".d.ts")),
+                        [...this.rootNames].filter(f => /\.d\.[mc]?ts$/i.test(f)),
                     );
                 } else if (this.ambientFiles.length > 0) {
                     // Eager mode: re-filter to ambient-only
@@ -1842,7 +1854,7 @@ export class NrekiKernel {
         if (result.prunable && result.shadow) {
             this.prunedFiles.add(tsPath);
             this.shadowContent.set(tsPath, result.shadow);
-            const dtsPath = tsPath.replace(/\.tsx?$/, ".d.ts");
+            const dtsPath = tsPath.replace(/\.([mc]?)tsx?$/, ".d.$1ts");
             this.shadowDtsLookup.add(dtsPath);
             this.prunedTsLookup.add(tsPath);
             return true;
@@ -1854,7 +1866,7 @@ export class NrekiKernel {
         this.shadowDtsLookup.clear();
         this.prunedTsLookup.clear();
         for (const tsPath of this.prunedFiles) {
-            const dtsPath = tsPath.replace(/\.tsx?$/, ".d.ts");
+            const dtsPath = tsPath.replace(/\.([mc]?)tsx?$/, ".d.$1ts");
             this.shadowDtsLookup.add(dtsPath);
             this.prunedTsLookup.add(tsPath);
         }

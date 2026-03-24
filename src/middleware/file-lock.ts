@@ -24,17 +24,16 @@ interface LockEntry {
 
 const activeLocks = new Map<string, LockEntry>();
 
-/** Auto-expire stale locks after 30 seconds (safety net). */
-const LOCK_TIMEOUT_MS = 30_000;
+/** Auto-expire stale locks after 5 minutes (safety net for large batch_edits). */
+const LOCK_TIMEOUT_MS = 300_000;
 
 // ─── Helpers ─────────────────────────────────────────────────────────
 
 function normalizeLockKey(filePath: string): string {
     const resolved = path.resolve(filePath).replace(/\\/g, "/");
-    // Windows and macOS (APFS default) are case-insensitive
-    return (process.platform === "win32" || process.platform === "darwin")
-        ? resolved.toLowerCase()
-        : resolved;
+    // AUDIT FIX: Only Win32 guarantees case-insensitivity (NTFS).
+    // macOS APFS supports case-sensitive volumes — don't assume.
+    return process.platform === "win32" ? resolved.toLowerCase() : resolved;
 }
 
 // ─── Public API ──────────────────────────────────────────────────────

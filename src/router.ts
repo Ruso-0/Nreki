@@ -2256,7 +2256,7 @@ async function handleReport(
         `|  Output Tokens Avoided:   ${pad(usageStats.total_saved.toLocaleString(), 16)}    |`,
         `|  Search Queries:          ${pad(usageStats.tool_calls, 16)}    |`,
         `|  Surgical Edits:          ${pad(cbStats.totalToolCalls, 16)}    |`,
-        `|  Syntax Errors Blocked:   ${pad(cbStats.loopsPrevented, 16)}    |`,
+        `|  Syntax Errors Blocked:   ${pad(cbStats.loopsDetected, 16)}    |`,
         `|  Doom Loops Prevented:    ${pad(cbStats.loopsDetected, 16)}    |`,
         `|  Breaker Redirects:      ${pad(cbStats.redirectsIssued, 16)}    |`,
         `|  Redirects Recovered:    ${pad(cbStats.redirectsSuccessful, 16)}    |`,

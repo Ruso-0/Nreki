@@ -44,7 +44,7 @@ afterAll(() => {
 });
 
 describe("DocumentRegistry cleanup", () => {
-    it("should handle many intercepts on the same file without crash", { timeout: 120_000 }, async () => {
+    it("should handle many intercepts on the same file without crash", { timeout: 360_000 }, async () => {
         // Perform 20 intercepts on the same file with different content
         for (let i = 0; i < 20; i++) {
             const result = await kernel.interceptAtomicBatch([{

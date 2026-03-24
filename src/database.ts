@@ -143,7 +143,8 @@ class VectorIndex {
             const idBuf = Buffer.alloc(4);
             idBuf.writeUInt32LE(rowid);
             chunks.push(idBuf);
-            chunks.push(Buffer.from(vec.buffer, vec.byteOffset, vec.byteLength));
+            // AUDIT FIX: Force deep copy to isolate SQLite writes from WASM memory
+            chunks.push(Buffer.from(new Uint8Array(vec.buffer, vec.byteOffset, vec.byteLength)));
         }
         return Buffer.concat(chunks);
     }
@@ -500,12 +501,15 @@ export class NrekiDB {
 
     /** Rebuild the in-memory keyword index from all existing chunks. */
     private rebuildKeywordIndex(): void {
-        const rows = this.db.exec("SELECT id, shorthand FROM chunks");
-        if (rows.length === 0) return;
-
-        for (const row of rows[0].values) {
-            const [id, shorthand] = row as [number, string];
-            this.kwIndex.insert(id, shorthand);
+        // AUDIT FIX: Use prepared statement + iterator to avoid loading all rows into RAM
+        const stmt = this.db.prepare("SELECT id, shorthand FROM chunks");
+        try {
+            while (stmt.step()) {
+                const row = stmt.getAsObject() as { id: number; shorthand: string };
+                this.kwIndex.insert(row.id, row.shorthand);
+            }
+        } finally {
+            stmt.free();
         }
     }
 

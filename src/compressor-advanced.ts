@@ -333,8 +333,11 @@ function scoreTokens(text: string, alpha: number): ScoredToken[] {
         const words = line.split(/(\s+)/).filter(w => w.length > 0);
 
         for (const raw of words) {
-            // Preserve whitespace tokens as-is
-            if (/^\s+$/.test(raw)) continue;
+            // AUDIT FIX: Preserve whitespace as protected tokens (critical for Python)
+            if (/^\s+$/.test(raw)) {
+                allTokens.push({ token: raw, score: Infinity, protected: true, lineBreak: false });
+                continue;
+            }
 
             const lower = raw.toLowerCase();
 
@@ -402,8 +405,14 @@ function filterTokens(scored: ScoredToken[], level: CompressionLevel): string {
         }
     }
 
-    // Reconstruct with single spaces, clean up
-    let result = kept.join(" ");
+    // Reconstruct: no extra spaces around preserved whitespace tokens
+    let result = "";
+    for (let i = 0; i < kept.length; i++) {
+        if (i > 0 && !/^\s+$/.test(kept[i]) && !/^\s+$/.test(kept[i - 1]) && kept[i] !== "\n" && kept[i - 1] !== "\n") {
+            result += " ";
+        }
+        result += kept[i];
+    }
     result = result.replace(/ \n /g, "\n");
     result = result.replace(/ \n/g, "\n");
     result = result.replace(/\n /g, "\n");

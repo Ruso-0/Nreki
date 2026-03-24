@@ -205,6 +205,15 @@ describe("shadow generator classification", () => {
         expect(result.prunable).toBe(true);
     });
 
+    it("emits multi-declarator const without duplicating keyword", () => {
+        const result = classify(`export const WIDTH = 800, HEIGHT = 600, NAME = "app";`);
+        expect(result.prunable).toBe(true);
+        expect(result.shadow).toBeDefined();
+        const constCount = (result.shadow!.match(/\bconst\b/g) || []).length;
+        expect(constCount).toBe(1);
+        expect(result.shadow).not.toMatch(/,\s*const\s/);
+    });
+
     it("18. mixed file (some explicit, some inferred) -> unprunable", () => {
         const code = [
             `export interface Config { port: number; }`,
@@ -217,6 +226,13 @@ describe("shadow generator classification", () => {
         // Should have reasons for both prunable and unprunable
         expect(result.reasons.some(r => r.includes("PRUNABLE"))).toBe(true);
         expect(result.reasons.some(r => r.includes("UNPRUNABLE"))).toBe(true);
+    });
+
+    it("preserves = inside string literal parameter types", () => {
+        const result = classify(`export function handle(msg: "error=timeout" | "ok" = "ok"): void {}`);
+        expect(result.prunable).toBe(true);
+        expect(result.shadow).toBeDefined();
+        expect(result.shadow).toContain('"error=timeout"');
     });
 });
 
