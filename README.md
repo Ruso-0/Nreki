@@ -1,9 +1,9 @@
-# NREKI - 3 Tools. 696 Tests. Pre-write validation for AI agents.
+# NREKI - 3 Tools. 692 Tests. Pre-write validation for AI agents.
 
 <p align="center">
   <img src="https://img.shields.io/badge/MCP-Plugin-blue?style=for-the-badge" alt="MCP Plugin">
   <img src="https://img.shields.io/badge/Tools-3-blueviolet?style=for-the-badge" alt="3 Tools">
-  <img src="https://img.shields.io/badge/Tests-696-brightgreen?style=for-the-badge" alt="696 Tests">
+  <img src="https://img.shields.io/badge/Tests-692-brightgreen?style=for-the-badge" alt="692 Tests">
   <img src="https://img.shields.io/badge/Cloud-Zero-orange?style=for-the-badge" alt="Zero Cloud">
   <img src="https://img.shields.io/badge/License-Apache_2.0-yellow?style=for-the-badge" alt="Apache 2.0 License">
   <img src="https://img.shields.io/badge/TypeScript-5.9-3178C6?style=for-the-badge" alt="TypeScript 5.9">
@@ -28,6 +28,40 @@ Key additions:
 - **Hologram Shield 2**: Dependent files now evaluated semantically in hologram mode
 - **TTRD hardened**: TypeFlags-only toxicity scoring, no more string truncation bypass
 - **25+ bug fixes and performance improvements** (see CHANGELOG)
+
+---
+
+### What's New in v6.1.1: Security & Stability Audit
+
+32 fixes from a hostile code audit covering 12 source files:
+
+**Critical fixes:**
+- Fixed illegal `.d.ts` syntax in hologram multi-declarator exports
+- Fixed TTRD debt amnesty bypass via undefined contracts
+- Fixed orphan `.tmp` file leak on commit rollback (Windows)
+- Fixed Python indentation destruction in token-level compression
+
+**High-impact fixes:**
+- Duplicate symbol detection in ±500 byte splice window (prevents wrong-function edits)
+- `isTypeScriptFile` now respects `allowJs` config (prevents false errors in strict projects)
+- Full `.mts`/`.cts` shadow support in JIT Holography (8 regex patterns updated)
+- Singleton middleware replaced with WeakMap per-session isolation
+- `syncTechDebt` fixed: tracks incremental deltas instead of phantom accumulation
+- Backup key normalization prevents "no backup found" on undo
+- File lock timeout extended to 5 minutes for large batch edits
+- Circuit breaker tool detection updated for v3.0+ action names
+- `detectMode` now activates "file" mode for 50-200 file projects
+
+**Security hardening:**
+- `Buffer.alloc` replaces `allocUnsafe` in log reader (prevents memory leaks)
+- Deep copy isolates WASM SharedArrayBuffer from SQLite writes
+- macOS APFS case-sensitive volumes no longer share locks incorrectly
+
+**Infrastructure:**
+- Dead code removed: KernelManager + kernel-worker (232 lines)
+- Vitest upgraded, flaky performance thresholds relaxed
+- `rebuildKeywordIndex` uses streaming iterator (prevents OOM on large repos)
+- 692 tests, zero failures
 
 ---
 
