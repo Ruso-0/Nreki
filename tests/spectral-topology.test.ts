@@ -97,6 +97,61 @@ describe("SpectralMath.analyzeTopology", () => {
         const { volume } = SpectralMath.analyzeTopology(3, edges);
         expect(volume).toBeCloseTo(1.5, 1);
     });
+
+    it("should return v2, lambda3, and v3 for non-trivial graph", () => {
+        const edges: SparseEdge[] = [
+            { u: 0, v: 1, weight: 1 },
+            { u: 1, v: 2, weight: 1 },
+            { u: 0, v: 2, weight: 1 },
+            { u: 2, v: 3, weight: 1 },
+        ];
+        const result = SpectralMath.analyzeTopology(4, edges);
+
+        expect(result.v2).toBeDefined();
+        expect(result.v2!.length).toBe(4);
+        expect(result.lambda3).toBeDefined();
+        expect(result.lambda3!).toBeGreaterThanOrEqual(result.fiedler);
+        expect(result.v3).toBeDefined();
+        expect(result.v3!.length).toBe(4);
+
+        const v2Sum = result.v2!.reduce((a, b) => a + Math.abs(b), 0);
+        expect(v2Sum).toBeGreaterThan(0);
+    });
+
+    it("should produce deterministic gauge-fixed vectors", () => {
+        const edges: SparseEdge[] = [
+            { u: 0, v: 1, weight: 1 },
+            { u: 1, v: 2, weight: 1 },
+            { u: 0, v: 2, weight: 1 },
+        ];
+        const r1 = SpectralMath.analyzeTopology(3, edges);
+        const r2 = SpectralMath.analyzeTopology(3, edges);
+
+        for (let i = 0; i < 3; i++) {
+            expect(r1.v2![i]).toBe(r2.v2![i]);
+            expect(r1.v3![i]).toBe(r2.v3![i]);
+        }
+    });
+
+    it("should have gauge-fixed v2 with positive dominant component", () => {
+        const edges: SparseEdge[] = [
+            { u: 0, v: 1, weight: 1 },
+            { u: 1, v: 2, weight: 1 },
+            { u: 2, v: 3, weight: 1 },
+            { u: 0, v: 3, weight: 1 },
+        ];
+        const result = SpectralMath.analyzeTopology(4, edges);
+
+        let maxAbs = -1;
+        let maxVal = 0;
+        for (let i = 0; i < result.v2!.length; i++) {
+            if (Math.abs(result.v2![i]) > maxAbs) {
+                maxAbs = Math.abs(result.v2![i]);
+                maxVal = result.v2![i];
+            }
+        }
+        expect(maxVal).toBeGreaterThan(0);
+    });
 });
 
 describe("SpectralTopologist integration", () => {
@@ -246,5 +301,29 @@ describe("SpectralTopologist integration", () => {
 
         const delta = SpectralTopologist.computeDelta(a, b);
         expect(delta.verdict).toBe("APPROVED");
+    });
+
+    it("should pass nodeIndex through analyze bridge", () => {
+        const program = createProject({
+            "a.ts": `
+                export interface Foo { x: number; }
+            `,
+            "b.ts": `
+                import { Foo } from "./a.js";
+                export function useFoo(f: Foo): Foo { return f; }
+            `,
+        });
+        const targets = new Set<string>();
+        for (const sf of program.getSourceFiles()) {
+            if (!sf.fileName.includes("node_modules")) targets.add(sf.fileName.replace(/\\/g, "/"));
+        }
+        const result = SpectralTopologist.analyze(program, targets);
+
+        if (result.nodeCount > 1) {
+            expect(result.nodeIndex).toBeDefined();
+            expect(result.nodeIndex!.size).toBe(result.nodeCount);
+            expect(result.v2).toBeDefined();
+            expect(result.v2!.length).toBe(result.nodeCount);
+        }
     });
 });

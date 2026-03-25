@@ -1,9 +1,9 @@
-# NREKI - 3 Tools. 692 Tests. Pre-write validation for AI agents.
+# NREKI - 3 Tools. 696 Tests. Pre-write validation for AI agents.
 
 <p align="center">
   <img src="https://img.shields.io/badge/MCP-Plugin-blue?style=for-the-badge" alt="MCP Plugin">
   <img src="https://img.shields.io/badge/Tools-3-blueviolet?style=for-the-badge" alt="3 Tools">
-  <img src="https://img.shields.io/badge/Tests-692-brightgreen?style=for-the-badge" alt="692 Tests">
+  <img src="https://img.shields.io/badge/Tests-696-brightgreen?style=for-the-badge" alt="696 Tests">
   <img src="https://img.shields.io/badge/Cloud-Zero-orange?style=for-the-badge" alt="Zero Cloud">
   <img src="https://img.shields.io/badge/License-Apache_2.0-yellow?style=for-the-badge" alt="Apache 2.0 License">
   <img src="https://img.shields.io/badge/TypeScript-5.9-3178C6?style=for-the-badge" alt="TypeScript 5.9">
@@ -61,7 +61,7 @@ Key additions:
 - Dead code removed: KernelManager + kernel-worker (232 lines)
 - Vitest upgraded, flaky performance thresholds relaxed
 - `rebuildKeywordIndex` uses streaming iterator (prevents OOM on large repos)
-- 692 tests, zero failures
+- 696 tests, zero failures
 
 ---
 

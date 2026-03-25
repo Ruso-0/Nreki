@@ -2,6 +2,41 @@
 
 All notable changes to NREKI will be documented in this file.
 
+## v7.0.0 - Software Physics Engine
+
+### Added
+- **Fiedler Vector extraction**: `analyzeTopology` now returns the full eigenvector `v2` (bridge fragility map)
+- **Third eigenvalue (λ₃)**: Enables spectral gap computation ∇(λ₃ - λ₂) for predictive analysis
+- **Third eigenvector (v3)**: Topological stress coordinates per node
+- **Gauge Fixing**: Deterministic phase canonicalization prevents sign ambiguity across commits (critical for ML pipelines)
+- **Gram-Schmidt deflation**: Reusable `powerIteration()` function extracts arbitrary eigenvectors
+- **nodeIndex passthrough**: `SpectralTopologist.analyze()` now returns the symbol→index mapping
+- **Monorepo workspace resolution**: `buildFastLookup` resolves `@org/package` imports via O(1) string math (supports packages/, workspaces/, libs/, apps/)
+- **Adaptive Shotgun Surgery threshold**: Scales with repo size via `Math.max(8, floor(N × 0.015))` — no more false positives on large codebases
+- **Modern module extensions**: Full `.mts`, `.cts`, `.mjs`, `.cjs` support across parser, kernel, repo-map, and JIT holography
+
+### Fixed
+- **VFS zombie state**: `commitToDisk()` now purges VFS on disk write failure, preventing ghost content desync
+- **WASM race conditions**: Serialized language loading via `loadGate` in parser.ts, ast-sandbox.ts, parser-pool.ts
+- **Power iteration seed**: Uses data-dependent post-mutation seed for deterministic convergence
+- **extractName regex purge**: Replaced 20 fragile regex patterns across 2 files with AST-first keyword-stripping word splitter
+- **32 audit fixes (v6.1.x)**: Shadow codegen, TTRD amnesty bypass, orphan .tmp leak, Python indentation, splice duplicate detection, WeakMap middleware, syncTechDebt phantom accumulation, undo key normalization, APFS locks, allocUnsafe, SharedArrayBuffer isolation, OOM streaming iterator, and more
+
+### Changed
+- License changed from MIT to Apache 2.0
+- Tests: 696 tests
+- Vitest upgraded from 3.0.7 to 4.1.1
+- `detectMode` now returns "file" mode for 50-200 file projects (correct performance scaling)
+- `isTypeScriptFile` respects `allowJs` config (prevents false errors in strict projects)
+- Circuit breaker tool detection updated for v3.0+ action names
+- File lock timeout extended to 5 minutes for large batch edits
+
+### Internal
+- `SpectralResult` interface extended with optional `v2`, `lambda3`, `v3`, `nodeIndex` fields (backward compatible)
+- Power iteration limit raised from 100 to 150 (convergence guard unchanged at 1e-7)
+- Chronos Miner v2: Tree-sitter based temporal dataset extractor (zero node_modules, resumable, architectural dispersion ground truth)
+- Worktree isolation: each miner uses `/tmp/nreki-wt-{repo}` for parallel mining
+
 ## v6.1.0 - Spectral Gate + Surgical Architecture (2026-03-22)
 
 ### Performance
