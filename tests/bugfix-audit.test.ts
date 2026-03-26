@@ -42,8 +42,8 @@ describe("Bug 3: Plaintext fallback for unsupported languages", () => {
         const rustFile = path.join(tmpDir, "main.rs");
         fs.writeFileSync(rustFile, 'fn main() {\n    println!("hello");\n}');
 
-        const { TokenGuardEngine } = await import("../src/engine.js");
-        const engine = new TokenGuardEngine({
+        const { NrekiEngine } = await import("../src/engine.js");
+        const engine = new NrekiEngine({
             dbPath: path.join(tmpDir, "test.db"),
             watchPaths: [tmpDir],
         });
@@ -75,8 +75,8 @@ describe("Bug 3: Plaintext fallback for unsupported languages", () => {
             "}",
         ].join("\n"));
 
-        const { TokenGuardEngine } = await import("../src/engine.js");
-        const engine = new TokenGuardEngine({
+        const { NrekiEngine } = await import("../src/engine.js");
+        const engine = new NrekiEngine({
             dbPath: path.join(tmpDir, "test.db"),
             watchPaths: [tmpDir],
         });

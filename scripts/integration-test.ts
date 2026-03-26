@@ -12,7 +12,7 @@ import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
 
-import { NREKIEngine } from "../src/engine.js";
+import { NrekiEngine } from "../src/engine.js";
 import { TokenMonitor } from "../src/monitor.js";
 import { Embedder } from "../src/embedder.js";
 
@@ -68,7 +68,7 @@ async function main(): Promise<void> {
         if (fs.existsSync(f)) fs.unlinkSync(f);
     }
 
-    const engine = new NREKIEngine({
+    const engine = new NrekiEngine({
         dbPath,
         watchPaths: [path.join(ROOT, "src")],
         wasmDir: path.join(ROOT, "wasm"),

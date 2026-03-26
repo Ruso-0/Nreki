@@ -19,7 +19,7 @@ import fs from "fs";
 import path from "path";
 import os from "os";
 
-import { TokenGuardDB } from "../src/database.js";
+import { NrekiDB } from "../src/database.js";
 import {
     AdvancedCompressor,
     preprocess,
@@ -77,7 +77,7 @@ describe("Stress: Empty file", () => {
     });
 
     it("database handles empty content hash", () => {
-        const db = new TokenGuardDB(path.join(TMP_DIR, "empty-test.db"));
+        const db = new NrekiDB(path.join(TMP_DIR, "empty-test.db"));
         return db.initialize().then(() => {
             const hash = db.hashContent("");
             expect(hash).toBeTruthy();
@@ -164,7 +164,7 @@ describe("Stress: Binary data", () => {
     });
 
     it("database handles binary-ish content hashing", () => {
-        const db = new TokenGuardDB(path.join(TMP_DIR, "binary-test.db"));
+        const db = new NrekiDB(path.join(TMP_DIR, "binary-test.db"));
         return db.initialize().then(() => {
             const content = "\x00\x01\x02\xFF\xFE";
             const hash = db.hashContent(content);
@@ -221,7 +221,7 @@ const emoji_var = "🎉🎊🎈";
     });
 
     it("database stores and retrieves unicode chunks", () => {
-        const db = new TokenGuardDB(path.join(TMP_DIR, "unicode-test.db"));
+        const db = new NrekiDB(path.join(TMP_DIR, "unicode-test.db"));
         return db.initialize().then(() => {
             const embedding = new Float32Array(512).fill(0.1);
             db.insertChunk(
@@ -386,7 +386,7 @@ describe("Stress: Deeply nested functions (20 levels)", () => {
 
 describe("Stress: Concurrent database operations", () => {
     it("should handle 50 chunk insertions in a single batch", async () => {
-        const db = new TokenGuardDB(path.join(TMP_DIR, "concurrent-test.db"));
+        const db = new NrekiDB(path.join(TMP_DIR, "concurrent-test.db"));
         await db.initialize();
 
         const chunks = Array.from({ length: 50 }, (_, i) => ({
@@ -415,7 +415,7 @@ describe("Stress: Concurrent database operations", () => {
     });
 
     it("should handle rapid insert-delete-insert cycles", async () => {
-        const db = new TokenGuardDB(path.join(TMP_DIR, "cycle-test.db"));
+        const db = new NrekiDB(path.join(TMP_DIR, "cycle-test.db"));
         await db.initialize();
 
         const embedding = new Float32Array(512).fill(0.5);
@@ -504,7 +504,7 @@ export class { // missing name
 
 describe("Stress: Repeated 100x indexing (idempotency)", () => {
     it("should handle 100 upserts of the same file", async () => {
-        const db = new TokenGuardDB(path.join(TMP_DIR, "repeat-test.db"));
+        const db = new NrekiDB(path.join(TMP_DIR, "repeat-test.db"));
         await db.initialize();
 
         const content = "export function repeat() { return 42; }";
@@ -538,7 +538,7 @@ describe("Stress: Repeated 100x indexing (idempotency)", () => {
     });
 
     it("should maintain consistent search after repeated re-indexing", async () => {
-        const db = new TokenGuardDB(path.join(TMP_DIR, "repeat-search-test.db"));
+        const db = new NrekiDB(path.join(TMP_DIR, "repeat-search-test.db"));
         await db.initialize();
 
         const embedding = new Float32Array(512).fill(0.33);
@@ -568,7 +568,7 @@ describe("Stress: Repeated 100x indexing (idempotency)", () => {
     });
 
     it("usage stats accumulate correctly over many calls", async () => {
-        const db = new TokenGuardDB(path.join(TMP_DIR, "usage-stress-test.db"));
+        const db = new NrekiDB(path.join(TMP_DIR, "usage-stress-test.db"));
         await db.initialize();
 
         // Log 100 usage entries

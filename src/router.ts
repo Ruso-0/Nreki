@@ -449,9 +449,34 @@ async function handleSearch(
 
     const formatted = results.map((r, i) => {
         const header = `### ${i + 1}. ${path.relative(process.cwd(), r.path)}:L${r.startLine}-L${r.endLine}`;
-        const shorthand = `\`\`\`\n${r.shorthand}\n\`\`\``;
+
+        // SENSORY INJECTION (T-RAG): Topology-aware context for the LLM
+        // The LLM "sees" the architectural impact BEFORE daring to edit.
+        // This lives in the router (View layer), NOT in the engine (Data layer).
+        let sensoryTag = "";
+        if (r.topology && r.topology.tier !== "orphan") {
+            if (r.topology.isEpicenter && r.topology.inDegree > 0) {
+                const alert = r.topology.tier === "core" ? "☢️ CRITICAL CORE" : "⚠️ LOGIC HUB";
+                const depsStr = r.topology.dependents.length > 0 ? ` (Imports: ${r.topology.dependents.join(", ")}...)` : "";
+                sensoryTag = `// [EPICENTER | BLAST RADIUS: ${r.topology.inDegree} dependents | ${alert}]${depsStr}\n`;
+            } else if (r.topology.isBlastRadius) {
+                sensoryTag = `// [COUPLED CONSUMER | Affected by changes to search target]\n`;
+            } else if (r.topology.inDegree > 0) {
+                sensoryTag = `// [DEPENDENCIES: ${r.topology.inDegree} files rely on this]\n`;
+            }
+        }
+
+        // LANGUAGE HINT: Dynamic syntax highlighting for Markdown renderers
+        let lang = path.extname(r.path).slice(1).toLowerCase();
+        if (['ts', 'tsx', 'mts', 'cts'].includes(lang)) lang = 'typescript';
+        else if (['js', 'jsx', 'mjs', 'cjs'].includes(lang)) lang = 'javascript';
+        else if (lang === 'py') lang = 'python';
+        else if (!lang) lang = 'typescript';
+
+        const shorthand = `\`\`\`${lang}\n${sensoryTag}${r.shorthand}\n\`\`\``;
+
         const rawSection = include_raw
-            ? `\n<details><summary>Full source</summary>\n\n\`\`\`\n${r.rawCode}\n\`\`\`\n</details>`
+            ? `\n<details><summary>Full source</summary>\n\n\`\`\`${lang}\n${r.rawCode}\n\`\`\`\n</details>`
             : "";
         const score = `Score: ${r.score.toFixed(4)} | Type: ${r.nodeType}`;
         return `${header}\n${shorthand}\n${score}${rawSection}`;
@@ -468,11 +493,14 @@ async function handleSearch(
             grepEstimate += Embedder.estimateTokens(r.rawCode) * 5;
         }
     }
-    const searchTokens = results.reduce(
-        (sum, r) => sum + Embedder.estimateTokens(r.shorthand), 0,
-    );
-    const saved = Math.max(0, grepEstimate - searchTokens);
 
+    // TOKEN ESTIMATION: Measures the EXACT final payload sent to the LLM.
+    // Previous version only counted r.shorthand, silently ignoring rawSection,
+    // sensoryTags, headers, and score lines. This caused phantom billing where
+    // include_raw=true injected thousands of untracked tokens into the context window.
+    const finalPayload = formatted.join("\n\n");
+    const searchTokens = Embedder.estimateTokens(finalPayload);
+    const saved = Math.max(0, grepEstimate - searchTokens);
     engine.logUsage("nreki_search", searchTokens, searchTokens, saved);
 
     return {

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import fs from "fs";
 import path from "path";
 import os from "os";
-import { TokenGuardEngine } from "../src/engine.js";
+import { NrekiEngine } from "../src/engine.js";
 import { CircuitBreaker } from "../src/circuit-breaker.js";
 import { AstSandbox } from "../src/ast-sandbox.js";
 import { TokenMonitor } from "../src/monitor.js";
@@ -20,7 +20,7 @@ describe("E2E: Creative Circuit Breaker Flow", () => {
         testFile = path.join(tmpDir, "app.ts");
         fs.writeFileSync(testFile, "export function target() { return 1; }");
 
-        const engine = new TokenGuardEngine({
+        const engine = new NrekiEngine({
             dbPath: path.join(tmpDir, "test.db"),
             watchPaths: [tmpDir],
         });

@@ -17,7 +17,7 @@ import path from "path";
 import chokidar, { type FSWatcher } from "chokidar";
 import picomatch from "picomatch";
 
-import { NrekiDB, type HybridSearchResult } from "./database.js";
+import { NrekiDB } from "./database.js";
 import { Embedder, getEmbedder } from "./embedder.js";
 import { ASTParser, type ParseResult } from "./parser.js";
 import { Compressor, type CompressionResult } from "./compressor.js";
@@ -43,6 +43,14 @@ export interface SearchResult {
     endLine: number;
     /** Hybrid RRF score (higher = more relevant). */
     score: number;
+    /** T-RAG Topological Metadata (Injected from Dependency Graph) */
+    topology?: {
+        tier: "core" | "logic" | "leaf" | "orphan";
+        inDegree: number;
+        isEpicenter: boolean;
+        isBlastRadius: boolean;
+        dependents: string[];
+    };
 }
 
 export interface IndexStats {
@@ -416,45 +424,110 @@ export class NrekiEngine {
     // ─── Search ────────────────────────────────────────────────────
 
     /**
-     * Hybrid semantic + keyword search using RRF fusion.
+     * T-RAG (Topology-Aware RAG) - Blast Radius-Aware Search.
+     * Re-ranks standard semantic/keyword search results using the project's dependency graph.
+     * Injects PageRank (mass), InDegree (gravity), and Blast Radius awareness directly into the LLM's context.
      *
-     * This is the main search API - replaces grep/glob with a query
-     * that understands code semantics. Returns ranked results with
-     * shorthand signatures and full source code.
+     * TRS (Tectonic Relevance Score) = RRF × G(d) × B(d,q)
+     * G(d) = Gravity: tier weight + log₂(1 + inDegree)
+     * B(d,q) = Blast Radius resonance: 1.5x if file imports the epicenter
      *
-     * In Lite mode (enableEmbeddings=false), uses BM25 keyword-only search.
-     * In Pro mode (enableEmbeddings=true), uses hybrid semantic + BM25 with RRF fusion.
+     * Untracked files (Dark Matter / Python / Go) gracefully degrade to baseline RRF scoring (Gravity = 1.0).
+     *
+     * @author Jherson Eddie Tintaya Holguin (Ruso-0)
      */
     async search(query: string, limit: number = 10): Promise<SearchResult[]> {
+        // 1. Fetch deep pool (5x limit) to overcome Semantic Dilution (ensure dependents make the cut)
+        const fetchLimit = limit * 5;
+        let rawResults: import("./database.js").HybridSearchResult[];
+
         if (!this.config.enableEmbeddings) {
-            // Lite mode: BM25 keyword-only search
             await this.initialize();
-            const results = this.db.searchKeywordOnly(query, limit);
-            return results.map((r: HybridSearchResult) => ({
+            rawResults = this.db.searchKeywordOnly(query, fetchLimit);
+        } else {
+            await this.initializeEmbedder();
+            const { embedding } = await this.embedder.embed(query);
+            rawResults = this.db.searchHybrid(embedding, query, fetchLimit);
+        }
+
+        if (rawResults.length === 0) return [];
+
+        // 2. Load Topological Graph (cached after first call)
+        const graph = await this.getDependencyGraph();
+        const projectRoot = this.getProjectRoot();
+
+        // 3. Identify Epicenters (Top 3 pure semantic matches — where the definition lives)
+        const epicenters = new Set<string>();
+        for (const r of rawResults.slice(0, 3)) {
+            epicenters.add(path.relative(projectRoot, r.path).replace(/\\/g, "/"));
+        }
+
+        // 4. Apply Tectonic Relevance Scoring (TRS)
+        const scoredResults: SearchResult[] = rawResults.map(r => {
+            const relPath = path.relative(projectRoot, r.path).replace(/\\/g, "/");
+
+            // Orphan detection: files outside the dependency graph degrade gracefully
+            const isTracked = graph.inDegree.has(relPath);
+            const tier = graph.tiers.get(relPath);
+            const inDegree = graph.inDegree.get(relPath) || 0;
+
+            // Blast Radius detection: does this file import an epicenter?
+            let isBlastRadius = false;
+            for (const epi of epicenters) {
+                if (epi !== relPath && graph.importedBy.get(epi)?.has(relPath)) {
+                    isBlastRadius = true;
+                    break;
+                }
+            }
+
+            // Software Physics Math:
+            // Mass = PageRank Tier Weight (Core: 0.5, Logic: 0.2) + Logarithmic Gravity
+            let gravity = 1.0;
+            if (isTracked && tier) {
+                const wTier = tier === "core" ? 0.5 : (tier === "logic" ? 0.2 : 0.0);
+                // Damping factor prevents massive hubs from overwhelming semantic relevance
+                gravity = 1.0 + wTier + (0.15 * Math.log2(1 + inDegree));
+            }
+
+            // Blast Boost: +50% relevance if it's a dependent of an epicenter
+            const blastBoost = isBlastRadius ? 1.5 : 1.0;
+
+            // TRS = RRF * Gravity * BlastBoost
+            const trs = r.rrf_score * gravity * blastBoost;
+
+            // Top dependents for Sensory Injection (computed here, displayed in router.ts)
+            let topDependents: string[] = [];
+            if (epicenters.has(relPath) && inDegree > 0) {
+                const deps = graph.importedBy.get(relPath);
+                if (deps) {
+                    topDependents = Array.from(deps)
+                        .sort((a, b) => (graph.inDegree.get(b) || 0) - (graph.inDegree.get(a) || 0))
+                        .slice(0, 3)
+                        .map(d => path.basename(d));
+                }
+            }
+
+            return {
                 path: r.path,
-                shorthand: r.shorthand,
+                shorthand: r.shorthand, // PURE DATA — never mutated by T-RAG
                 rawCode: r.raw_code,
                 nodeType: r.node_type,
                 startLine: r.start_line,
                 endLine: r.end_line,
-                score: r.rrf_score,
-            }));
-        }
+                score: trs,
+                topology: {
+                    tier: tier || "orphan",
+                    inDegree,
+                    isEpicenter: epicenters.has(relPath),
+                    isBlastRadius,
+                    dependents: topDependents,
+                },
+            };
+        });
 
-        // Pro mode: hybrid semantic + BM25
-        await this.initializeEmbedder();
-        const { embedding } = await this.embedder.embed(query);
-        const results = this.db.searchHybrid(embedding, query, limit);
-
-        return results.map((r: HybridSearchResult) => ({
-            path: r.path,
-            shorthand: r.shorthand,
-            rawCode: r.raw_code,
-            nodeType: r.node_type,
-            startLine: r.start_line,
-            endLine: r.end_line,
-            score: r.rrf_score,
-        }));
+        // 5. Sort by TRS and return top K
+        scoredResults.sort((a, b) => b.score - a.score);
+        return scoredResults.slice(0, limit);
     }
 
     // ─── Compression ──────────────────────────────────────────────
@@ -765,17 +838,5 @@ export class NrekiEngine {
     shutdown(): void {
         this.stopWatcher();
         this.db.close();
-    }
-}
-
-// Backward-compat aliases
-/** @deprecated Use NrekiEngine instead. Will be removed in v7.0.0 */
-export { NrekiEngine as NREKIEngine };
-
-/** @deprecated Use NrekiEngine instead. Will be removed in v7.0.0 */
-export class TokenGuardEngine extends NrekiEngine {
-    constructor(config: EngineConfig = {}) {
-        console.warn("\x1b[33m[NREKI DEPRECATION] TokenGuardEngine is deprecated. Use NrekiEngine.\x1b[0m");
-        super(config);
     }
 }

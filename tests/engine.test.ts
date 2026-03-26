@@ -16,7 +16,7 @@ import fs from "fs";
 import path from "path";
 import os from "os";
 
-import { TokenGuardDB } from "../src/database.js";
+import { NrekiDB } from "../src/database.js";
 import { Embedder, MODEL_PRIORITY } from "../src/embedder.js";
 import { TokenMonitor } from "../src/monitor.js";
 import { PreToolUseHook } from "../src/hooks/preToolUse.js";
@@ -62,11 +62,11 @@ export function createMiddleware(service: AuthService) {
 // ─── Database Tests ──────────────────────────────────────────────────
 
 describe("NrekiDB", () => {
-    let db: TokenGuardDB;
+    let db: NrekiDB;
     const testDbPath = path.join(os.tmpdir(), `nreki-test-${Date.now()}.db`);
 
     beforeAll(async () => {
-        db = new TokenGuardDB(testDbPath);
+        db = new NrekiDB(testDbPath);
         await db.initialize();
     });
 
@@ -349,11 +349,11 @@ describe("PreToolUseHook", () => {
 // ─── KeywordIndex / Porter Stemmer Tests ────────────────────────────
 
 describe("Porter Stemmer (via KeywordIndex)", () => {
-    let db: TokenGuardDB;
+    let db: NrekiDB;
     const stemDbPath = path.join(os.tmpdir(), `nreki-stem-test-${Date.now()}.db`);
 
     beforeAll(async () => {
-        db = new TokenGuardDB(stemDbPath);
+        db = new NrekiDB(stemDbPath);
         await db.initialize();
     });
 

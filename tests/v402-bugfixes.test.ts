@@ -47,8 +47,8 @@ describe("BUG 1: searchRawCode exhaustive scan", () => {
             "}",
         ].join("\n"));
 
-        const { TokenGuardEngine } = await import("../src/engine.js");
-        const engine = new TokenGuardEngine({
+        const { NrekiEngine } = await import("../src/engine.js");
+        const engine = new NrekiEngine({
             dbPath: path.join(dir, "test.db"),
             watchPaths: [dir],
         });

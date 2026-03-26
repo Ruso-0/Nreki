@@ -22,7 +22,7 @@ import { safePath } from "../src/utils/path-jail.js";
 import { codeTokenize } from "../src/utils/code-tokenizer.js";
 import { readSource } from "../src/utils/read-source.js";
 import { shouldProcess, MAX_FILE_SIZE } from "../src/utils/file-filter.js";
-import { TokenGuardDB, fastSimilarity } from "../src/database.js";
+import { NrekiDB, fastSimilarity } from "../src/database.js";
 import { addPin, getPinnedText } from "../src/pin-memory.js";
 import { saveBackup, restoreBackup } from "../src/undo.js";
 import { ASTParser } from "../src/parser.js";
@@ -250,11 +250,11 @@ describe("FIX 7: shouldProcess - File Size and Extension Filter", () => {
 // ─── FIX 8 & 9: Vector Optimization & RRF Tests ────────────────────
 
 describe("FIX 8+9: VectorIndex Optimization and RRF Scoring", () => {
-    let db: TokenGuardDB;
+    let db: NrekiDB;
     const testDbPath = path.join(os.tmpdir(), `tg-vector-test-${Date.now()}.db`);
 
     beforeAll(async () => {
-        db = new TokenGuardDB(testDbPath);
+        db = new NrekiDB(testDbPath);
         await db.initialize();
     });
 
@@ -307,11 +307,11 @@ describe("FIX 8+9: VectorIndex Optimization and RRF Scoring", () => {
 // ─── FIX 5 Integration: KeywordIndex with code tokenizer ───────────
 
 describe("FIX 5 Integration: Code-aware search matching", () => {
-    let db: TokenGuardDB;
+    let db: NrekiDB;
     const testDbPath = path.join(os.tmpdir(), `tg-tokenizer-test-${Date.now()}.db`);
 
     beforeAll(async () => {
-        db = new TokenGuardDB(testDbPath);
+        db = new NrekiDB(testDbPath);
         await db.initialize();
 
         const embedding = new Float32Array(512).fill(0.1);

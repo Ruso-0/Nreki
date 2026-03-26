@@ -5,7 +5,7 @@
 
 import path from "path";
 import fs from "fs";
-import { NREKIEngine } from "../src/engine.js";
+import { NrekiEngine } from "../src/engine.js";
 import { Embedder } from "../src/embedder.js";
 import { filterTerminalOutput } from "../src/terminal-filter.js";
 import { findDefinition, findReferences, getFileSymbols } from "../src/ast-navigator.js";
@@ -14,7 +14,7 @@ import { AstSandbox } from "../src/ast-sandbox.js";
 const ROOT = path.resolve(".");
 
 async function main() {
-    const engine = new NREKIEngine({
+    const engine = new NrekiEngine({
         dbPath: path.join(ROOT, ".nreki-bench.db"),
         watchPaths: [ROOT],
     });
@@ -61,11 +61,11 @@ async function main() {
         console.log(`    ${r.shorthand.split("\n")[0].slice(0, 100)}`);
     }
 
-    // 3. nreki_def "NREKIEngine"
-    console.log("\n--- 3. nreki_def 'NREKIEngine' ---");
+    // 3. nreki_def "NrekiEngine"
+    console.log("\n--- 3. nreki_def 'NrekiEngine' ---");
     const parser = engine.getParser();
     const defStart = performance.now();
-    const defResults = await findDefinition(ROOT, parser, "NREKIEngine");
+    const defResults = await findDefinition(ROOT, parser, "NrekiEngine");
     const defTime = performance.now() - defStart;
     console.log(`Found: ${defResults.length} definition(s)`);
     for (const d of defResults) {
