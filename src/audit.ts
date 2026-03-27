@@ -127,6 +127,19 @@ function fileHasTest(filePath: string, _projectRoot: string, testFiles: Set<stri
     return false;
 }
 
+// ─── Pure AHI Calculator (for simulation) ───────────────────────────
+
+function calculateAHI(components: AuditComponent[]): number {
+    const active = components.filter(c => c.weight > 0);
+    const totalWeight = active.reduce((sum, c) => sum + c.weight, 0);
+    if (totalWeight === 0) return 5.0;
+    let raw = 0;
+    for (const c of active) {
+        raw += c.score * (c.weight / totalWeight);
+    }
+    return Math.round(raw * 100) / 10;
+}
+
 // ─── Main Audit ─────────────────────────────────────────────────────
 
 export async function computeAudit(
@@ -143,7 +156,12 @@ export async function computeAudit(
     const coreFiles = allFiles.filter(f => graph.tiers.get(f) === "core");
 
     // ═════════════════════════════════════════════════════════
-    // SIGNAL 1: Spectral Integrity (λ₂)
+    // SIGNAL 1: Spectral Integrity (Coupling Ratio)
+    //
+    // OLD: Φ = λ₂/N penalized modular projects (low λ₂ = good decoupling got 1/10)
+    // NEW: Coupling Ratio = λ₂ / avgDegree
+    //   Monolith: λ₂ ≈ avgDegree → ratio → 1.0 → LOW score (punished)
+    //   Modular:  λ₂ << avgDegree → ratio → 0.0 → HIGH score (rewarded)
     // ═════════════════════════════════════════════════════════
 
     const nodeIndex = new Map<string, number>();
@@ -164,13 +182,32 @@ export async function computeAudit(
 
     let spectralScore = 0.5;
     let fiedlerValue = 0;
-    let phi = 0;
+    let avgDegree = 0;
+    let couplingRatio = 0;
 
     if (N > 2 && sparseEdges.length > 0) {
         const spectral = SpectralMath.analyzeTopology(N, sparseEdges);
         fiedlerValue = spectral.fiedler;
-        phi = N > 0 ? fiedlerValue / N : 0;
-        spectralScore = bucketScore(phi, [0.10, 0.05, 0.01]);
+
+        avgDegree = (2 * sparseEdges.length) / N;
+        couplingRatio = avgDegree > 0 ? fiedlerValue / avgDegree : 0;
+
+        if (fiedlerValue === 0) {
+            // Disconnected islands, dead code, or total fragmentation
+            spectralScore = 0.1;
+        } else if (couplingRatio >= 0.5) {
+            // Toxic monolith: everything imports everything. Spaghetti.
+            spectralScore = 0.2;
+        } else if (couplingRatio >= 0.15) {
+            // Acceptable: moderate coupling
+            spectralScore = 0.6;
+        } else {
+            // Ideal zone: high internal cohesion, low global coupling (healthy modularity)
+            spectralScore = 1.0;
+        }
+    } else if (N <= 2) {
+        // Too small to measure — neutral
+        spectralScore = 0.7;
     }
 
     components.push({
@@ -178,43 +215,69 @@ export async function computeAudit(
         score: spectralScore,
         weight: 0.25,
         label: scoreToLabel(spectralScore),
-        detail: `λ₂ = ${fiedlerValue.toFixed(4)}, Φ = ${phi.toFixed(4)} (${N} files, ${sparseEdges.length} edges)`,
+        detail: `λ₂ = ${fiedlerValue.toFixed(4)}, avgDegree = ${avgDegree.toFixed(2)}, coupling ratio = ${couplingRatio.toFixed(4)} (${N} files, ${sparseEdges.length} edges)`,
         available: true,
     });
 
-    if (spectralScore <= 0.4) {
+    if (fiedlerValue === 0 && N > 2 && sparseEdges.length > 0) {
         issues.push({
             file: "project-wide",
-            severity: spectralScore <= 0.1 ? "critical" : "high",
+            severity: "critical",
             type: "spectral_fracture",
-            detail: `λ₂ = ${fiedlerValue.toFixed(4)}. The dependency graph is nearly disconnected.`,
-            action: "Add cross-module interfaces to distribute coupling. Consider merging isolated clusters.",
-            impactOnScore: 0.8,
+            detail: `λ₂ = 0. The dependency graph has disconnected components (dead code or orphan modules).`,
+            action: "Identify disconnected clusters. Remove dead code or add interfaces between isolated modules.",
+            impactOnScore: 0,
+        });
+    } else if (couplingRatio >= 0.5) {
+        issues.push({
+            file: "project-wide",
+            severity: "critical",
+            type: "spaghetti_coupling",
+            detail: `Coupling ratio = ${couplingRatio.toFixed(3)}. The project is a monolith where most files are tightly interconnected.`,
+            action: "Extract modules with clear interfaces. Reduce cross-cutting imports. Target coupling ratio < 0.15.",
+            impactOnScore: 0,
         });
     }
 
     // ═════════════════════════════════════════════════════════
-    // SIGNAL 2: Bus Factor (PageRank Concentration)
+    // SIGNAL 2: Bus Factor (Shannon Entropy)
+    //
+    // OLD: concentration = top3PR / totalPR with hardcoded 15% threshold
+    // NEW: Shannon Entropy normalized over PageRank distribution
+    //   H = -Σ(p_i × ln(p_i)) / ln(N)
+    //   H → 1.0 = Risk perfectly distributed (healthy republic)
+    //   H → 0.0 = One file holds all the power (dictatorship / god file)
     // ═════════════════════════════════════════════════════════
 
     const prScores = computePageRank(allFiles, graph.importedBy);
     const sortedPR = Array.from(prScores.entries()).sort((a, b) => b[1] - a[1]);
     const totalPR = sortedPR.reduce((sum, [, v]) => sum + v, 0);
-    const top3PR = sortedPR.slice(0, 3).reduce((sum, [, v]) => sum + v, 0);
-    const concentration = totalPR > 0 ? top3PR / totalPR : 0;
 
-    const busFactorScore = bucketScoreInverse(concentration, [0.15, 0.30, 0.50]);
+    let shannonEntropy = 0;
+    if (totalPR > 0 && N > 1) {
+        for (const [, pr] of sortedPR) {
+            if (pr > 0) {
+                const p = pr / totalPR;
+                shannonEntropy -= p * Math.log(p);
+            }
+        }
+    }
+    const maxEntropy = N > 1 ? Math.log(N) : 1;
+    const normalizedEntropy = maxEntropy > 0 ? shannonEntropy / maxEntropy : 1.0;
+
+    // Score IS the entropy — no artificial buckets
+    const busFactorScore = Math.min(1.0, Math.max(0.0, normalizedEntropy));
 
     components.push({
         name: "Bus Factor",
         score: busFactorScore,
         weight: 0.25,
         label: scoreToLabel(busFactorScore),
-        detail: `Top 3 files hold ${(concentration * 100).toFixed(1)}% of PageRank: ${sortedPR.slice(0, 3).map(([f]) => path.basename(f)).join(", ")}`,
+        detail: `Shannon entropy: ${normalizedEntropy.toFixed(3)} (1.0 = perfect distribution). Top 3: ${sortedPR.slice(0, 3).map(([f]) => path.basename(f)).join(", ")}`,
         available: true,
     });
 
-    if (busFactorScore <= 0.4) {
+    if (normalizedEntropy < 0.5) {
         for (const [file, pr] of sortedPR.slice(0, 3)) {
             const inDeg = graph.inDegree.get(file) || 0;
             if (totalPR > 0 && pr / totalPR > 0.15) {
@@ -224,7 +287,7 @@ export async function computeAudit(
                     type: "bus_factor",
                     detail: `PageRank: ${pr.toFixed(3)} (${((pr / totalPR) * 100).toFixed(1)}% of total). ${inDeg} files depend on this.`,
                     action: `Split responsibilities. Extract interfaces to reduce coupling. ${inDeg} dependents will break if this file breaks.`,
-                    impactOnScore: 0.6,
+                    impactOnScore: 0,
                 });
             }
         }
@@ -251,7 +314,7 @@ export async function computeAudit(
                 type: "type_errors",
                 detail: `${errorCount} type errors across ${trackedFiles} tracked files (density: ${errorDensity.toFixed(3)}).`,
                 action: "Fix type errors in core files first. Use nreki_code action:\"edit\" with NREKI validation.",
-                impactOnScore: 0.5,
+                impactOnScore: 0,
             });
         }
     }
@@ -272,10 +335,21 @@ export async function computeAudit(
     // ═════════════════════════════════════════════════════════
 
     const testFiles = findTestFiles(projectRoot);
-    const coreWithTests = coreFiles.filter(f =>
-        fileHasTest(path.join(projectRoot, f), projectRoot, testFiles)
-    );
-    const coreCoverage = coreFiles.length > 0 ? coreWithTests.length / coreFiles.length : 1.0;
+    let coreWithTestsCount = 0;
+    const untestedCoreFiles: Array<{ file: string; inDeg: number }> = [];
+
+    for (const coreFile of coreFiles) {
+        if (fileHasTest(path.join(projectRoot, coreFile), projectRoot, testFiles)) {
+            coreWithTestsCount++;
+        } else {
+            untestedCoreFiles.push({
+                file: coreFile,
+                inDeg: graph.inDegree.get(coreFile) || 0,
+            });
+        }
+    }
+
+    const coreCoverage = coreFiles.length > 0 ? coreWithTestsCount / coreFiles.length : 1.0;
     const coreCoverageScore = bucketScore(coreCoverage, [0.90, 0.70, 0.40]);
 
     components.push({
@@ -283,22 +357,19 @@ export async function computeAudit(
         score: coreCoverageScore,
         weight: isDeep ? 0.20 : 0.30,
         label: scoreToLabel(coreCoverageScore),
-        detail: `${coreWithTests.length}/${coreFiles.length} core files have tests (${(coreCoverage * 100).toFixed(0)}%)`,
+        detail: `${coreWithTestsCount}/${coreFiles.length} core files have tests (${(coreCoverage * 100).toFixed(0)}%)`,
         available: true,
     });
 
-    for (const coreFile of coreFiles) {
-        if (!fileHasTest(path.join(projectRoot, coreFile), projectRoot, testFiles)) {
-            const inDeg = graph.inDegree.get(coreFile) || 0;
-            issues.push({
-                file: coreFile,
-                severity: inDeg > 20 ? "critical" : (inDeg > 5 ? "high" : "medium"),
-                type: "untested_core",
-                detail: `☢️ CRITICAL CORE file with ${inDeg} dependents and NO tests.`,
-                action: `Add tests for ${path.basename(coreFile)}. If this file breaks, ${inDeg} files break with it.`,
-                impactOnScore: inDeg > 20 ? 1.2 : 0.6,
-            });
-        }
+    for (const { file, inDeg } of untestedCoreFiles) {
+        issues.push({
+            file,
+            severity: inDeg > 20 ? "critical" : (inDeg > 5 ? "high" : "medium"),
+            type: "untested_core",
+            detail: `☢️ CRITICAL CORE file with ${inDeg} dependents and NO tests.`,
+            action: `Add tests for ${path.basename(file)}. If this file breaks, ${inDeg} files break with it.`,
+            impactOnScore: 0, // Will be computed by simulation below
+        });
     }
 
     // ═════════════════════════════════════════════════════════
@@ -331,7 +402,7 @@ export async function computeAudit(
                 type: "chronic_fragility",
                 detail: `CFI: ${cfi.toFixed(1)}. This core file breaks repeatedly across sessions.`,
                 action: "Add regression tests targeting known failure patterns. Consider refactoring to reduce complexity.",
-                impactOnScore: 0.4,
+                impactOnScore: 0,
             });
         }
     }
@@ -348,40 +419,83 @@ export async function computeAudit(
     });
 
     // ═════════════════════════════════════════════════════════
-    // COMPUTE AHI
+    // COMPUTE AHI + SIMULATE RECOVERY (no more fiction)
     // ═════════════════════════════════════════════════════════
 
-    const activeComponents = components.filter(c => c.weight > 0);
-    const totalWeight = activeComponents.reduce((sum, c) => sum + c.weight, 0);
+    const ahi = calculateAHI(components);
 
-    let rawAhi = 0;
-    for (const c of activeComponents) {
-        rawAhi += c.score * (c.weight / totalWeight);
-    }
-    const ahi = Math.round(rawAhi * 100) / 10;
-
-    // Sort issues by severity then impact
+    // Sort issues by severity
     const severityOrder: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
     issues.sort((a, b) => {
         const sevDiff = severityOrder[a.severity] - severityOrder[b.severity];
         if (sevDiff !== 0) return sevDiff;
-        return b.impactOnScore - a.impactOnScore;
+        return 0;
     });
 
-    // Recovery plan
-    const topIssues = issues.slice(0, 5);
-    const estimatedRecovery = topIssues.reduce((sum, i) => sum + i.impactOnScore, 0);
-    const projectedAhi = Math.min(10, ahi + estimatedRecovery);
+    // ── RECOVERY SIMULATION ──────────────────────────────────
+    // Instead of hardcoded impactOnScore, simulate each fix in RAM.
+    // Clone the component scores, apply the virtual fix, recalculate AHI.
+    // The delta is REAL math, not intuition.
 
+    // Find coreCoverage component index for simulation
+    const coreCoverageIdx = components.findIndex(c => c.name === "Core Coverage");
+
+    for (const issue of issues) {
+        if (issue.type === "untested_core" && coreCoverageIdx >= 0) {
+            // Simulate: mark this file as tested, recalculate coreCoverage score
+            const simulatedTestedCount = coreWithTestsCount + 1;
+            const simulatedCoverage = coreFiles.length > 0 ? simulatedTestedCount / coreFiles.length : 1.0;
+            const simulatedCoverageScore = bucketScore(simulatedCoverage, [0.90, 0.70, 0.40]);
+
+            const simComponents = components.map((c, i) =>
+                i === coreCoverageIdx ? { ...c, score: simulatedCoverageScore } : c
+            );
+            const simulatedAhi = calculateAHI(simComponents);
+            issue.impactOnScore = Math.round((simulatedAhi - ahi) * 10) / 10;
+        }
+        // spectral_fracture, spaghetti_coupling, bus_factor, chronic_fragility:
+        // Cannot simulate without modifying the graph structure.
+        // impactOnScore stays 0 = "requires structural changes, impact not simulable"
+    }
+
+    // ── BUILD RECOVERY PLAN ─────────────────────────────────
+    // Simulate ALL fixable issues applied together for cumulative projection
+    const fixableIssues = issues.filter(i => i.impactOnScore > 0);
+
+    let projectedAhi = ahi;
+    if (fixableIssues.length > 0 && coreCoverageIdx >= 0) {
+        const totalSimulatedTested = coreWithTestsCount + fixableIssues.filter(i => i.type === "untested_core").length;
+        const totalSimCoverage = coreFiles.length > 0 ? totalSimulatedTested / coreFiles.length : 1.0;
+        const totalSimCoverageScore = bucketScore(totalSimCoverage, [0.90, 0.70, 0.40]);
+        const simComponents = components.map((c, i) =>
+            i === coreCoverageIdx ? { ...c, score: totalSimCoverageScore } : c
+        );
+        projectedAhi = calculateAHI(simComponents);
+    }
+
+    const topIssues = issues.slice(0, 5);
     let recoveryPlan = "";
+
     if (topIssues.length > 0) {
-        recoveryPlan = `Fix the top ${topIssues.length} issues to raise your score from ${ahi.toFixed(1)} → ~${projectedAhi.toFixed(1)}:\n\n`;
-        topIssues.forEach((issue, i) => {
+        const hasSimulated = topIssues.some(i => i.impactOnScore > 0);
+        const hasStructural = topIssues.some(i => i.impactOnScore === 0);
+
+        if (hasSimulated) {
+            recoveryPlan += `Simulated recovery: ${ahi.toFixed(1)} → ${projectedAhi.toFixed(1)} (computed in RAM, not estimated)\n\n`;
+        }
+
+        for (let i = 0; i < topIssues.length; i++) {
+            const issue = topIssues[i];
             const icon = issue.severity === "critical" ? "🔴" : (issue.severity === "high" ? "🟠" : "🟡");
-            recoveryPlan += `${i + 1}. ${icon} ${issue.file}\n`;
+            const delta = issue.impactOnScore > 0 ? ` (+${issue.impactOnScore.toFixed(1)} simulated)` : " (structural — impact requires refactoring)";
+            recoveryPlan += `${i + 1}. ${icon} ${issue.file}${delta}\n`;
             recoveryPlan += `   ${issue.detail}\n`;
             recoveryPlan += `   → ${issue.action}\n\n`;
-        });
+        }
+
+        if (hasStructural) {
+            recoveryPlan += `Note: Structural issues (spectral, bus factor) cannot be simulated — they require architectural changes that modify the dependency graph.\n`;
+        }
     } else {
         recoveryPlan = "No critical issues found. Your architecture is solid.";
     }
