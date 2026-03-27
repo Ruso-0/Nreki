@@ -17,13 +17,36 @@
 
 import * as ts from "typescript";
 import * as path from "path";
+import * as crypto from "crypto";
 import type {
     LanguageBackend,
     BackendCapabilities,
     BackendFix,
     VfsAdapter,
 } from "../language-backend.js";
-import type { NrekiStructuredError, PreEditContract } from "../nreki-kernel.js";
+import type { NrekiStructuredError, PreEditContract, TypeRegression } from "../nreki-kernel.js";
+import { escapeRegExp } from "../../utils/imports.js";
+
+// ─── Environment file classifier (copied from kernel) ─────────────
+const ENV_FILE_BASENAMES = new Set([
+    "tsconfig.json", "jsconfig.json", "package.json",
+    "jest.config.ts", "jest.config.js", "jest.config.mjs",
+    "vitest.config.ts", "vitest.config.js", "vitest.config.mts",
+    "webpack.config.js", "webpack.config.ts",
+    "vite.config.ts", "vite.config.js", "vite.config.mts",
+    "rollup.config.js", "rollup.config.ts", "rollup.config.mjs",
+    "eslint.config.js", "eslint.config.mjs",
+    ".eslintrc.json", ".eslintrc.js",
+    "prettier.config.js", ".prettierrc.json",
+    "babel.config.js", "babel.config.json",
+    "next.config.js", "next.config.mjs", "next.config.ts",
+    "tailwind.config.js", "tailwind.config.ts",
+]);
+
+const isEnvironmentFile = (filePath: string): boolean => {
+    const base = path.basename(filePath).toLowerCase();
+    return base.endsWith(".d.ts") || base.startsWith(".") || ENV_FILE_BASENAMES.has(base);
+};
 
 export class TypeScriptStradaBackend implements LanguageBackend {
     readonly name = "TypeScript-Strada";
@@ -44,6 +67,20 @@ export class TypeScriptStradaBackend implements LanguageBackend {
     public originalFileExists!: (fileName: string) => boolean;
     public documentRegistry!: ts.DocumentRegistry;
     public languageService!: ts.LanguageService;
+
+    // ─── Stored from createCompilerInfra for recovery paths ───
+    private projectRoot!: string;
+    private vfsAdapter?: VfsAdapter;
+
+    // ─── Compiler Lifecycle (moved from kernel) ───
+    private builderProgram?: ts.EmitAndSemanticDiagnosticsBuilderProgram;
+    private editCount = 0;
+    private gcThreshold = 100;
+    private isStateCorrupted = false;
+
+    // ─── Diagnostic State (moved from kernel) ───
+    private baselineFrequencies = new Map<string, number>();
+    private lastRawDiagnostics: ts.Diagnostic[] = [];
 
     // POSIX normalization (duplicated from kernel — 1 line, no shared dependency needed)
     private toPosix(p: string): string {
@@ -89,6 +126,9 @@ export class TypeScriptStradaBackend implements LanguageBackend {
         projectRoot: string,
         vfsAdapter: VfsAdapter,
     ): void {
+        this.projectRoot = projectRoot;
+        this.vfsAdapter = vfsAdapter;
+
         // Create base host from TS
         this.host = ts.createIncrementalCompilerHost(this.compilerOptions, ts.sys);
 
@@ -138,6 +178,357 @@ export class TypeScriptStradaBackend implements LanguageBackend {
         }, this.documentRegistry);
     }
 
+    /**
+     * Create a LanguageServiceHost using the stored VfsAdapter.
+     * Used by updateProgram() during recovery (recreate after corruption).
+     * Extracted from NrekiKernel.createLSHost().
+     */
+    public createLSHost(): ts.LanguageServiceHost {
+        if (!this.vfsAdapter) {
+            throw new Error("[NREKI] Cannot create LSHost: VfsAdapter not initialized. Call createCompilerInfra first.");
+        }
+        return {
+            getCompilationSettings: () => this.compilerOptions,
+            getScriptFileNames: () => Array.from(this.rootNames),
+            getScriptVersion: (fileName: string) => this.vfsAdapter!.getScriptVersion(fileName),
+            getScriptSnapshot: (fileName: string) => this.vfsAdapter!.getScriptSnapshot(fileName),
+            getCurrentDirectory: () => this.projectRoot,
+            getDefaultLibFileName: (options: ts.CompilerOptions) => ts.getDefaultLibFilePath(options),
+            fileExists: this.host.fileExists,
+            readFile: this.host.readFile,
+            directoryExists: this.host.directoryExists,
+            readDirectory: ts.sys.readDirectory,
+        };
+    }
+
+    /**
+     * Rebuild the incremental TypeScript program.
+     * Handles corruption recovery (recreate DocumentRegistry + LanguageService)
+     * and periodic GC (kill builder every N edits).
+     *
+     * Extracted from NrekiKernel.updateProgram().
+     */
+    public updateProgram(): void {
+        if (this.isStateCorrupted) {
+            console.error("[NREKI] Purging builder and LanguageService after early exit. Warm rebuild ~2-5s.");
+            this.builderProgram = undefined;
+
+            this.documentRegistry = ts.createDocumentRegistry(
+                ts.sys.useCaseSensitiveFileNames,
+                this.projectRoot
+            );
+            this.languageService = ts.createLanguageService(this.createLSHost(), this.documentRegistry);
+
+            this.isStateCorrupted = false;
+        } else if (++this.editCount >= this.gcThreshold) {
+            this.builderProgram = undefined;
+            this.editCount = 0;
+        }
+        this.builderProgram = ts.createEmitAndSemanticDiagnosticsBuilderProgram(
+            Array.from(this.rootNames), this.compilerOptions, this.host,
+            this.builderProgram // undefined after purge = fresh rebuild with cached files
+        );
+    }
+
+    /**
+     * Release cached AST data for files that have been mutated.
+     * mutatedFiles is owned by the kernel — passed as parameter.
+     *
+     * Extracted from NrekiKernel.releaseMutatedDocuments().
+     */
+    public releaseMutatedDocuments(mutatedFiles: Set<string>): void {
+        if (!this.documentRegistry || mutatedFiles.size === 0) return;
+
+        const registryKey = this.documentRegistry.getKeyForCompilationSettings(
+            this.compilerOptions
+        );
+
+        for (const file of mutatedFiles) {
+            try {
+                const scriptKind =
+                    file.endsWith(".tsx") ? ts.ScriptKind.TSX :
+                    file.endsWith(".jsx") ? ts.ScriptKind.JSX :
+                    file.endsWith(".js") || file.endsWith(".mjs") || file.endsWith(".cjs") ? ts.ScriptKind.JS :
+                    ts.ScriptKind.TS;
+                this.documentRegistry.releaseDocumentWithKey(
+                    file as ts.Path,
+                    registryKey,
+                    scriptKind,
+                    undefined,
+                );
+            } catch { /* Best effort: version may already be released */ }
+        }
+        mutatedFiles.clear();
+    }
+
+    /**
+     * Kill the compiler cache. Called by the Orchestrator when a transaction
+     * fails or times out.
+     *
+     * markCorrupted=false: warm rebuild (just kill incremental cache)
+     * markCorrupted=true: full rebuild (recreate DR + LS on next updateProgram)
+     */
+    public purgeCache(markCorrupted: boolean = false): void {
+        this.builderProgram = undefined;
+        this.isStateCorrupted = markCorrupted;
+    }
+
+    // ─── Diagnostic Methods (moved from kernel) ───
+
+    private getFingerprint(diag: ts.Diagnostic): string {
+        const file = diag.file
+            ? this.toPosix(path.resolve(this.projectRoot, diag.file.fileName))
+            : "GLOBAL";
+        let msg = ts.flattenDiagnosticMessageText(diag.messageText, "\n");
+        const nativeRoot = path.resolve(this.projectRoot);
+        const nativePosix = nativeRoot.replace(/\\/g, "/");
+        msg = msg.replace(new RegExp(escapeRegExp(this.projectRoot), "ig"), "<ROOT>");
+        msg = msg.replace(new RegExp(escapeRegExp(nativeRoot), "ig"), "<ROOT>");
+        msg = msg.replace(new RegExp(escapeRegExp(nativePosix), "ig"), "<ROOT>");
+        return crypto.createHash("sha256").update(`${file}|TS${diag.code}|${msg}`).digest("hex");
+    }
+
+    private toStructured(diag: ts.Diagnostic): NrekiStructuredError {
+        const pos = diag.file && diag.start != null
+            ? ts.getLineAndCharacterOfPosition(diag.file, diag.start)
+            : { line: 0, character: 0 };
+        return {
+            file: diag.file
+                ? this.toPosix(path.relative(this.projectRoot, diag.file.fileName))
+                : "global",
+            line: pos.line + 1,
+            column: pos.character + 1,
+            code: `TS${diag.code}`,
+            message: ts.flattenDiagnosticMessageText(diag.messageText, "\n"),
+        };
+    }
+
+    public captureBaseline(targetFiles: Set<string> | undefined, mode: string): void {
+        this.baselineFrequencies.clear();
+        if (!this.builderProgram) return;
+        const program = this.builderProgram.getProgram();
+        const processDiag = (diag: ts.Diagnostic) => {
+            const hash = this.getFingerprint(diag);
+            this.baselineFrequencies.set(hash, (this.baselineFrequencies.get(hash) || 0) + 1);
+        };
+
+        if (mode === "project") {
+            for (const file of program.getSourceFiles()) {
+                for (const diag of program.getSyntacticDiagnostics(file)) processDiag(diag);
+            }
+            for (const diag of program.getGlobalDiagnostics()) processDiag(diag);
+            for (const diag of this.builderProgram.getSemanticDiagnostics()) processDiag(diag);
+            return;
+        }
+
+        const filesToScan = targetFiles
+            ? Array.from(targetFiles)
+                .map(p => program.getSourceFile(p))
+                .filter((sf): sf is ts.SourceFile => sf !== undefined)
+            : Array.from(program.getSourceFiles());
+
+        for (const sf of filesToScan) {
+            for (const diag of program.getSyntacticDiagnostics(sf)) processDiag(diag);
+            for (const diag of program.getSemanticDiagnostics(sf)) processDiag(diag);
+        }
+        for (const diag of program.getGlobalDiagnostics()) processDiag(diag);
+    }
+
+    public getBaselineErrorCount(): number {
+        let total = 0;
+        for (const count of this.baselineFrequencies.values()) total += count;
+        return total;
+    }
+
+    // ─── TTRD Methods (moved from kernel) ───
+
+    private getToxicityScoreFromType(
+        type: ts.Type,
+        checker: ts.TypeChecker,
+        depth: number = 0,
+        visited: Set<ts.Type> = new Set()
+    ): number {
+        if (depth > 3) return 0;
+        if (type.flags & ts.TypeFlags.Object) {
+            if (visited.has(type)) return 0;
+            visited.add(type);
+        }
+
+        let score = 0;
+
+        if (type.flags & ts.TypeFlags.Any) score += 10;
+        else if (type.flags & ts.TypeFlags.Unknown) score += 2;
+
+        if (type.symbol && type.symbol.name === "Function") score += 5;
+
+        for (const sig of type.getCallSignatures()) {
+            for (const param of sig.parameters) {
+                const paramDecl = param.valueDeclaration || param.declarations?.[0];
+                const paramType = paramDecl
+                    ? checker.getTypeOfSymbolAtLocation(param, paramDecl)
+                    : checker.getDeclaredTypeOfSymbol(param);
+                score += this.getToxicityScoreFromType(paramType, checker, depth + 1, visited);
+            }
+            score += this.getToxicityScoreFromType(sig.getReturnType(), checker, depth + 1, visited);
+        }
+
+        if (type.flags & ts.TypeFlags.Object) {
+            for (const prop of type.getProperties()) {
+                const propDecl = prop.valueDeclaration || prop.declarations?.[0];
+                const propType = propDecl
+                    ? checker.getTypeOfSymbolAtLocation(prop, propDecl)
+                    : checker.getDeclaredTypeOfSymbol(prop);
+                score += this.getToxicityScoreFromType(propType, checker, depth + 1, visited);
+            }
+        }
+
+        const typeRef = type as ts.TypeReference;
+        if (typeRef.typeArguments) {
+            for (const arg of typeRef.typeArguments) {
+                score += this.getToxicityScoreFromType(arg, checker, depth + 1, visited);
+            }
+        }
+
+        if (type.isUnionOrIntersection()) {
+            for (const sub of type.types) {
+                score += this.getToxicityScoreFromType(sub, checker, depth + 1, visited);
+            }
+        }
+
+        return score;
+    }
+
+    async extractCanonicalTypes(files: Set<string>): Promise<Map<string, Map<string, PreEditContract>>> {
+        const contracts = new Map<string, Map<string, PreEditContract>>();
+        if (!this.builderProgram) return contracts;
+
+        const program = this.builderProgram.getProgram();
+        const checker = program.getTypeChecker();
+
+        for (const posixPath of files) {
+            const sf = program.getSourceFile(posixPath);
+            if (!sf) continue;
+
+            const fileSymbol = checker.getSymbolAtLocation(sf);
+            if (!fileSymbol || !fileSymbol.exports) continue;
+
+            const fileContracts = new Map<string, PreEditContract>();
+            const exports = checker.getExportsOfModule(fileSymbol);
+
+            for (const exp of exports) {
+                const decl = exp.valueDeclaration || exp.declarations?.[0];
+                if (!decl || decl.getSourceFile().fileName !== posixPath) continue;
+
+                let type: ts.Type;
+                if (exp.flags & ts.SymbolFlags.TypeAlias || exp.flags & ts.SymbolFlags.Interface) {
+                    type = checker.getDeclaredTypeOfSymbol(exp);
+                } else {
+                    type = checker.getTypeOfSymbolAtLocation(exp, decl);
+                }
+
+                const toxicity = this.getToxicityScoreFromType(type, checker);
+                const isUntyped = (type.flags & ts.TypeFlags.Any) !== 0 || (type.flags & ts.TypeFlags.Unknown) !== 0;
+
+                let typeStr = checker.typeToString(type, undefined, ts.TypeFormatFlags.UseFullyQualifiedType);
+                const cleanType = typeStr.replace(/\s+/g, " ");
+                const safeType = cleanType.length > 150 ? cleanType.substring(0, 147) + "..." : cleanType;
+
+                fileContracts.set(exp.getName(), { typeStr: safeType, toxicity, isUntyped });
+            }
+            if (fileContracts.size > 0) contracts.set(posixPath, fileContracts);
+        }
+        return contracts;
+    }
+
+    public computeTypeRegressions(
+        preContracts: Map<string, Map<string, PreEditContract>>,
+        postContracts: Map<string, Map<string, PreEditContract>>
+    ): TypeRegression[] {
+        const regressions: TypeRegression[] = [];
+
+        for (const [filePath, preSymbols] of preContracts.entries()) {
+            const postSymbols = postContracts.get(filePath);
+            if (!postSymbols) continue;
+
+            for (const [symbol, oldData] of preSymbols.entries()) {
+                const newData = postSymbols.get(symbol);
+                if (!newData) continue;
+
+                if (newData.toxicity > oldData.toxicity || (newData.isUntyped && !oldData.isUntyped)) {
+                    regressions.push({
+                        filePath, symbol,
+                        oldType: oldData.typeStr,
+                        newType: newData.typeStr,
+                    });
+                }
+            }
+
+            // DETECT NEW TOXIC EXPORTS injected by AI to bypass TTRD
+            for (const [symbol, newData] of postSymbols.entries()) {
+                if (preSymbols.has(symbol)) continue;
+                if (newData.toxicity > 0 || newData.isUntyped) {
+                    regressions.push({
+                        filePath, symbol,
+                        oldType: "(new export)",
+                        newType: newData.typeStr,
+                    });
+                }
+            }
+        }
+
+        // Detect toxic exports in entirely NEW files
+        for (const [filePath, postSymbols] of postContracts.entries()) {
+            if (preContracts.has(filePath)) continue;
+            for (const [symbol, newData] of postSymbols.entries()) {
+                if (newData.toxicity > 0 || newData.isUntyped) {
+                    regressions.push({
+                        filePath, symbol,
+                        oldType: "(new file)",
+                        newType: newData.typeStr,
+                    });
+                }
+            }
+        }
+
+        return regressions;
+    }
+
+    /** @internal Strangler Fig bridge: inject pre-loaded builderProgram from cache */
+    public _injectBuilderProgram(program: ts.EmitAndSemanticDiagnosticsBuilderProgram): void {
+        this.builderProgram = program;
+    }
+
+    // ─── Temporary Bridge Getters (Strangler Fig) ───
+    // These exist ONLY so the kernel can access compiler state
+    // for methods not yet migrated (captureBaseline, getFatalErrors,
+    // extractCanonicalTypes, attemptAutoHealing, predictBlastRadius).
+    // They will be DELETED when those methods move to the backend.
+
+    get tsBuilder(): ts.EmitAndSemanticDiagnosticsBuilderProgram | undefined {
+        return this.builderProgram;
+    }
+
+    get tsProgram(): ts.Program | undefined {
+        return this.builderProgram?.getProgram();
+    }
+
+    get tsLanguageService(): ts.LanguageService {
+        return this.languageService;
+    }
+
+    get isCorrupted(): boolean {
+        return this.isStateCorrupted;
+    }
+
+    // ─── Bridge for attemptAutoHealing (deleted in Act 5) ───
+    get tsLastDiagnostics(): ts.Diagnostic[] {
+        return this.lastRawDiagnostics;
+    }
+
+    get baselineCount(): number {
+        return this.baselineFrequencies.size;
+    }
+
     async boot(_workspacePath: string, _mode: "file" | "project" | "hologram"): Promise<void> {
         // STUB: Boot is still orchestrated by NrekiKernel.boot().
         // initConfig() is called explicitly by the kernel, not from here.
@@ -149,10 +540,85 @@ export class TypeScriptStradaBackend implements LanguageBackend {
         // Phase 2+ will extract vfs.set() + vfsClock.set() here.
     }
 
-    async getDiagnostics(_filesToEvaluate: Set<string>): Promise<NrekiStructuredError[]> {
-        // STUB: Real diagnostics live in NrekiKernel.getFatalErrors() for now.
-        // Phase 2+ will extract updateProgram() + diagnostic collection here.
-        return [];
+    async getDiagnostics(
+        filesToEvaluate: Set<string>,
+        explicitlyEditedFiles?: Set<string>,
+        mode?: string,
+    ): Promise<NrekiStructuredError[]> {
+        if (!this.builderProgram) return [];
+
+        const editedFiles = explicitlyEditedFiles || filesToEvaluate;
+        const currentMode = mode || "project";
+
+        const currentFrequencies = new Map<string, number>();
+        const fatalErrors: ts.Diagnostic[] = [];
+        const program = this.builderProgram.getProgram();
+
+        const errorThreshold = 50 + (editedFiles.size * 20);
+        const touchedEnvironment = Array.from(editedFiles).some(isEnvironmentFile);
+
+        const processDiag = (diag: ts.Diagnostic) => {
+            if (!diag.file && !touchedEnvironment) return;
+            const hash = this.getFingerprint(diag);
+            const count = (currentFrequencies.get(hash) || 0) + 1;
+            currentFrequencies.set(hash, count);
+            if (count > (this.baselineFrequencies.get(hash) || 0)) {
+                fatalErrors.push(diag);
+            }
+        };
+
+        // Shield 1: Global diagnostics
+        if (touchedEnvironment) {
+            for (const diag of program.getGlobalDiagnostics()) processDiag(diag);
+            for (const diag of program.getOptionsDiagnostics()) processDiag(diag);
+        }
+
+        // Shield 2: Syntactic + Semantic
+        for (const posixPath of filesToEvaluate) {
+            const sf = program.getSourceFile(posixPath);
+            if (sf) {
+                if (editedFiles.has(posixPath)) {
+                    for (const diag of program.getSyntacticDiagnostics(sf)) processDiag(diag);
+                }
+                if (currentMode === "file" || currentMode === "hologram") {
+                    for (const diag of program.getSemanticDiagnostics(sf)) processDiag(diag);
+                }
+            }
+        }
+
+        // Shield 3: PROJECT mode cascade
+        if (currentMode === "project") {
+            let cascadeCount = 0;
+            let nextAffected: ts.AffectedFileResult<readonly ts.Diagnostic[]>;
+
+            while ((nextAffected = this.builderProgram!.getSemanticDiagnosticsOfNextAffectedFile())) {
+                for (const diag of nextAffected.result as ts.Diagnostic[]) {
+                    processDiag(diag);
+                    if (diag.file && !editedFiles.has(this.toPosix(diag.file.fileName))) {
+                        cascadeCount++;
+                    }
+                }
+                if (cascadeCount > errorThreshold) {
+                    this.isStateCorrupted = true;
+                    fatalErrors.push({
+                        file: undefined,
+                        start: undefined,
+                        length: undefined,
+                        category: ts.DiagnosticCategory.Error,
+                        code: 9999,
+                        messageText:
+                            `Cascade exceeded threshold (${errorThreshold}). ` +
+                            `${cascadeCount} errors in non-edited files. Edit rejected.`,
+                    });
+                    break;
+                }
+            }
+        }
+
+        // Store raw diagnostics for attemptAutoHealing bridge (until Act 5)
+        this.lastRawDiagnostics = fatalErrors;
+
+        return fatalErrors.map(d => this.toStructured(d));
     }
 
     async getAutoFixes(_filePath: string, _error: NrekiStructuredError): Promise<BackendFix[]> {
@@ -161,11 +627,7 @@ export class TypeScriptStradaBackend implements LanguageBackend {
         return [];
     }
 
-    async extractCanonicalTypes(_files: Set<string>): Promise<Map<string, Map<string, PreEditContract>>> {
-        // STUB: Real TTRD lives in NrekiKernel.extractCanonicalTypes() for now.
-        // Phase 2+ will extract TypeChecker type walking here.
-        return new Map();
-    }
+
 
     async shutdown(): Promise<void> {
         // STUB: TypeScript backend is in-process. Nothing to kill.

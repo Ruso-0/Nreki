@@ -4,7 +4,7 @@ import * as path from "path";
 import * as crypto from "crypto";
 import { isSensitivePath } from "../utils/path-jail.js";
 import { readSource } from "../utils/read-source.js";
-import { escapeRegExp } from "../utils/imports.js";
+// escapeRegExp moved to backend (Strangler Fig Act 3)
 import type { LanguageBackend } from "./language-backend.js";
 import { TypeScriptStradaBackend } from "./backends/typescript-strada.js";
 
@@ -83,27 +83,6 @@ export interface NrekiInterceptResult {
 
 export type NrekiMode = "auto" | "syntax" | "file" | "project" | "hologram";
 
-// ─── Environment file classifier (Performance Modes) ─────────────
-const ENV_FILE_BASENAMES = new Set([
-    "tsconfig.json", "jsconfig.json", "package.json",
-    "jest.config.ts", "jest.config.js", "jest.config.mjs",
-    "vitest.config.ts", "vitest.config.js", "vitest.config.mts",
-    "webpack.config.js", "webpack.config.ts",
-    "vite.config.ts", "vite.config.js", "vite.config.mts",
-    "rollup.config.js", "rollup.config.ts", "rollup.config.mjs",
-    "eslint.config.js", "eslint.config.mjs",
-    ".eslintrc.json", ".eslintrc.js",
-    "prettier.config.js", ".prettierrc.json",
-    "babel.config.js", "babel.config.json",
-    "next.config.js", "next.config.mjs", "next.config.ts",
-    "tailwind.config.js", "tailwind.config.ts",
-]);
-
-const isEnvironmentFile = (filePath: string): boolean => {
-    const base = path.basename(filePath).toLowerCase();
-    return base.endsWith(".d.ts") || base.startsWith(".") || ENV_FILE_BASENAMES.has(base);
-};
-
 // ─── NREKI Kernel ─────────────────────────────────────────────────
 //
 // Cross-file semantic and syntactic verification for AI coding agents.
@@ -125,17 +104,10 @@ export class NrekiKernel {
     private vfsClock = new Map<string, Date>();
     private logicalTime = Date.now();
 
-    private baselineFrequencies = new Map<string, number>();
     private mutex = new AsyncMutex();
-    private editCount = 0;
-    private gcThreshold = 100;
-
     private compilerOptions!: ts.CompilerOptions;
     private rootNames!: Set<string>;
     private host!: ts.CompilerHost;
-    private originalReadFile!: (fileName: string) => string | undefined;
-    private originalFileExists!: (fileName: string) => boolean;
-    private builderProgram?: ts.EmitAndSemanticDiagnosticsBuilderProgram;
     private booted = false;
     private _healingStats = { applied: 0, failed: 0 };
 
@@ -143,8 +115,6 @@ export class NrekiKernel {
     public get healingStats(): Readonly<{ applied: number; failed: number }> {
         return { applied: this._healingStats.applied, failed: this._healingStats.failed };
     }
-    private languageService!: ts.LanguageService;
-    private documentRegistry!: ts.DocumentRegistry;
     private mutatedFiles = new Set<string>();
     private bootErrorCount: number = -1;
     private tsBuildInfoPath!: string;
@@ -161,7 +131,6 @@ export class NrekiKernel {
 
     // Performance Modes
     public mode: "file" | "project" | "hologram" = "project";
-    private isStateCorrupted = false;
 
     /** Max file size for JIT classification. Files larger than this are
      *  skipped to prevent synchronous event loop blocking during
@@ -236,30 +205,6 @@ export class NrekiKernel {
      * precisely target the correct registry bucket. Prevents
      * DocumentRegistry from accumulating stale AST versions.
      */
-    private releaseMutatedDocuments(): void {
-        if (!this.documentRegistry || this.mutatedFiles.size === 0) return;
-
-        const registryKey = this.documentRegistry.getKeyForCompilationSettings(
-            this.compilerOptions
-        );
-
-        for (const file of this.mutatedFiles) {
-            try {
-                const scriptKind =
-                    file.endsWith(".tsx") ? ts.ScriptKind.TSX :
-                    file.endsWith(".jsx") ? ts.ScriptKind.JSX :
-                    file.endsWith(".js") || file.endsWith(".mjs") || file.endsWith(".cjs") ? ts.ScriptKind.JS :
-                    ts.ScriptKind.TS;
-                this.documentRegistry.releaseDocumentWithKey(
-                    file as ts.Path,
-                    registryKey,
-                    scriptKind,
-                    undefined,
-                );
-            } catch { /* Best effort: version may already be released */ }
-        }
-        this.mutatedFiles.clear();
-    }
 
     /** Write TS version guard file alongside the cache. */
     private writeTsVersionGuard(): void {
@@ -306,6 +251,8 @@ export class NrekiKernel {
             this.compilerOptions.declaration = true;
             this.compilerOptions.emitDeclarationOnly = true;
             this.compilerOptions.isolatedModules = false;
+            // Sync filtered rootNames back to backend (hologram creates new Set)
+            this.tsBackend.rootNames = this.rootNames;
         }
 
         // ─── Delegate CompilerHost creation to backend (Strangler Fig 2B) ───
@@ -435,39 +382,38 @@ export class NrekiKernel {
 
         // Copy references for backward compat (kernel code still uses this.host, etc.)
         this.host = this.tsBackend.host;
-        this.originalReadFile = this.tsBackend.originalReadFile;
-        this.originalFileExists = this.tsBackend.originalFileExists;
-        this.documentRegistry = this.tsBackend.documentRegistry;
-        this.languageService = this.tsBackend.languageService;
+        // References synced via tsBackend (Strangler Fig 2CD)
         // ──────────────────────────────────────────────────────────────
 
-        // Incremental cache: try to load previous build state for warm boot
+        // Incremental cache: delegate to backend
         if (this.validateBuildInfoCache()) {
             try {
                 const readBuildHost: ts.ReadBuildProgramHost = {
                     useCaseSensitiveFileNames: () => ts.sys.useCaseSensitiveFileNames,
                     getCurrentDirectory: () => this.projectRoot,
                     readFile: (fileName: string) => {
-                        // Always read .tsbuildinfo from disk
                         if (fileName.endsWith(".tsbuildinfo")) {
                             return ts.sys.readFile(fileName);
                         }
-                        return this.host.readFile(fileName);
+                        return this.tsBackend.host.readFile(fileName);
                     },
                 };
-                this.builderProgram = ts.readBuilderProgram(
-                    this.compilerOptions, readBuildHost
+                const oldProgram = ts.readBuilderProgram(
+                    this.tsBackend.compilerOptions, readBuildHost
                 ) as ts.EmitAndSemanticDiagnosticsBuilderProgram | undefined;
+                if (oldProgram) {
+                    this.tsBackend._injectBuilderProgram(oldProgram);
+                }
             } catch {
-                this.builderProgram = undefined; // Corrupted cache, cold boot
+                // Corrupted cache, cold boot — backend starts fresh
             }
         }
 
-        this.updateProgram();
+        this.tsBackend.updateProgram();
         // Hologram/file mode: skip boot baseline - JIT baseline in interceptAtomicBatch
         // handles it scoped to target files.
         if (this.mode === "project") {
-            this.captureBaseline();
+            this.tsBackend.captureBaseline(undefined, this.mode);
         }
         // D2: Clean orphaned transaction backups from previous crashes
         const txDir = path.join(this.projectRoot, ".nreki", "transactions");
@@ -483,218 +429,13 @@ export class NrekiKernel {
         console.error(`[NREKI] Backend: ${this.backend.name} (healing: ${this.backend.capabilities.supportsAutoHealing}, ttrd: ${this.backend.capabilities.supportsTTRD})`);
         console.error(
             `[NREKI] Kernel booted. Tracking ${this.rootNames.size} files. ` +
-            `Baseline: ${this.baselineFrequencies.size} invariants. ` +
+            `Baseline: ${this.tsBackend.baselineCount} invariants. ` +
             `Boot errors: ${this.bootErrorCount}.`
         );
     }
 
     public isBooted(): boolean {
         return this.booted;
-    }
-
-    private createLSHost(): ts.LanguageServiceHost {
-        return {
-            getCompilationSettings: () => this.compilerOptions,
-            getScriptFileNames: () => Array.from(this.rootNames),
-            getScriptVersion: (fileName) => {
-                const posixPath = this.toPosix(path.resolve(this.projectRoot, fileName));
-                return this.vfsClock.get(posixPath)?.getTime().toString() || "1";
-            },
-            getScriptSnapshot: (fileName) => {
-                const posixPath = this.toPosix(path.resolve(this.projectRoot, fileName));
-
-                // HOLOGRAM INTERCEPT: serve shadow content for .d.ts/.d.mts/.d.cts
-                if (this.mode === "hologram" && /\.d\.[mc]?ts$/i.test(fileName)) {
-                    const tsPath = posixPath.replace(/\.d\.([mc]?)ts$/i, ".$1ts");
-                    const shadow = this.shadowContent.get(tsPath);
-                    if (shadow !== undefined) return ts.ScriptSnapshot.fromString(shadow);
-                    const tsxPath = posixPath.replace(/\.d\.([mc]?)ts$/i, ".$1tsx");
-                    const shadow2 = this.shadowContent.get(tsxPath);
-                    if (shadow2 !== undefined) return ts.ScriptSnapshot.fromString(shadow2);
-                }
-
-                if (this.vfs.has(posixPath)) {
-                    const content = this.vfs.get(posixPath);
-                    if (content === null || content === undefined) return undefined;
-                    return ts.ScriptSnapshot.fromString(content);
-                }
-                if (!this.originalFileExists.call(this.host, fileName)) return undefined;
-                const content = this.originalReadFile.call(this.host, fileName);
-                if (!content) return undefined;
-                return ts.ScriptSnapshot.fromString(content);
-            },
-            getCurrentDirectory: () => this.projectRoot,
-            getDefaultLibFileName: (options) => ts.getDefaultLibFilePath(options),
-            fileExists: this.host.fileExists,
-            readFile: this.host.readFile,
-            directoryExists: this.host.directoryExists,
-            readDirectory: ts.sys.readDirectory,
-        };
-    }
-
-    // P11 + P19: Periodic GC with counter reset
-    private updateProgram(): void {
-        // Purge corrupted builder after early exit
-        if (this.isStateCorrupted) {
-            console.error("[NREKI] Purging builder and LanguageService after early exit. Warm rebuild ~2-5s.");
-            this.builderProgram = undefined;
-
-            // FIX OOM: DocumentRegistry retains AST references from the corrupted
-            // builder. Recreating it allows V8 GC to reclaim the dead ASTs.
-            this.documentRegistry = ts.createDocumentRegistry(
-                ts.sys.useCaseSensitiveFileNames,
-                this.projectRoot
-            );
-            this.languageService = ts.createLanguageService(this.createLSHost(), this.documentRegistry);
-
-            this.isStateCorrupted = false;
-        } else if (++this.editCount >= this.gcThreshold) {
-            this.builderProgram = undefined;
-            this.editCount = 0;
-        }
-        this.builderProgram = ts.createEmitAndSemanticDiagnosticsBuilderProgram(
-            Array.from(this.rootNames), this.compilerOptions, this.host,
-            this.builderProgram // undefined after purge = fresh rebuild with cached files
-        );
-    }
-
-    // P9 + P15: Position-independent fingerprint with path sanitization
-    private getFingerprint(diag: ts.Diagnostic): string {
-        const file = diag.file
-            ? this.toPosix(path.resolve(this.projectRoot, diag.file.fileName))
-            : "GLOBAL";
-        let msg = ts.flattenDiagnosticMessageText(diag.messageText, "\n");
-        const nativeRoot = path.resolve(this.projectRoot);
-        const nativePosix = nativeRoot.replace(/\\/g, "/");
-        msg = msg.replace(new RegExp(escapeRegExp(this.projectRoot), "ig"), "<ROOT>");
-        msg = msg.replace(new RegExp(escapeRegExp(nativeRoot), "ig"), "<ROOT>");
-        msg = msg.replace(new RegExp(escapeRegExp(nativePosix), "ig"), "<ROOT>");
-        return crypto.createHash("sha256").update(`${file}|TS${diag.code}|${msg}`).digest("hex");
-    }
-
-
-    // P9 + P28: Baseline captures syntactic + global + semantic errors
-    private captureBaseline(targetFiles?: Set<string>): void {
-        this.baselineFrequencies.clear();
-        if (!this.builderProgram) return;
-        const program = this.builderProgram.getProgram();
-        const processDiag = (diag: ts.Diagnostic) => {
-            const hash = this.getFingerprint(diag);
-            this.baselineFrequencies.set(hash, (this.baselineFrequencies.get(hash) || 0) + 1);
-        };
-
-        if (this.mode === "project") {
-            // Project mode: full global baseline (existing behavior, unchanged)
-            for (const file of program.getSourceFiles()) {
-                for (const diag of program.getSyntacticDiagnostics(file)) processDiag(diag);
-            }
-            for (const diag of program.getGlobalDiagnostics()) processDiag(diag);
-            for (const diag of this.builderProgram.getSemanticDiagnostics()) processDiag(diag);
-            return;
-        }
-
-        // Hologram / File mode: JIT local baseline
-        // Only scan the files we are about to mutate or evaluate. ~0.05s instead of ~5.3s.
-        const filesToScan = targetFiles
-            ? Array.from(targetFiles)
-                .map(p => program.getSourceFile(p))
-                .filter((sf): sf is ts.SourceFile => sf !== undefined)
-            : Array.from(program.getSourceFiles());
-
-        for (const sf of filesToScan) {
-            for (const diag of program.getSyntacticDiagnostics(sf)) processDiag(diag);
-            for (const diag of program.getSemanticDiagnostics(sf)) processDiag(diag);
-        }
-        for (const diag of program.getGlobalDiagnostics()) processDiag(diag);
-    }
-
-    // ─── NREKI L3.3: Centralized Semantic Evaluation ───────────────
-    /**
-     * Re-evaluates the current AST and returns only errors that exceed the original baseline.
-     * Centralizes the 3 NREKI shields logic. Mode-aware: file mode skips cascade,
-     * project mode evaluates full cascade with early exit.
-     *
-     * PRECONDITION: this.updateProgram() MUST have been called before this method.
-     * WARNING: getSemanticDiagnosticsOfNextAffectedFile() is a stateful iterator.
-     *          Do NOT call this method twice without updateProgram() in between.
-     */
-    private getFatalErrors(explicitlyEditedFiles: Set<string>, filesToEvaluate: Set<string>): ts.Diagnostic[] {
-        const currentFrequencies = new Map<string, number>();
-        const fatalErrors: ts.Diagnostic[] = [];
-        const program = this.builderProgram!.getProgram();
-
-        // Elastic threshold: base 50 + 20 per file in a batch edit.
-        const errorThreshold = 50 + (explicitlyEditedFiles.size * 20);
-
-        const touchedEnvironment = Array.from(explicitlyEditedFiles).some(isEnvironmentFile);
-
-        const processDiag = (diag: ts.Diagnostic) => {
-            // Global diagnostic + no environment file touched = noise. Skip.
-            if (!diag.file && !touchedEnvironment) return;
-
-            const hash = this.getFingerprint(diag);
-            const count = (currentFrequencies.get(hash) || 0) + 1;
-            currentFrequencies.set(hash, count);
-            if (count > (this.baselineFrequencies.get(hash) || 0)) {
-                fatalErrors.push(diag);
-            }
-        };
-
-        // Shield 1: Global diagnostics - only if environment was touched
-        if (touchedEnvironment) {
-            for (const diag of program.getGlobalDiagnostics()) processDiag(diag);
-            for (const diag of program.getOptionsDiagnostics()) processDiag(diag);
-        }
-
-        // Shield 2: Syntactic (edited files only) + Semantic (all evaluated files)
-        for (const posixPath of filesToEvaluate) {
-            const sf = program.getSourceFile(posixPath);
-            if (sf) {
-                // Syntactic: only on files the LLM actually edited
-                if (explicitlyEditedFiles.has(posixPath)) {
-                    for (const diag of program.getSyntacticDiagnostics(sf)) processDiag(diag);
-                }
-                // Semantic: on ALL evaluated files (edited + dependents)
-                if (this.mode === "file" || this.mode === "hologram") {
-                    for (const diag of program.getSemanticDiagnostics(sf)) processDiag(diag);
-                }
-            }
-        }
-
-        // Shield 3: PROJECT mode - full cascade evaluation with early exit
-        if (this.mode === "project") {
-            let cascadeCount = 0;
-            let nextAffected: ts.AffectedFileResult<readonly ts.Diagnostic[]>;
-
-            while ((nextAffected = this.builderProgram!.getSemanticDiagnosticsOfNextAffectedFile())) {
-                for (const diag of nextAffected.result as ts.Diagnostic[]) {
-                    processDiag(diag);
-                    if (diag.file && !explicitlyEditedFiles.has(this.toPosix(diag.file.fileName))) {
-                        cascadeCount++;
-                    }
-                }
-
-                // Early exit: enough evidence to reject the edit.
-                // The TypeScript BuilderProgram iterator is now in a partial state.
-                // Flag it for cleanup in updateProgram().
-                if (cascadeCount > errorThreshold) {
-                    this.isStateCorrupted = true;
-                    fatalErrors.push({
-                        file: undefined,
-                        start: undefined,
-                        length: undefined,
-                        category: ts.DiagnosticCategory.Error,
-                        code: 9999,
-                        messageText:
-                            `Cascade exceeded threshold (${errorThreshold}). ` +
-                            `${cascadeCount} errors in non-edited files. Edit rejected.`,
-                    });
-                    break;
-                }
-            }
-        }
-
-        return fatalErrors;
     }
 
     // ─── TTRD: Temporal Type Regression Detection ─────────────────────
@@ -704,52 +445,7 @@ export class NrekiKernel {
      * Uses TypeChecker to read resolved types, not AST text.
      * Cost: O(K) where K = exports in the given files only.
      */
-    private extractCanonicalTypes(files: Set<string>): Map<string, Map<string, PreEditContract>> {
-        const contracts = new Map<string, Map<string, PreEditContract>>();
-        if (!this.builderProgram) return contracts;
-
-        const program = this.builderProgram.getProgram();
-        const checker = program.getTypeChecker();
-
-        for (const posixPath of files) {
-            const sf = program.getSourceFile(posixPath);
-            if (!sf) continue;
-
-            const fileSymbol = checker.getSymbolAtLocation(sf);
-            if (!fileSymbol || !fileSymbol.exports) continue;
-
-            const fileContracts = new Map<string, PreEditContract>();
-            const exports = checker.getExportsOfModule(fileSymbol);
-
-            for (const exp of exports) {
-                // Only process symbols declared in this file.
-                // Skips re-exports from barrel files (export * from './x')
-                // to prevent expanding thousands of transitive symbols.
-                const decl = exp.valueDeclaration || exp.declarations?.[0];
-                if (!decl || decl.getSourceFile().fileName !== posixPath) continue;
-
-                let type: ts.Type;
-                if (exp.flags & ts.SymbolFlags.TypeAlias || exp.flags & ts.SymbolFlags.Interface) {
-                    type = checker.getDeclaredTypeOfSymbol(exp);
-                } else {
-                    type = checker.getTypeOfSymbolAtLocation(exp, decl);
-                }
-
-                // MATH TRUTH: Calculate toxicity from TypeFlags bits, not strings
-                const toxicity = this.getToxicityScoreFromType(type, checker);
-                const isUntyped = (type.flags & ts.TypeFlags.Any) !== 0 || (type.flags & ts.TypeFlags.Unknown) !== 0;
-
-                // Visual string for human logs only (truncated safely — never used for scoring)
-                let typeStr = checker.typeToString(type, undefined, ts.TypeFormatFlags.UseFullyQualifiedType);
-                const cleanType = typeStr.replace(/\s+/g, " ");
-                const safeType = cleanType.length > 150 ? cleanType.substring(0, 147) + "..." : cleanType;
-
-                fileContracts.set(exp.getName(), { typeStr: safeType, toxicity, isUntyped });
-            }
-            if (fileContracts.size > 0) contracts.set(posixPath, fileContracts);
-        }
-        return contracts;
-    }
+    // extractCanonicalTypes moved to backend (Strangler Fig Act 4)
 
     /**
      * Check if a type string contains toxic type patterns.
@@ -779,134 +475,7 @@ export class NrekiKernel {
      * Depth limit prevents CPU freeze on deeply nested types (Prisma, tRPC).
      * Cycle-safe via Set<ts.Type> pointer comparison (TS interns types).
      */
-    private getToxicityScoreFromType(
-        type: ts.Type,
-        checker: ts.TypeChecker,
-        depth: number = 0,
-        visited: Set<ts.Type> = new Set()
-    ): number {
-        if (depth > 3) return 0;
-        // FIX SINGLETONS: Only track Object types in visited for cycle prevention.
-        // Primitive singletons (any, unknown, string, number) are shared instances
-        // in the TS compiler. Adding them to visited would skip scoring after
-        // the first occurrence, making (a: any, b: any) score the same as (a: any).
-        if (type.flags & ts.TypeFlags.Object) {
-            if (visited.has(type)) return 0;
-            visited.add(type);
-        }
-
-        let score = 0;
-
-        // Direct flag checks -O(1) bit operations
-        if (type.flags & ts.TypeFlags.Any) score += 10;
-        else if (type.flags & ts.TypeFlags.Unknown) score += 2;
-
-        // Global Function interface
-        if (type.symbol && type.symbol.name === "Function") score += 5;
-
-        // Walk function signatures (parameters + return type)
-        for (const sig of type.getCallSignatures()) {
-            for (const param of sig.parameters) {
-                const paramDecl = param.valueDeclaration || param.declarations?.[0];
-                const paramType = paramDecl
-                    ? checker.getTypeOfSymbolAtLocation(param, paramDecl)
-                    : checker.getDeclaredTypeOfSymbol(param);
-                score += this.getToxicityScoreFromType(paramType, checker, depth + 1, visited);
-            }
-            score += this.getToxicityScoreFromType(sig.getReturnType(), checker, depth + 1, visited);
-        }
-
-        // Walk object properties (interfaces, classes, object literals)
-        if (type.flags & ts.TypeFlags.Object) {
-            for (const prop of type.getProperties()) {
-                const propDecl = prop.valueDeclaration || prop.declarations?.[0];
-                const propType = propDecl
-                    ? checker.getTypeOfSymbolAtLocation(prop, propDecl)
-                    : checker.getDeclaredTypeOfSymbol(prop);
-                score += this.getToxicityScoreFromType(propType, checker, depth + 1, visited);
-            }
-        }
-
-        // Walk generic type arguments (Promise<any>, Map<string, any>)
-        const typeRef = type as ts.TypeReference;
-        if (typeRef.typeArguments) {
-            for (const arg of typeRef.typeArguments) {
-                score += this.getToxicityScoreFromType(arg, checker, depth + 1, visited);
-            }
-        }
-
-        // Walk union and intersection types
-        if (type.isUnionOrIntersection()) {
-            for (const sub of type.types) {
-                score += this.getToxicityScoreFromType(sub, checker, depth + 1, visited);
-            }
-        }
-
-        return score;
-    }
-
-
-    /**
-     * Compare pre-edit and post-edit resolved types using toxicity scoring.
-     *
-     * Uses TypeFlags-based scoring for post-edit types (zero false positives)
-     * and string-based fallback for pre-edit types (compiler state is gone).
-     *
-     * Asymmetric weights ensure unknown→any is always detected:
-     *   unknown=2, any=10. Score delta = 8. Regression fires.
-     */
-    private computeTypeRegressions(
-        preContracts: Map<string, Map<string, PreEditContract>>,
-        postContracts: Map<string, Map<string, PreEditContract>>
-    ): TypeRegression[] {
-        const regressions: TypeRegression[] = [];
-
-        for (const [filePath, preSymbols] of preContracts.entries()) {
-            const postSymbols = postContracts.get(filePath);
-            if (!postSymbols) continue;
-
-            for (const [symbol, oldData] of preSymbols.entries()) {
-                const newData = postSymbols.get(symbol);
-                if (!newData) continue;
-
-                if (newData.toxicity > oldData.toxicity || (newData.isUntyped && !oldData.isUntyped)) {
-                    regressions.push({
-                        filePath, symbol,
-                        oldType: oldData.typeStr,
-                        newType: newData.typeStr,
-                    });
-                }
-            }
-
-            // DETECT NEW TOXIC EXPORTS injected by AI to bypass TTRD
-            for (const [symbol, newData] of postSymbols.entries()) {
-                if (preSymbols.has(symbol)) continue;
-                if (newData.toxicity > 0 || newData.isUntyped) {
-                    regressions.push({
-                        filePath, symbol,
-                        oldType: "(new export)",
-                        newType: newData.typeStr,
-                    });
-                }
-            }
-        }
-
-        // Detect toxic exports in entirely NEW files
-        for (const [filePath, postSymbols] of postContracts.entries()) {
-            if (preContracts.has(filePath)) continue;
-            for (const [symbol, newData] of postSymbols.entries()) {
-                if (newData.toxicity > 0 || newData.isUntyped) {
-                    regressions.push({
-                        filePath, symbol,
-                        oldType: "(new file)",
-                        newType: newData.typeStr,
-                    });
-                }
-            }
-        }
-
-        return regressions;
-    }
+    // getToxicityScoreFromType + computeTypeRegressions moved to backend (Strangler Fig Act 4)
 
     // ─── NREKI L3.3: Self-Healing Agent Loop ─────────────────────────
 
@@ -928,12 +497,12 @@ export class NrekiKernel {
      *   BUG 5: localEditedFiles.delete(p) in micro-rollback blinded Shield 2 →
      *          only delete files the healer added, never the LLM's files
      */
-    private attemptAutoHealing(
+    private async attemptAutoHealing(
         initialErrors: ts.Diagnostic[],
         parentEditedFiles: Set<string>,
         filesToEvaluate: Set<string>
-    ): { healed: boolean; appliedFixes: string[]; newlyTouchedFiles: Set<string>; finalErrors: ts.Diagnostic[] } {
-        if (!this.languageService || initialErrors.length === 0) {
+    ): Promise<{ healed: boolean; appliedFixes: string[]; newlyTouchedFiles: Set<string>; finalErrors: ts.Diagnostic[] }> {
+        if (!this.tsBackend.tsLanguageService || initialErrors.length === 0) {
             return { healed: false, appliedFixes: [], newlyTouchedFiles: new Set(), finalErrors: initialErrors };
         }
 
@@ -984,7 +553,7 @@ export class NrekiKernel {
                 // BUG 1 FIXED: diag.code may come as string. getCodeFixesAtPosition expects number[].
                 const errorCode = typeof diag.code === "number" ? diag.code : Number(diag.code);
 
-                const fixes = this.languageService.getCodeFixesAtPosition(
+                const fixes = this.tsBackend.tsLanguageService.getCodeFixesAtPosition(
                     posixPath, diag.start, diag.start + diag.length, [errorCode], formatOptions, preferences
                 );
 
@@ -1038,13 +607,15 @@ export class NrekiKernel {
 
                     // Recompile after fix (~20ms)
                     this.logicalTime += 1000;
-                    this.updateProgram();
+                    this.tsBackend.updateProgram();
+                // DR/LS synced via tsBackend
                     const newEvaluate = new Set(filesToEvaluate);
                     for (const f of localEditedFiles) newEvaluate.add(f);
-                    const newErrors = this.getFatalErrors(localEditedFiles, newEvaluate);
+                    await this.tsBackend.getDiagnostics(newEvaluate, localEditedFiles, this.mode);
+                    const newRawErrors = this.tsBackend.tsLastDiagnostics;
 
                     // Fix must reduce error count. If not, rollback.
-                    if (newErrors.length >= currentErrors.length) {
+                    if (newRawErrors.length >= currentErrors.length) {
                         // MICRO-ROLLBACK: mutation caused cascade or was ineffective
                         for (const [p, state] of microUndoLog.entries()) {
                             if (state.content !== undefined) this.vfs.set(p, state.content); else this.vfs.delete(p);
@@ -1058,7 +629,8 @@ export class NrekiKernel {
                             newlyTouchedFiles.delete(p);
                         }
                         this.logicalTime += 1000;
-                        this.updateProgram();
+                        this.tsBackend.updateProgram();
+                // DR/LS synced via tsBackend
                         failedFixHashes.add(fixHash); // Add to blacklist
                     } else {
                         // FIX ACCEPTED
@@ -1070,7 +642,7 @@ export class NrekiKernel {
 
                         fixDescriptions.add(`- ${safeFix.description} -> \`${changesPreview}\``);
                         appliedAnyFix = true;
-                        currentErrors = newErrors;
+                        currentErrors = newRawErrors;
 
                         // Break: AST mutated, old offsets invalid.
                         // Return to while loop with fresh offsets from updateProgram().
@@ -1098,7 +670,8 @@ export class NrekiKernel {
                 for (const p of healUndoLog.keys()) {
                     if (this.vfs.has(p)) this.vfsClock.set(p, new Date(this.logicalTime));
                 }
-                this.updateProgram();
+                this.tsBackend.updateProgram();
+                // DR/LS synced via tsBackend
             }
 
             this._healingStats.failed++;
@@ -1128,9 +701,8 @@ export class NrekiKernel {
         if (!edits || edits.length === 0) return { safe: true, exitCode: 0, latencyMs: "0.00" };
 
         // Corruption guard: if a previous timeout left the VFS in a partial state, rebuild
-        if (this.isStateCorrupted) {
-            this.isStateCorrupted = false;
-            this.builderProgram = undefined;
+        if (this.tsBackend.isCorrupted) {
+            this.tsBackend.purgeCache();
             console.error("[NREKI] Rebuilding after timeout-corrupted state.");
         }
 
@@ -1193,15 +765,16 @@ export class NrekiKernel {
 
             // JIT baseline: recapture baseline scoped to files we will evaluate
             if (this.mode === "hologram" || this.mode === "file") {
-                this.updateProgram();
-                this.captureBaseline(filesToEvaluate);
+                this.tsBackend.updateProgram();
+                // DR/LS synced via tsBackend
+                this.tsBackend.captureBaseline(filesToEvaluate, this.mode);
                 if (this.bootErrorCount === -1) {
                     this.bootErrorCount = this.getBaselineErrorCount();
                 }
             }
 
             // TTRD: Extract pre-mutation type contracts (before VFS injection)
-            const preContracts = this.extractCanonicalTypes(explicitlyEditedFiles);
+            const preContracts = await this.tsBackend.extractCanonicalTypes(explicitlyEditedFiles);
 
             // A-01: Wrap Phase 1-4 so partial VFS mutations are rolled back on throw
             try {
@@ -1253,19 +826,20 @@ export class NrekiKernel {
             }
 
             // PHASE 2: Rebuild incremental program
-            this.updateProgram();
+            this.tsBackend.updateProgram();
+                // DR/LS synced via tsBackend
 
             // BUG 3 FIXED: Compute AI errors exactly ONCE.
             // getFatalErrors consumes the stateful getSemanticDiagnosticsOfNextAffectedFile iterator.
             // Cannot call it again without updateProgram() in between.
-            const originalFatalErrors = this.getFatalErrors(explicitlyEditedFiles, filesToEvaluate);
+            const originalFatalErrors = await this.tsBackend.getDiagnostics(filesToEvaluate, explicitlyEditedFiles, this.mode);
 
             // PHASE 4: Verdict
             if (originalFatalErrors.length > 0) {
 
                 // ─── NREKI L3.3: Iterative Auto-Healing ─────────────────
                 const tHealStart = performance.now();
-                const healing = this.attemptAutoHealing(originalFatalErrors, explicitlyEditedFiles, filesToEvaluate);
+                const healing = await this.attemptAutoHealing(this.tsBackend.tsLastDiagnostics, explicitlyEditedFiles, filesToEvaluate);
 
                 if (healing.healed) {
                     const latency = (performance.now() - t0).toFixed(2);
@@ -1288,8 +862,8 @@ export class NrekiKernel {
                     // TTRD post-contracts (healed path)
                     const finalEditedFiles = new Set(explicitlyEditedFiles);
                     for (const f of healing.newlyTouchedFiles) finalEditedFiles.add(f);
-                    const postContracts = this.extractCanonicalTypes(finalEditedFiles);
-                    const regressions = this.computeTypeRegressions(preContracts, postContracts);
+                    const postContracts = await this.tsBackend.extractCanonicalTypes(finalEditedFiles);
+                    const regressions = this.tsBackend.computeTypeRegressions(preContracts, postContracts);
 
                     // Restore hologram veil after healed success
                     if (this.mode === "hologram" && temporarilyUnveiled.size > 0) {
@@ -1325,7 +899,7 @@ export class NrekiKernel {
                 // ─── END Auto-Healing ────────────────────────────────────
 
                 // Healing failed. Use the ORIGINAL error matrix (do not recalculate).
-                const structured = originalFatalErrors.map((d) => this.toStructured(d));
+                const structured = originalFatalErrors; // Already NrekiStructuredError[]
 
                 // ACID rollback of the original edit
                 for (const [posixPath, state] of rollbackState.entries()) {
@@ -1348,7 +922,8 @@ export class NrekiKernel {
                 for (const [posixPath] of rollbackState.entries()) {
                     this.vfsClock.set(posixPath, new Date(this.logicalTime));
                 }
-                this.updateProgram();
+                this.tsBackend.updateProgram();
+                // DR/LS synced via tsBackend
 
                 const latency = (performance.now() - t0).toFixed(2);
 
@@ -1378,8 +953,8 @@ export class NrekiKernel {
             }
 
             // TTRD post-contracts (clean path)
-            const postContracts = this.extractCanonicalTypes(explicitlyEditedFiles);
-            const regressions = this.computeTypeRegressions(preContracts, postContracts);
+            const postContracts = await this.tsBackend.extractCanonicalTypes(explicitlyEditedFiles);
+            const regressions = this.tsBackend.computeTypeRegressions(preContracts, postContracts);
 
             // Restore hologram veil after successful intercept
             if (this.mode === "hologram" && temporarilyUnveiled.size > 0) {
@@ -1435,8 +1010,7 @@ export class NrekiKernel {
                 // Without this, the TypeScript BuilderProgram retains state
                 // from the failed transaction, causing phantom errors on
                 // the next interceptAtomicBatch call.
-                this.builderProgram = undefined;
-                this.isStateCorrupted = true;
+                this.tsBackend.purgeCache(true);
                 throw phaseError;
             }
         });
@@ -1493,14 +1067,14 @@ export class NrekiKernel {
             this.vfs.clear();
             this.vfsClock.clear();
             this.vfsDirectories.clear();
-            this.builderProgram = undefined;
-            this.editCount = 0;
+            this.tsBackend.purgeCache();
             try {
-                this.updateProgram();
-                this.captureBaseline();
+                this.tsBackend.updateProgram();
+                // DR/LS synced via tsBackend
+                this.tsBackend.captureBaseline(undefined, this.mode);
             } catch (rebuildErr) {
                 // A-10: Force full rebuild on next operation
-                this.builderProgram = undefined;
+                this.tsBackend.purgeCache();
                 // Restore VFS to pre-clear state for consistency with rolled-back disk
                 for (const [k, v] of savedVfs) this.vfs.set(k, v);
                 for (const [k, v] of savedClock) this.vfsClock.set(k, v);
@@ -1510,7 +1084,7 @@ export class NrekiKernel {
 
             // Persist build state for next session (warm boot)
             try {
-                this.builderProgram!.emit(
+                this.tsBackend.tsBuilder!.emit(
                     undefined,
                     (fileName, text) => {
                         // Only write .tsbuildinfo, not .js/.d.ts
@@ -1532,7 +1106,7 @@ export class NrekiKernel {
             }
 
             // Release stale AST versions from DocumentRegistry
-            this.releaseMutatedDocuments();
+            this.tsBackend.releaseMutatedDocuments(this.mutatedFiles);
 
             console.error("[NREKI] Atomic commit materialized. Disk synchronized.");
         } catch (error) {
@@ -1563,13 +1137,14 @@ export class NrekiKernel {
             this.logicalTime += 1000;
 
             // Force cold rebuild from disk reality
-            this.builderProgram = undefined;
+            this.tsBackend.purgeCache();
             try {
-                this.updateProgram();
-                this.captureBaseline();
+                this.tsBackend.updateProgram();
+                // DR/LS synced via tsBackend
+                this.tsBackend.captureBaseline(undefined, this.mode);
             } catch {
                 // If rebuild also fails, mark kernel for full reconstruction
-                this.isStateCorrupted = true;
+                this.tsBackend.purgeCache(true);
             }
 
             throw new Error(`[NREKI] Physical ACID commit failed. Repository and VFS restored. Reason: ${error}`);
@@ -1602,6 +1177,7 @@ export class NrekiKernel {
                     this.rootNames = new Set(
                         [...this.rootNames].filter(f => /\.d\.[mc]?ts$/i.test(f)),
                     );
+                    this.tsBackend.rootNames = this.rootNames;
                 } else if (this.ambientFiles.length > 0) {
                     // Eager mode: re-filter to ambient-only
                     const ambientSet = new Set(
@@ -1610,35 +1186,24 @@ export class NrekiKernel {
                     this.rootNames = new Set(
                         [...this.rootNames].filter(f => ambientSet.has(f)),
                     );
+                    this.tsBackend.rootNames = this.rootNames;
                     this.buildShadowLookups();
                 }
             }
             // WARM-PATH: Advance clock to invalidate cached files.
             // Only destroy builderProgram if it doesn't exist yet.
             this.logicalTime += 1000;
-            this.updateProgram();
+            this.tsBackend.updateProgram();
+                // DR/LS synced via tsBackend
             // Release stale AST versions from DocumentRegistry
-            this.releaseMutatedDocuments();
+            this.tsBackend.releaseMutatedDocuments(this.mutatedFiles);
             console.error("[NREKI] Hard rollback executed. VFS purged.");
         });
     }
 
     // ─── Utilities ─────────────────────────────────────────────────
 
-    private toStructured(diag: ts.Diagnostic): NrekiStructuredError {
-        const pos = diag.file && diag.start != null
-            ? ts.getLineAndCharacterOfPosition(diag.file, diag.start)
-            : { line: 0, character: 0 };
-        return {
-            file: diag.file
-                ? this.toPosix(path.relative(this.projectRoot, diag.file.fileName))
-                : "global",
-            line: pos.line + 1,
-            column: pos.character + 1,
-            code: `TS${diag.code}`,
-            message: ts.flattenDiagnosticMessageText(diag.messageText, "\n"),
-        };
-    }
+
 
     /**
      * Show which files depend on a symbol before the agent edits it.
@@ -1651,12 +1216,12 @@ export class NrekiKernel {
                 "Use Layer 1 AST navigator for reference queries.",
             );
         }
-        if (!this.booted || !this.languageService || !this.builderProgram) {
+        if (!this.booted || !this.tsBackend.tsLanguageService || !this.tsBackend.tsBuilder) {
             throw new Error("[NREKI] Kernel or Language Service not booted.");
         }
 
         const posixPath = this.toPosix(path.resolve(this.projectRoot, targetFile));
-        const program = this.languageService.getProgram();
+        const program = this.tsBackend.tsLanguageService.getProgram();
         if (!program) throw new Error("[NREKI] Could not get program from LanguageService");
         const sourceFile = program.getSourceFile(posixPath);
         if (!sourceFile) throw new Error(`[NREKI] File not tracked: ${targetFile}`);
@@ -1685,7 +1250,7 @@ export class NrekiKernel {
         }
 
         // 2. Fire the LanguageService reference scanner
-        const references = this.languageService.findReferences(posixPath, targetPos);
+        const references = this.tsBackend.tsLanguageService.findReferences(posixPath, targetPos);
         if (!references || references.length === 0) {
             return {
                 safe: true,
@@ -1775,9 +1340,7 @@ export class NrekiKernel {
     public getStagingSize(): number { return this.vfs.size; }
     public getTrackedFiles(): number { return this.rootNames.size; }
     public getBaselineErrorCount(): number {
-        let total = 0;
-        for (const count of this.baselineFrequencies.values()) total += count;
-        return total;
+        return this.tsBackend.getBaselineErrorCount();
     }
 
     /**
@@ -1848,7 +1411,7 @@ export class NrekiKernel {
 
     /** Get the current TypeScript Program (for harvester .d.ts emission). */
     public getProgram(): ts.Program | undefined {
-        return this.builderProgram?.getProgram();
+        return this.tsBackend.tsProgram;
     }
 
     /**

@@ -129,6 +129,21 @@ export interface LanguageBackend {
     getAutoFixes?(filePath: string, error: NrekiStructuredError): Promise<BackendFix[]>;
 
     /**
+     * PURGE: Kill the backend's internal compiler cache.
+     *
+     * In TypeScript: builderProgram = undefined (forces rebuild on next call).
+     * In Go/LSP: kill -9 the process (Crash-Only Recovery).
+     *
+     * The Orchestrator calls this when a transaction fails, times out,
+     * or the backend's state is suspected to be garbage.
+     *
+     * @param markCorrupted - If true, the backend should do a FULL rebuild
+     *   on next use (recreate DocumentRegistry, LanguageService, etc.)
+     *   If false, just kill the incremental cache (warm rebuild).
+     */
+    purgeCache(markCorrupted?: boolean): void;
+
+    /**
      * Step 7: TTRD — Temporal Type Regression Detection (Optional)
      * Extract canonical type contracts for exports.
      *
