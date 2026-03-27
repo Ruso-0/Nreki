@@ -31,6 +31,31 @@ export interface BackendFix {
     }>;
 }
 
+// ─── VFS Adapter (Kernel → Backend Bridge) ──────────────────────────
+
+/**
+ * The Orchestrator's eyes, lent to the Slave.
+ *
+ * The kernel creates these callbacks from its own VFS, hologram,
+ * and JIT state. The backend uses them to create the CompilerHost.
+ * The backend can READ through these callbacks but never WRITE.
+ * The VFS stays in the kernel. Always.
+ */
+export interface VfsAdapter {
+    /** Read file content — VFS first, hologram shadows, then disk fallback */
+    readFile(fileName: string): string | undefined;
+    /** Check if file exists — VFS, hologram, then disk fallback */
+    fileExists(fileName: string): boolean;
+    /** Get monotonic clock time for cache invalidation */
+    getModifiedTime(fileName: string): Date;
+    /** Check if directory exists — real + virtual directories */
+    directoryExists(dirName: string): boolean;
+    /** Get script version string for LanguageService cache */
+    getScriptVersion(fileName: string): string;
+    /** Get script snapshot for LanguageService */
+    getScriptSnapshot(fileName: string): any; // ts.IScriptSnapshot — use any to avoid ts import in interface
+}
+
 // ─── The Contract ───────────────────────────────────────────────────
 
 /**
@@ -62,7 +87,7 @@ export interface LanguageBackend {
      * Hides infrastructure setup (tsconfig, go.mod virtual, venv detection).
      * The Orchestrator doesn't care how you boot — just boot.
      */
-    boot(workspacePath: string, mode: "file" | "project" | "hologram"): Promise<void>;
+    boot(workspacePath: string, mode: "file" | "project" | "hologram", vfsAdapter?: VfsAdapter): Promise<void>;
 
     /**
      * Steps 2 & 3 & 7: INJECT / BASELINE / ROLLBACK (VFS Sync)

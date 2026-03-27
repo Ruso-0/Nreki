@@ -308,125 +308,137 @@ export class NrekiKernel {
             this.compilerOptions.isolatedModules = false;
         }
 
-        this.host = ts.createIncrementalCompilerHost(this.compilerOptions, ts.sys);
+        // ─── Delegate CompilerHost creation to backend (Strangler Fig 2B) ───
+        // The kernel creates VfsAdapter closures over its own state.
+        // The backend uses them to create CompilerHost + LanguageService.
+        // VFS, hologram, JIT state stay in the kernel. Always.
+        const self = this;
+        const vfsAdapter: import("./language-backend.js").VfsAdapter = {
+            readFile(fileName: string): string | undefined {
+                const posixPath = self.toPosix(path.resolve(self.projectRoot, fileName));
 
-        const originalReadFile = this.host.readFile;
-        const originalFileExists = this.host.fileExists;
-        this.originalReadFile = originalReadFile;
-        this.originalFileExists = originalFileExists;
-        const originalGetModifiedTime = (this.host as any).getModifiedTime || ts.sys.getModifiedTime;
-        const originalDirectoryExists = this.host.directoryExists || ts.sys.directoryExists;
-
-        // VFS override: read from RAM staging first, fallthrough to disk
-        this.host.readFile = (fileName: string): string | undefined => {
-            // VFS bypass: .tsbuildinfo is infrastructure, not source code
-            if (fileName.endsWith(".tsbuildinfo")) {
-                return originalReadFile.call(this.host, fileName);
-            }
-            const posixPath = this.toPosix(path.resolve(this.projectRoot, fileName));
-
-            // HOLOGRAM INTERCEPT: serve shadow .d.ts or hide pruned .ts
-            if (this.mode === "hologram") {
-                if (/\.d\.[mc]?ts$/i.test(fileName)) {
-                    // Map .d.ts/.d.mts/.d.cts path back to source to find shadow content
-                    const tsPath = posixPath.replace(/\.d\.([mc]?)ts$/i, ".$1ts");
-                    const shadow = this.shadowContent.get(tsPath);
-                    if (shadow !== undefined) return shadow;
-                    // Try .tsx variant
-                    const tsxPath = posixPath.replace(/\.d\.([mc]?)ts$/i, ".$1tsx");
-                    const shadow2 = this.shadowContent.get(tsxPath);
-                    if (shadow2 !== undefined) return shadow2;
-                    // JIT fallback: classify on-demand if not yet cached
-                    if (this.jitMode) {
-                        if (!this.jitClassifiedCache.has(tsPath)) {
-                            this.jitClassifyFile(tsPath);
-                            const shadowJ = this.shadowContent.get(tsPath);
-                            if (shadowJ !== undefined) return shadowJ;
-                        }
-                        if (!this.jitClassifiedCache.has(tsxPath)) {
-                            this.jitClassifyFile(tsxPath);
-                            const shadowJ2 = this.shadowContent.get(tsxPath);
-                            if (shadowJ2 !== undefined) return shadowJ2;
-                        }
-                    }
-                }
-                // Pruned .ts: hide from compiler (returns undefined)
-                if (this.prunedTsLookup.has(posixPath) && !this.currentEditTargets.has(posixPath)) {
-                    return undefined;
-                }
-            }
-
-            if (this.vfs.has(posixPath)) {
-                const content = this.vfs.get(posixPath);
-                return content === null ? undefined : content;
-            }
-            // A10: Block sensitive files from disk fallback (unified with path-jail blocklist)
-            if (isSensitivePath(fileName)) {
-                return undefined;
-            }
-            return originalReadFile.call(this.host, fileName);
-        };
-
-        this.host.fileExists = (fileName: string): boolean => {
-            const posixPath = this.toPosix(path.resolve(this.projectRoot, fileName));
-
-            // HOLOGRAM INTERCEPT: shadow .d.ts exists, pruned .ts does not
-            if (this.mode === "hologram") {
-                // Target file being edited: always real
-                if (this.currentEditTargets.has(posixPath)) {
-                    return originalFileExists.call(this.host, fileName);
-                }
-                // Pre-computed or previously JIT'd
-                if (this.prunedTsLookup.has(posixPath)) return false;
-                if (this.shadowDtsLookup.has(posixPath)) return true;
-
-                // ── JIT: classify on-demand ──
-                if (this.jitMode) {
-                    // TS asks for a .ts/.tsx → classify, maybe hide it
-                    if (/\.tsx?$/.test(fileName) && !/\.d\.[mc]?ts$/i.test(fileName)) {
-                        if (originalFileExists.call(this.host, fileName)) {
-                            this.jitClassifyFile(posixPath);
-                            if (this.prunedTsLookup.has(posixPath)) return false;
-                        }
-                    }
-                    // TS asks for a .d.ts/.d.mts/.d.cts → check if we can generate a shadow
+                // HOLOGRAM INTERCEPT: serve shadow .d.ts or hide pruned .ts
+                if (self.mode === "hologram") {
                     if (/\.d\.[mc]?ts$/i.test(fileName)) {
                         const tsPath = posixPath.replace(/\.d\.([mc]?)ts$/i, ".$1ts");
+                        const shadow = self.shadowContent.get(tsPath);
+                        if (shadow !== undefined) return shadow;
                         const tsxPath = posixPath.replace(/\.d\.([mc]?)ts$/i, ".$1tsx");
-                        if (!this.jitClassifiedCache.has(tsPath) && originalFileExists.call(this.host, tsPath)) {
-                            if (this.jitClassifyFile(tsPath)) return true;
+                        const shadow2 = self.shadowContent.get(tsxPath);
+                        if (shadow2 !== undefined) return shadow2;
+                        if (self.jitMode) {
+                            if (!self.jitClassifiedCache.has(tsPath)) {
+                                self.jitClassifyFile(tsPath);
+                                const shadowJ = self.shadowContent.get(tsPath);
+                                if (shadowJ !== undefined) return shadowJ;
+                            }
+                            if (!self.jitClassifiedCache.has(tsxPath)) {
+                                self.jitClassifyFile(tsxPath);
+                                const shadowJ2 = self.shadowContent.get(tsxPath);
+                                if (shadowJ2 !== undefined) return shadowJ2;
+                            }
                         }
-                        if (!this.jitClassifiedCache.has(tsxPath) && originalFileExists.call(this.host, tsxPath)) {
-                            if (this.jitClassifyFile(tsxPath)) return true;
+                    }
+                    if (self.prunedTsLookup.has(posixPath) && !self.currentEditTargets.has(posixPath)) {
+                        return undefined;
+                    }
+                }
+
+                if (self.vfs.has(posixPath)) {
+                    const content = self.vfs.get(posixPath);
+                    return content === null ? undefined : content;
+                }
+                if (isSensitivePath(fileName)) {
+                    return undefined;
+                }
+                // Fallback to disk via backend's original readFile
+                return self.tsBackend.originalReadFile.call(self.tsBackend.host, fileName);
+            },
+
+            fileExists(fileName: string): boolean {
+                const posixPath = self.toPosix(path.resolve(self.projectRoot, fileName));
+
+                if (self.mode === "hologram") {
+                    if (self.currentEditTargets.has(posixPath)) {
+                        return self.tsBackend.originalFileExists.call(self.tsBackend.host, fileName);
+                    }
+                    if (self.prunedTsLookup.has(posixPath)) return false;
+                    if (self.shadowDtsLookup.has(posixPath)) return true;
+
+                    if (self.jitMode) {
+                        if (/\.tsx?$/.test(fileName) && !/\.d\.[mc]?ts$/i.test(fileName)) {
+                            if (self.tsBackend.originalFileExists.call(self.tsBackend.host, fileName)) {
+                                self.jitClassifyFile(posixPath);
+                                if (self.prunedTsLookup.has(posixPath)) return false;
+                            }
+                        }
+                        if (/\.d\.[mc]?ts$/i.test(fileName)) {
+                            const tsPath = posixPath.replace(/\.d\.([mc]?)ts$/i, ".$1ts");
+                            const tsxPath = posixPath.replace(/\.d\.([mc]?)ts$/i, ".$1tsx");
+                            if (!self.jitClassifiedCache.has(tsPath) && self.tsBackend.originalFileExists.call(self.tsBackend.host, tsPath)) {
+                                if (self.jitClassifyFile(tsPath)) return true;
+                            }
+                            if (!self.jitClassifiedCache.has(tsxPath) && self.tsBackend.originalFileExists.call(self.tsBackend.host, tsxPath)) {
+                                if (self.jitClassifyFile(tsxPath)) return true;
+                            }
                         }
                     }
                 }
-            }
 
-            if (this.vfs.has(posixPath)) return this.vfs.get(posixPath) !== null;
-            return originalFileExists.call(this.host, fileName);
+                if (self.vfs.has(posixPath)) return self.vfs.get(posixPath) !== null;
+                return self.tsBackend.originalFileExists.call(self.tsBackend.host, fileName);
+            },
+
+            getModifiedTime(fileName: string): Date {
+                const posixPath = self.toPosix(path.resolve(self.projectRoot, fileName));
+                if (self.vfsClock.has(posixPath)) return self.vfsClock.get(posixPath)!;
+                return ts.sys.getModifiedTime ? ts.sys.getModifiedTime(fileName)! : new Date();
+            },
+
+            directoryExists(dirName: string): boolean {
+                const posixDir = self.toPosix(path.resolve(self.projectRoot, dirName));
+                if (ts.sys.directoryExists(dirName)) return true;
+                return self.vfsDirectories.has(posixDir);
+            },
+
+            getScriptVersion(fileName: string): string {
+                const posixPath = self.toPosix(path.resolve(self.projectRoot, fileName));
+                return self.vfsClock.get(posixPath)?.getTime().toString() || "1";
+            },
+
+            getScriptSnapshot(fileName: string): any {
+                const posixPath = self.toPosix(path.resolve(self.projectRoot, fileName));
+
+                // HOLOGRAM INTERCEPT for LanguageService
+                if (self.mode === "hologram" && /\.d\.[mc]?ts$/i.test(fileName)) {
+                    const tsPath = posixPath.replace(/\.d\.([mc]?)ts$/i, ".$1ts");
+                    const shadow = self.shadowContent.get(tsPath);
+                    if (shadow !== undefined) return ts.ScriptSnapshot.fromString(shadow);
+                    const tsxPath = posixPath.replace(/\.d\.([mc]?)ts$/i, ".$1tsx");
+                    const shadow2 = self.shadowContent.get(tsxPath);
+                    if (shadow2 !== undefined) return ts.ScriptSnapshot.fromString(shadow2);
+                }
+
+                if (self.vfs.has(posixPath)) {
+                    const content = self.vfs.get(posixPath);
+                    if (content === null || content === undefined) return undefined;
+                    return ts.ScriptSnapshot.fromString(content);
+                }
+                if (!self.tsBackend.originalFileExists.call(self.tsBackend.host, fileName)) return undefined;
+                const content = self.tsBackend.originalReadFile.call(self.tsBackend.host, fileName);
+                if (!content) return undefined;
+                return ts.ScriptSnapshot.fromString(content);
+            },
         };
 
-        // P8: Monotonic clock forces cache invalidation
-        (this.host as any).getModifiedTime = (fileName: string): Date => {
-            const posixPath = this.toPosix(path.resolve(this.projectRoot, fileName));
-            if (this.vfsClock.has(posixPath)) return this.vfsClock.get(posixPath)!;
-            return originalGetModifiedTime ? originalGetModifiedTime.call(ts.sys, fileName)! : new Date();
-        };
+        this.tsBackend.createCompilerInfra(this.projectRoot, vfsAdapter);
 
-        // P31 + E1: Virtual directory resolution in O(1)
-        this.host.directoryExists = (dirName: string): boolean => {
-            const posixDir = this.toPosix(path.resolve(this.projectRoot, dirName));
-            if (originalDirectoryExists.call(ts.sys, dirName)) return true;
-            return this.vfsDirectories.has(posixDir);
-        };
-
-        // ─── LanguageService: VS Code's brain connected to our VFS ───
-        this.documentRegistry = ts.createDocumentRegistry(
-            ts.sys.useCaseSensitiveFileNames,
-            this.projectRoot
-        );
-        this.languageService = ts.createLanguageService(this.createLSHost(), this.documentRegistry);
+        // Copy references for backward compat (kernel code still uses this.host, etc.)
+        this.host = this.tsBackend.host;
+        this.originalReadFile = this.tsBackend.originalReadFile;
+        this.originalFileExists = this.tsBackend.originalFileExists;
+        this.documentRegistry = this.tsBackend.documentRegistry;
+        this.languageService = this.tsBackend.languageService;
         // ──────────────────────────────────────────────────────────────
 
         // Incremental cache: try to load previous build state for warm boot
