@@ -42,6 +42,7 @@ import { PreToolUseHook } from "./hooks/preToolUse.js";
 import { ChronosMemory } from "./chronos-memory.js";
 import { extractDependencies, cleanSignature, isSensitiveSignature, escapeRegExp } from "./utils/imports.js";
 import type { CompressionLevel } from "./compressor-advanced.js";
+import { computeAudit, formatAuditReport } from "./audit.js";
 
 
 // ─── JIT Holography Helper ──────────────────────────────────────────
@@ -370,11 +371,12 @@ export async function handleGuard(
         case "reset": response = await handleReset(deps); break;
         case "set_plan": response = await handleSetPlan(params, deps); break;
         case "memorize": response = await handleMemorize(params, deps); break;
+        case "audit": response = await handleAudit(deps); break;
         default:
             return {
                 content: [{
                     type: "text" as const,
-                    text: `Unknown nreki_guard action: "${action}". Valid actions: pin, unpin, status, report, reset, set_plan, memorize.`,
+                    text: `Unknown nreki_guard action: "${action}". Valid actions: pin, unpin, status, report, reset, set_plan, memorize, audit.`,
                 }],
                 isError: true,
             };
@@ -409,6 +411,38 @@ async function handleReset(
                 `**Status:** All clear. You may retry the edit. ` +
                 `If you get stuck again, the breaker starts fresh from Level 1.\n\n` +
                 `[NREKI: circuit breaker reset by human]`,
+        }],
+    };
+}
+
+// ─── Audit Handler ──────────────────────────────────────────────────
+
+async function handleAudit(
+    deps: RouterDependencies,
+): Promise<McpToolResponse> {
+    const { engine, kernel, chronos } = deps;
+    await engine.initialize();
+
+    // Ensure project is indexed
+    const stats = engine.getStats();
+    if (stats.filesIndexed === 0) {
+        await engine.indexDirectory(process.cwd());
+    }
+
+    // Get dependency graph and file list
+    const graph = await engine.getDependencyGraph();
+    const { map } = await engine.getRepoMap();
+    const allFiles = map.entries.map(e => e.filePath);
+    const projectRoot = engine.getProjectRoot();
+
+    // Compute audit (auto-scales based on kernel availability)
+    const report = await computeAudit(graph, allFiles, projectRoot, kernel, chronos);
+    const text = formatAuditReport(report);
+
+    return {
+        content: [{
+            type: "text" as const,
+            text,
         }],
     };
 }

@@ -128,6 +128,22 @@ export class ChronosMemory {
         return (this.state.files[this.normalize(filePath)]?.cfiScore ?? 0) >= this.CFI_ALERT_THRESHOLD;
     }
 
+    /** Get the CFI score for a specific file. Returns 0 if file has no history. */
+    public getFileCFI(filePath: string): number {
+        return this.state.files[this.normalize(filePath)]?.cfiScore ?? 0;
+    }
+
+    /** Get all tracked file paths with their CFI scores. */
+    public getAllFileCFI(): Map<string, number> {
+        const result = new Map<string, number>();
+        for (const [file, data] of Object.entries(this.state.files)) {
+            if (data.cfiScore > 0) {
+                result.set(file, data.cfiScore);
+            }
+        }
+        return result;
+    }
+
     // Error tracking
     public recordTrip(filePath: string, errorPattern: string): void {
         const f = this.getFile(filePath);
