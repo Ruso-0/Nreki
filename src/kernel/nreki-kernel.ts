@@ -5,6 +5,8 @@ import * as crypto from "crypto";
 import { isSensitivePath } from "../utils/path-jail.js";
 import { readSource } from "../utils/read-source.js";
 import { escapeRegExp } from "../utils/imports.js";
+import type { LanguageBackend } from "./language-backend.js";
+import { TypeScriptStradaBackend } from "./backends/typescript-strada.js";
 
 // ─── Async FIFO Mutex (P10) ────────────────────────────────────────
 
@@ -110,7 +112,7 @@ const isEnvironmentFile = (filePath: string): boolean => {
 //
 // @author Jherson Eddie Tintaya Holguin (Ruso-0)
 
-interface PreEditContract {
+export interface PreEditContract {
     typeStr: string;    // Visual truncado para logs (150 chars max)
     toxicity: number;   // Toxicidad exacta via TypeFlags O(1)
     isUntyped: boolean; // true si el tipo es bare any o unknown
@@ -146,6 +148,12 @@ export class NrekiKernel {
     private mutatedFiles = new Set<string>();
     private bootErrorCount: number = -1;
     private tsBuildInfoPath!: string;
+
+    // ─── Language Backend (Strangler Fig Phase 1) ──────────
+    // The backend is currently a stub. All real logic still lives
+    // in NrekiKernel methods. In Phase 2+, logic will be extracted
+    // from the kernel into the backend, one method at a time.
+    private backend: LanguageBackend = new TypeScriptStradaBackend();
 
     // Performance Modes
     public mode: "file" | "project" | "hologram" = "project";
@@ -464,6 +472,8 @@ export class NrekiKernel {
         this.bootErrorCount = this.getBaselineErrorCount();
 
         this.booted = true;
+        // Log backend info for diagnostics
+        console.error(`[NREKI] Backend: ${this.backend.name} (healing: ${this.backend.capabilities.supportsAutoHealing}, ttrd: ${this.backend.capabilities.supportsTTRD})`);
         console.error(
             `[NREKI] Kernel booted. Tracking ${this.rootNames.size} files. ` +
             `Baseline: ${this.baselineFrequencies.size} invariants. ` +
