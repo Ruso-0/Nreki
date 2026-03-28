@@ -317,7 +317,7 @@ export class SpectralMath {
         // Size guard: power iteration is O(N² × 150 iterations).
         // For N>5000 this could block the event loop for hundreds of ms.
         // Return a structural estimate instead.
-        if (N > 5000) {
+        if (N > 25000) {
             let volume = 0;
             for (const e of edges) volume += e.weight;
             const avgDegree = (2 * edges.length) / N;
