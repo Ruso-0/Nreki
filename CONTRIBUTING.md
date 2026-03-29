@@ -59,6 +59,7 @@ src/
 ├── compressor-advanced.ts   # LLMLingua-2-inspired compression
 ├── semantic-edit.ts         # Surgical AST patching by symbol name
 ├── circuit-breaker.ts       # Loop detection + 3-level creative escalation
+├── chronos-memory.ts        # Cross-session file fragility tracking (CFI scores)
 ├── pin-memory.ts            # Persistent pinned rules
 ├── repo-map.ts              # Static deterministic repo map
 ├── terminal-filter.ts       # Terminal output entropy filter
@@ -66,6 +67,19 @@ src/
 ├── ast-sandbox.ts           # AST sandbox validator
 ├── monitor.ts               # Token consumption monitoring
 ├── undo.ts                  # Backup/restore for semantic edits
+├── kernel/
+│   ├── nreki-kernel.ts      # Orchestrator: VFS, ACID, auto-healing, TTRD
+│   ├── spectral-topology.ts # Fiedler vector + architectural health auditing
+│   └── backends/
+│       ├── ts-compiler-wrapper.ts  # TypeScript compiler (Strada pattern)
+│       ├── lsp-sidecar-base.ts     # JSON-RPC 2.0 LSP client (Go/Python)
+│       ├── go-sidecar.ts           # gopls integration
+│       ├── python-sidecar.ts       # pyright integration
+│       └── ts-corsa-sidecar.ts     # Project Corsa placeholder
+├── hologram/
+│   ├── shadow-generator.ts  # .d.ts shadows for large projects
+│   ├── shadow-cache.ts      # LRU cache for shadow declarations
+│   └── harvester.ts         # Public API surface extractor
 ├── hooks/
 │   └── preToolUse.ts        # Behavioral advisor hook
 ├── middleware/
@@ -78,7 +92,7 @@ src/
     ├── file-filter.ts       # File size/extension filtering
     ├── read-source.ts       # BOM-safe file reader
     ├── code-tokenizer.ts    # Code-aware identifier tokenizer
-    └── imports.ts           # Dependency extraction + security filters for Auto-Context
+    └── imports.ts           # Dependency extraction + security filters
 ```
 
 ## Pull Request Guidelines
@@ -99,4 +113,4 @@ Please use the GitHub Issues templates:
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the MIT License.
+By contributing, you agree that your contributions will be licensed under the Apache 2.0 License.

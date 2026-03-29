@@ -1,6 +1,6 @@
 # NREKI — Architecture Guide
 
-> **Version:** 7.1.2
+> **Version:** 7.3.0
 > **Author:** Jherson Eddie Tintaya Holguin (Ruso-0)  
 > **Purpose:** MCP server that validates AI agent code edits in RAM before they touch disk.
 
@@ -101,9 +101,10 @@ The codebase follows a strict **Directed Acyclic Graph** — no circular imports
 | `kernel/nreki-kernel.ts` | **The core.** VFS, ACID transactions, TypeScript integration, auto-healing | ~1521 |
 | `kernel/spectral-topology.ts` | Spectral graph analysis for architectural health auditing | ~497 |
 | `kernel/backends/ts-compiler-wrapper.ts` | TypeScript compiler via Strada pattern (Builder → LS → CompilerHost) | ~695 |
-| `kernel/backends/lsp-sidecar-base.ts` | JSON-RPC 2.0 LSP client for Go/Python sidecars | ~464 |
-| `kernel/backends/go-sidecar.ts` | gopls integration | ~30 |
-| `kernel/backends/python-sidecar.ts` | pyright integration | ~30 |
+| `kernel/backends/lsp-sidecar-base.ts` | JSON-RPC 2.0 LSP client for Go/Python sidecars. SSOT lifecycle via `cleanupState()` | ~597 |
+| `kernel/backends/go-sidecar.ts` | gopls integration | ~22 |
+| `kernel/backends/python-sidecar.ts` | pyright integration | ~24 |
+| `kernel/backends/ts-corsa-sidecar.ts` | Project Corsa (TypeScript 7.0 in Go) placeholder — Strangler Fig hot-swap ready | ~31 |
 
 ### Layer 5: Hologram (Large Project Optimization)
 | Module | Purpose |
@@ -159,14 +160,15 @@ Agent sends edit
 │  5. KERNEL INTERCEPT (Layer 2)                   │
 │                                                  │
 │  a. Inject proposed content into VFS (RAM only)  │
-│  b. Run TypeScript compiler against VFS          │
-│  c. Compare error fingerprints vs baseline       │
-│  d. If new errors:                               │
-│     → Rollback VFS                               │
-│     → Return structured errors                   │
-│     → DISK UNTOUCHED                             │
-│  e. If safe:                                     │
-│     → Auto-heal cascading breaks if possible     │
+│  b. TypeScript: incremental compiler against VFS │
+│  c. Go/Python: LSP sidecars (gopls/pyright)      │
+│     validate via JSON-RPC 2.0 over stdio         │
+│  d. Compare error fingerprints vs baseline       │
+│  e. If new errors:                               │
+│     → Auto-Heal (CodeFix API + LSP codeAction)   │
+│     → If healed: commit. If not: rollback VFS    │
+│     → DISK UNTOUCHED on failure                  │
+│  f. If safe:                                     │
 │     → Commit to disk (two-phase atomic write)    │
 └──────────────────────────────────────────────────┘
 ```
@@ -249,10 +251,10 @@ Nreki auto-selects based on project size:
 
 | Mode | Files | Strategy |
 |------|-------|----------|
-| `syntax` | Any | AST-only validation (Layer 1). No TypeScript compiler. |
-| `file` | < 100 | Single-file type checking. Fast, limited cross-file. |
-| `project` | < 500 | Full project type checking. Complete cross-file semantics. |
-| `hologram` | 500+ | Shadow `.d.ts` generation. Only edited files + API surfaces loaded. |
+| `syntax` | < 50 | AST-only validation (Layer 1). No TypeScript compiler. |
+| `file` | 50-200 | Single-file type checking. Fast, limited cross-file. |
+| `project` | 200-1000 | Full project type checking. Complete cross-file semantics. |
+| `hologram` | > 1000 | Shadow `.d.ts` generation. Only edited files + API surfaces loaded. |
 
 ### Hologram Mode (Large Projects)
 For projects with 500+ TypeScript files, loading the full compiler is too expensive. Hologram mode:
@@ -352,7 +354,7 @@ The spectral analysis uses power iteration with:
 ## Testing
 
 - **Framework:** Vitest with `pool: "forks"` (process isolation for WASM memory)
-- **Coverage:** 704 tests across 43 test files (v7.1.2)
+- **Coverage:** 712 tests across 44 test files (v7.3.0)
 - **Timeout:** 30s per test (WASM initialization can be slow on cold start)
 - **Strategy:** Functional tests that exercise the full pipeline, not mocks
 

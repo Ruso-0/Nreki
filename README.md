@@ -1,348 +1,223 @@
-# NREKI - 3 Tools. 704 Tests. Pre-write validation for AI agents.
+# NREKI — Bulletproof Shield for AI Coding Agents
 
 <p align="center">
-  <img src="https://img.shields.io/badge/MCP-Plugin-blue?style=for-the-badge" alt="MCP Plugin">
-  <img src="https://img.shields.io/badge/Tools-3-blueviolet?style=for-the-badge" alt="3 Tools">
-  <img src="https://img.shields.io/badge/Tests-704-brightgreen?style=for-the-badge" alt="704 Tests">
+  <img src="https://img.shields.io/npm/v/@ruso-0/nreki?style=for-the-badge&color=blue" alt="npm version">
+  <img src="https://img.shields.io/badge/Tests-712-brightgreen?style=for-the-badge" alt="712 Tests">
+  <img src="https://img.shields.io/badge/AHI-9.7%2F10-brightgreen?style=for-the-badge" alt="AHI 9.7/10">
+  <img src="https://img.shields.io/badge/Languages-TS%20%7C%20JS%20%7C%20Go%20%7C%20Python-blue?style=for-the-badge" alt="Multi-language">
   <img src="https://img.shields.io/badge/Cloud-Zero-orange?style=for-the-badge" alt="Zero Cloud">
-  <img src="https://img.shields.io/badge/License-Apache_2.0-yellow?style=for-the-badge" alt="Apache 2.0 License">
-  <img src="https://img.shields.io/badge/TypeScript-5.9-3178C6?style=for-the-badge" alt="TypeScript 5.9">
-  <img src="https://img.shields.io/badge/Node-%3E%3D20-339933?style=for-the-badge" alt="Node >=20">
+  <img src="https://img.shields.io/badge/License-Apache_2.0-yellow?style=for-the-badge" alt="Apache 2.0">
 </p>
 
-<p align="center">
-  <b>MCP server that validates AI agent edits in RAM before they reach disk. Cross-file semantic checks, auto-fixes for structural errors, and type regression detection.</b>
-</p>
-
----
-
-## What's New in v7.0: Software Physics Engine
-
-NREKI v7.0 turns the spectral topology gate into a full physics engine. Every proposed edit now produces eigenvector coordinates — Fiedler vectors (v2) map bridge fragility, third eigenvectors (v3) map topological stress, and gauge fixing ensures deterministic sign across commits (critical for ML pipelines).
-
-Key additions:
-- **Fiedler Vector (v2)**: Full eigenvector extraction — per-node bridge fragility map
-- **Third eigenvalue (λ₃) + eigenvector (v3)**: Spectral gap ∇(λ₃ - λ₂) enables predictive analysis
-- **Gauge Fixing**: Deterministic phase canonicalization prevents sign ambiguity across commits
-- **Monorepo workspace resolution**: `buildFastLookup` resolves `@org/package` imports via O(1) string math
-- **Adaptive Shotgun Surgery**: Threshold scales with repo size — no more false positives on large codebases
-- **Modern module extensions**: Full `.mts`, `.cts`, `.mjs`, `.cjs` support across all subsystems
-- **32+ audit fixes**: VFS zombie state, WASM race conditions, extractName regex purge, and more (see CHANGELOG)
-
----
-
-## What's New in v6.0: JIT Holography
-
-When an LLM forgets an import, drops an `async` keyword, or leaves an interface incomplete, NREKI now **auto-corrects the error in RAM** using TypeScript's CodeFix API - the same engine behind VS Code's "Quick Fix" lightbulb. The LLM never sees the error. Zero tokens wasted on fix-retry loops.
+**MCP plugin that validates AI agent edits in RAM before they touch disk.** When Claude Code, Cursor, or Copilot changes a function signature in one file and breaks 30 others, NREKI catches it in milliseconds — the file is never written. If the error is structural (missing import, forgotten `await`), NREKI auto-fixes it in RAM. Zero tokens wasted on fix-retry doom loops.
 
 ```
-LLM proposes edit
-  |
-  v
-NREKI intercepts in RAM
-  |
-  v
-Triple Shield (Global -> Syntactic -> Semantic)
-  |
-  +-- No errors? --> Two-Phase Atomic Commit to disk
-  |
-  +-- Errors found?
-        |
-        v
-      Auto-Heal: getCodeFixesAtPosition()
-        |
-        +-- Apply 1 fix --> Recompile (~20ms) --> Errors decreased?
-        |     +-- Yes --> Accept fix, loop for next error
-        |     +-- No  --> Micro-rollback this fix, blacklist it
-        |
-        +-- All errors resolved? --> Commit to disk (safe: true)
-        +-- Some remain?         --> Full rollback, return errors to LLM (safe: false)
+AI proposes edit → NREKI intercepts in RAM → Compiler/LSP validates
+  │                                              │
+  │   ┌──────── No errors ──────────────────────→ Two-Phase Atomic Commit to disk ✓
+  │   │
+  │   └──────── Errors found ─→ Auto-Heal (CodeFix API + LSP codeAction)
+  │                                  │
+  │              Fixed all? ────────→ Commit to disk ✓
+  │              Some remain? ──────→ Full rollback. Disk untouched. Errors returned to agent.
 ```
 
-**8 structural fixes** in the whitelist: `import`, `fixMissingImport`, `fixAwaitInSyncFunction`, `fixPromiseResolve`, `fixMissingProperties`, `fixClassDoesntImplementInheritedAbstractMember`, `fixAddMissingMember`, `fixAddOverrideModifier`. Business logic is never mutated.
-
-See [CHANGELOG.md](CHANGELOG.md) for full details.
-
-### Performance Modes (v6.0)
-
-NREKI auto-selects validation depth based on project size. No configuration needed.
-
-| Mode | Files | What it checks | Boot | RAM |
-|------|-------|---------------|------|-----|
-| Syntax | < 50 | Syntax only (Tree-sitter) | < 100ms | ~30MB |
-| Project | 50-1000 | Full cross-file semantic validation | 1-10s | 200MB-1GB |
-| Hologram | > 1000 | Full cross-file via .d.ts shadows | ~1-2s | ~350MB |
-
-**Hologram mode (v6.0):** For large projects (>1000 files), NREKI replaces full `.ts` source files with lightweight `.d.ts` shadow stubs in the TypeScript compiler's VFS. Only the currently-edited file and its import subgraph are loaded. A symbiotic harvester replaces heuristic shadows with compiler-grade `.d.ts` during idle cycles.
-
-Override in package.json: `{ "nreki": { "mode": "project" } }`
-
-### VSCode Benchmark (5,584 files)
-
-| Metric | Project mode | File mode | Hologram (JIT) |
-|--------|-------------|-----------|----------------|
-| Boot | 111s | 91.6s | 1.94s |
-| First edit | 644ms | 55ms | 1384ms |
-| Total (boot + edit) | ~112s | ~92s | 3.32s |
-| RAM | OOM (16GB) | 4.5GB | ~350MB |
-| Files loaded | 5,584 | 5,584 | 642 on-demand |
-| Cross-file checking | Full cascade | Edited only | Via shadows |
-| VSCode files modified | 0 | 0 | 0 |
-
-Hologram mode uses domain separation: the holographic kernel validates edits via shadows,
-while Layer 1 AST navigator handles reference queries and refactoring.
-
-**vs Project Corsa:** Microsoft's [TypeScript 7 native port](https://devblogs.microsoft.com/typescript/progress-on-typescript-7-december-2025/) (Go, multi-threaded) reports 8.74s for VSCode type-checking. NREKI JIT Holography achieves 3.32s total (boot + first edit) in single-threaded JavaScript by skipping 88% of files via on-demand shadow classification.
-
-### Type Regression Detection (v5.3)
-
-Detects when an agent weakens types silently. TypeScript approves `RetryConfig` changed
-to `any` because `any` accepts everything. NREKI catches it.
-
-Compares pre-edit and post-edit type signatures using toxicity scoring.
-Detects structural collapse (`Promise<any>` to `any`) and wrapper primitives
-(`string` to `String`).
+3 tools. 712 tests. 4 languages. Works with any MCP-compatible agent. Apache 2.0.
 
 ---
 
-## The Problem
+## Install (30 seconds)
 
-AI coding agents (Claude Code, Cursor, Copilot Workspace) edit files autonomously. When they change a function signature in one file, they break every file that depends on it. You find out when tests fail - or worse, in production. The agent then burns thousands of tokens reading error output, guessing fixes, and retrying - a doom loop that wastes your context window.
+```bash
+# Claude Code
+claude mcp add nreki npx @ruso-0/nreki
+
+# Cursor / any MCP client
+npx @ruso-0/nreki
+```
+
+That's it. NREKI auto-detects your project size and languages. No config needed.
+
+```bash
+# Optional: create optimized CLAUDE.md instructions
+npx @ruso-0/nreki init
+```
 
 ---
 
-## The Solution
+## What It Actually Does
 
-| What you do now | What NREKI does | Savings |
-|-----------------|-----------------|---------|
-| `cat file.ts` (full file read) | `nreki_code action:"read"` (smart compression) | ~60-80% fewer tokens |
-| Native `edit_file` (blind write) | `nreki_code action:"edit"` (symbol-targeted + ACID validation) | Zero broken writes |
-| Read error → fix → retry → repeat | Auto-Healing L3.3 fixes structural errors in RAM | Zero doom loop tokens |
-| Manual `find_references` per file | `nreki_navigate action:"prepare_refactor"` (blast radius) | Prevents cascade breaks |
-| Agent manages 16 tool definitions | 3 tools, 19 actions | 81% less tool definition overhead |
+| Without NREKI | With NREKI | Result |
+|---------------|-----------|--------|
+| `cat file.ts` dumps entire file | `nreki_code action:"read"` compresses to signatures | 60-80% fewer tokens |
+| Agent writes broken code to disk | Edit validated in RAM before write | Zero broken files on disk |
+| Error → read output → guess fix → retry → repeat | Auto-Healing fixes structural errors in RAM | Zero doom loop tokens |
+| Agent manages 16+ tool calls | 3 tools, 19 actions | 81% less tool overhead |
+| No idea what breaks when you rename | `prepare_refactor` shows blast radius first | Zero cascade surprises |
+| Types silently degrade to `any` | TTRD catches type regressions in real-time | Zero silent debt |
+| Only TypeScript validated | Go (gopls) + Python (pyright) validated too | Zero cross-language blind spots |
+
+---
+
+## The Architecture
+
+NREKI has 3 validation layers with multi-language support:
+
+**Layer 1 — Syntax (Tree-sitter).** Every edit is parsed by Tree-sitter WASM before anything else. Catches syntax errors in TypeScript, JavaScript, Python, and Go. Always on.
+
+**Layer 2 — Semantics.** Language-specific validation in RAM:
+- **TypeScript/JavaScript:** Full incremental TypeScript compiler with VFS. Cross-file type errors caught before disk writes. ACID rollback.
+- **Go:** gopls spawned as LSP sidecar process. JSON-RPC 2.0 over stdio. Pull diagnostics (LSP 3.17+).
+- **Python:** pyright spawned as LSP sidecar. Same architecture as Go.
+- **Cross-language:** If a `batch_edit` touches `.ts` + `.go`, both backends must approve or the entire batch is rolled back.
+
+**Layer 3 — Auto-Healing (Dual Cascade).** When Layer 2 finds errors, NREKI attempts automatic repair:
+- **TypeScript:** CodeFix API (same engine as VS Code's "Quick Fix"). 8 whitelisted fix types.
+- **Go/Python:** LSP `codeAction/resolve` requests. Structural fixes only.
+- **Ice Wall (Muro de Hielo):** Whitelist of safe fix kinds. Business logic is never touched.
+- Each fix must reduce the total error count or it's micro-rolled-back.
 
 ---
 
 ## The 3 Tools
 
-### `nreki_navigate` - Find and understand code
+### `nreki_navigate` — Find and understand code
 
 | Action | What It Does |
 |--------|-------------|
-| `search` | Hybrid BM25 + semantic search (Pro) or keyword search (Lite) |
-| `definition` | Go-to-definition by symbol name |
+| `search` | T-RAG: Topology-Aware search that ranks results by blast radius, not just text similarity |
+| `definition` | Go-to-definition by symbol name with auto-injected dependency signatures |
 | `references` | Find all references cross-project |
-| `outline` | List symbols in a file with signatures |
-| `map` | Static repo map with PageRank scoring and pinned rules |
-| `prepare_refactor` | Shows which files depend on a symbol before you edit it |
+| `outline` | List all symbols in a file with signatures |
+| `map` | Deterministic repo map with PageRank tiers (core/logic/leaf) and pinned rules |
+| `prepare_refactor` | Predictive blast radius: shows every file that breaks if you rename a symbol |
 
-### `nreki_code` - Read, write, and validate code
+### `nreki_code` — Read, write, and validate code
 
 | Action | What It Does |
 |--------|-------------|
-| `read` | Smart file reading with auto-compression |
-| `compress` | 3 levels (light/medium/aggressive) or 6 granular tiers |
-| `edit` | Surgical edit by symbol name. Validated by Tree-sitter AST + NREKI Kernel |
-| `batch_edit` | Multi-file atomic edit with two-phase file locking. All-or-nothing |
+| `read` | Smart file reading with 3-level compression + Chronos friction warnings |
+| `compress` | Light/medium/aggressive compression with per-section breakdown |
+| `edit` | Surgical edit by symbol name — validated by Tree-sitter + Compiler/LSP + Auto-Healer |
+| `batch_edit` | Atomic multi-file, multi-language edit. All files pass or none are written. |
 | `undo` | Restore last edit from backup |
-| `filter_output` | Filter and compress terminal output |
+| `filter_output` | Strip ANSI, deduplicate errors, compress terminal output |
 
-### `nreki_guard` - Safety controls and session management
+### `nreki_guard` — Safety and session management
 
 | Action | What It Does |
 |--------|-------------|
-| `pin` | Add persistent rules injected into every map response |
-| `unpin` | Remove a pinned rule |
-| `status` | Token burn rate and depletion prediction |
-| `report` | Session receipt with USD cost estimates |
-| `reset` | Reset session counters |
-| `set_plan` | Store a plan file for context heartbeat |
-| `memorize` | Store scratchpad notes for context survival |
-
-**3 tools, 19 actions.** ~660 tokens of tool definitions instead of ~3,520. 81% reduction in fixed overhead.
+| `pin` / `unpin` | Persistent rules injected into every `map` response |
+| `status` | Token burn rate, depletion prediction, model recommendation |
+| `report` | Full session receipt with USD savings estimate |
+| `reset` | Clear circuit breaker after doom loop recovery |
+| `set_plan` | Anchor a plan file — survives context compaction via Context Heartbeat |
+| `memorize` | Save progress notes to NREKI's active scratchpad |
+| `audit` | Architecture Health Index: 5-signal deterministic score (1-10) with recovery plan |
 
 ---
 
-## Invisible Middleware
+## Language Support
 
-These layers run automatically on every edit. You never call them directly.
+| Language | Layer 1 (Syntax) | Layer 2 (Semantics) | Layer 3 (Auto-Heal) | TTRD |
+|----------|:---:|:---:|:---:|:---:|
+| TypeScript | ✅ | ✅ Compiler API | ✅ CodeFix API | ✅ TypeFlags |
+| JavaScript | ✅ | ✅ Compiler API | ✅ CodeFix API | ✅ TypeFlags |
+| Go | ✅ | ✅ gopls LSP | ✅ codeAction | ✅ Syntactic v2 |
+| Python | ✅ | ✅ pyright LSP | ✅ codeAction | ✅ Syntactic v2 |
 
-| Layer | What It Does |
-|-------|-------------|
-| **AST Validation** | Tree-sitter parses the proposed code before any write. Catches syntax errors in sub-millisecond time. Works for TS, JS, Python, Go. |
-| **Circuit Breaker** | Detects doom loops (repeated failures on the same file). 3-level escalation: Rewrite strategy → Decompose → Hard Stop. |
-| **NREKI Kernel (L2)** | Cross-file semantic validation in RAM via TypeScript Compiler API. Triple Shield: Global → Syntactic → Semantic. ACID rollback on failure. |
-| **Auto-Healing** | When the kernel detects structural errors, attempts repair using `ts.LanguageService.getCodeFixesAtPosition()`. Each fix must reduce error count or it is reverted. |
+Go/Python require gopls/pyright in PATH. If not found, NREKI degrades gracefully to Layer 1.
 
----
-
-## Architecture
-
-```
-+---------------------------------------------------------+
-|                    Claude Code Agent                     |
-|          (nreki_navigate, nreki_code, nreki_guard)       |
-+----------------------------+----------------------------+
-                             |
-                             v
-+---------------------------------------------------------+
-|               NREKI Router (src/router.ts)               |
-|   Context Heartbeat | Circuit Breaker | File Lock        |
-+----------------------------+----------------------------+
-                             |
-                   +---------+-----------+
-                   v                     v
-+------------------+     +-------------------------------+
-|    Layer 1       |     |    Layer 2                     |
-|    Tree-sitter   |     |    NREKI Kernel                |
-|    (syntax)      |     |    (cross-file semantics)      |
-|                  |     |                                |
-|    Sub-ms AST    |     |    TypeScript Compiler API     |
-|    validation    |     |    hijacked with VFS in RAM    |
-|                  |     |                                |
-|    All languages |     |    TS/JS only (tsconfig.json)  |
-+------------------+     |                                |
-                         |    * Global + syntax + semantic  |
-                         |      diagnostics                 |
-                         |    * Auto-fix via CodeFix API    |
-                         |      (8 structural fix types)    |
-                         |    * ACID transactions           |
-                         |    * Two-phase atomic commit     |
-                         |    * Reference analysis          |
-                         |    * Import graph scoring        |
-                         |    * ~50ms rollback              |
-                         |    * Performance modes           |
-                         |      (syntax/file/project)       |
-                         +-------------------------------+
-```
+**TTRD Syntactic v2** (v7.3): For Go and Python, NREKI detects type regressions using structural signature analysis with toxicity scoring and bracket-balanced extraction — no type checker required.
 
 ---
 
-## Installation
+## Performance
 
-```bash
-# Quick start
-npx @ruso-0/nreki
+NREKI auto-selects validation depth. No configuration needed.
 
-# Or install globally
-npm install -g @ruso-0/nreki
-```
+| Mode | Project Size | What It Checks | Boot Time | RAM |
+|------|-------------|----------------|-----------|-----|
+| Syntax | < 50 files | Tree-sitter AST only | < 100ms | ~30MB |
+| File | 50-200 files | Semantic checks on touched files | 1-3s | ~150MB |
+| Project | 200-1000 files | Full cross-file cascade | 3-10s | 200MB-1GB |
+| Hologram | > 1000 files | Full cascade via .d.ts shadows (JIT) | ~2s | ~350MB |
 
-### Claude Code CLI
+### VSCode Benchmark (5,584 files)
 
-```bash
-# Lite mode (default - instant startup, BM25 search)
-claude mcp add nreki -- npx @ruso-0/nreki
+| Metric | Hologram (JIT) | Project | File |
+|--------|---------------|---------|------|
+| Boot | **1.94s** | 111s | 91.6s |
+| First edit | 1384ms | 644ms | 55ms |
+| Total | **3.32s** | ~112s | ~92s |
+| RAM | ~350MB | OOM (16GB) | 4.5GB |
+| Files loaded | 642 on-demand | 5,584 | 5,584 |
 
-# Pro mode (hybrid semantic + BM25 search, ~5-10s startup)
-claude mcp add nreki -- npx @ruso-0/nreki --enable-embeddings
-```
+### Spectral Topology Benchmark (11 projects, 55 test cases)
 
-### Manual Configuration
+| Project | Files | Nodes | Edges | Max Latency | Result |
+|---------|-------|-------|-------|-------------|--------|
+| Zod | 195 | 2,251 | 6,242 | 32.2ms | 55/55 PASS |
+| tRPC | 89 | 828 | 1,790 | 41.3ms | 55/55 PASS |
+| Prisma | 1,970 | 3,546 | 5,319 | 7.7ms | 55/55 PASS |
+| Next.js | 1,445 | 5,024 | 7,589 | 27.0ms | 55/55 PASS |
+| VS Code | 4,697 | 24,204 | 111,994 | 29.1ms | 55/55 PASS |
+| Effect | 362 | 10,935 | 72,723 | 95.8ms | 55/55 PASS |
 
-Add to `.claude/settings.json`:
-
-```json
-{
-  "mcpServers": {
-    "nreki": {
-      "command": "npx",
-      "args": ["@ruso-0/nreki"]
-    }
-  }
-}
-```
-
-### Modes
-
-| | Lite (Default) | Pro (Opt-in) |
-|---|---|---|
-| **Startup** | Instant (~100ms) | ~5-10s (ONNX model load) |
-| **Search** | BM25 keyword search | Hybrid semantic + BM25 with RRF |
-| **Layer 2** | Active if tsconfig.json present | Active if tsconfig.json present |
-| **Enable** | Default | `--enable-embeddings` flag |
-
-Layer 2 (NREKI Kernel) activates automatically in any TypeScript/JavaScript project with a `tsconfig.json`. Non-TypeScript projects operate with Layer 1 (Tree-sitter syntax validation) only.
+0 false positives across 55 test cases and 11 real projects.
 
 ---
 
-## Quick Start
+## Key Features
 
-```bash
-# Search for a function
-nreki_navigate action:"search" query:"getUserId"
+### T-RAG — Topology-Aware Retrieval (v7.1)
 
-# Read a file with compression
-nreki_code action:"read" file:"src/auth.ts"
+Standard RAG returns the most textually similar code. T-RAG re-ranks results using the project's dependency graph:
 
-# Surgically edit a function (NREKI validates before writing)
-nreki_code action:"edit" file:"src/auth.ts" symbol:"getUserId" new_code:"..."
+```
+TRS = RRF × G(d) × B(d,q)
 
-# Atomic multi-file edit
-nreki_code action:"batch_edit" edits:[{path:"src/auth.ts", symbol:"getUserId", new_code:"..."}, ...]
-
-# Check blast radius before refactoring
-nreki_navigate action:"prepare_refactor" file:"src/auth.ts" symbol:"getUserId"
-
-# Pin a persistent rule
-nreki_guard action:"pin" text:"Never use 'any' type in this project"
-
-# Check token budget
-nreki_guard action:"status"
+G(d) = Gravity: PageRank tier weight + log₂(1 + inDegree)
+B(d,q) = Blast Radius resonance: 1.5× if the file imports the search epicenter
 ```
 
----
+### Architecture Health Index (v7.1)
 
-## Tests
+`nreki_guard action:"audit"` computes a deterministic 1-10 score from 5 signals: Spectral Integrity (λ₂/avgDegree), Bus Factor (Shannon Entropy), Type Safety, Core Coverage, and Stability (Chronos CFI). Includes recovery plan simulated in RAM.
 
-**704 tests across 43 suites. Zero failures.**
+### Auto-Healing Dual Cascade (v7.3)
 
-| Suite | Tests | What It Covers |
-|-------|-------|---------------|
-| nreki-kernel | 28 | Boot, semantic validation, syntactic shield, baseline tolerance, file operations, ACID, concurrency, edge cases, precision |
-| auto-healing | 6 | Missing import heal, await/async heal, cascade micro-rollback, business logic rejection, healingStats, clean code passthrough |
-| nreki-integration | 8 | Zero-disk-touch path, type-breaking block, batch dryRun, atomic commit, path traversal rejection |
-| router | 32 | All 19 actions across 3 tools, error handling, parameter validation |
-| security | 48 | Path traversal, symlink escape, injection, sensitive file blocking, circuit breaker, pin sanitization |
-| circuit-breaker | 45 | 3-level escalation, reset behavior, threshold detection |
-| stress | 37 | Concurrent operations, large file handling, memory pressure |
-| semantic-edit | 24 | Symbol targeting, mode switching, edge cases |
-| audit-fixes | 54 | All 30 audit findings verified resolved |
-| repo-map | 22 | PageRank scoring, import graph, classification |
-| Other suites | 261 | Engine, middleware, terminal filter, pin memory, compressor, AST, batch edit, backward compat, heartbeat, file lock, auto-context, v4 bugfixes, e2e breaker, parser-pool, mutex, document-registry, tsbuildinfo-cache |
-| mode-detection | 20 | Mode auto-detection, syntax/file/project behavior, elastic threshold, early exit recovery |
-| ttrd-silent-crime | 1 | Silent type degradation caught by TTRD |
-| ttrd | 19 | Type regression detection, toxicity scoring, barrel guards |
-| chronos-memory | 16 | Cross-session friction tracking, health score |
-| hologram | 45 | Shadow generation, VFS integration, lazy subgraph, domain separation, harvester, full cycle |
-| jit-holography | 15 | JIT on-demand classification, cache, rollback, interceptAtomicBatch |
+When validation fails, NREKI attempts repair through two cascading systems:
 
----
+1. **TypeScript:** CodeFix API — 8 whitelisted structural fixes (imports, async/await, interface implementation)
+2. **Go/Python:** LSP `codeAction` — structural fixes from gopls/pyright filtered through the Ice Wall whitelist
 
-## Real-World Benchmark: OpenDota (148 files, 1,600+ stars)
+Each fix must reduce total errors. If a fix fails, it's micro-rolled-back and blacklisted. If all errors are resolved, the edit commits. If some remain, full rollback — disk untouched.
 
-| Test | Result | Latency | Details |
-|------|--------|---------|---------|
-| Boot | SUCCESS | 7.39s | 148 files tracked, 0 baseline errors |
-| Valid edit | PASS | 2,062ms | Appending a comment - no false positive |
-| Type break | **CAUGHT** | 7,230ms | Changed `getPGroup()` return type - cross-file error caught |
-| Syntax break | **CAUGHT** | 3,774ms | `return const let;` - blocked |
-| File delete | PASS | 1,596ms | Leaf file deletion - correctly allowed |
-| Non-TS file | PASS | 2,907ms | README.md - correctly ignored |
+### TTRD — Type Regression Detection
 
-**6/6 correct verdicts** against a real TypeScript project. Zero false positives. Zero false negatives.
+**TypeScript:** TypeFlags-based toxicity scoring (any=10, unknown=2, Function=5). Compares pre/post type contracts within the ACID transaction. Tracks type debt across sessions.
+
+**Go/Python (v7.3):** Syntactic v2 — structural signature analysis with bracket-balanced extraction and toxicity pattern matching. Detects regressions without a type checker.
+
+### Chronos Memory
+
+Cross-session file fragility tracking. CFI scoring (trip=10, error=3, heal=1). Session decay 0.85. Successful edits halve the friction score. High-CFI files require uncompressed read before editing.
+
+### Context Heartbeat
+
+Re-injects 4-layer session state every ~15 tool calls to survive context compaction. Respects prompt cache physics — map output stays at token position 0.
 
 ---
 
 ## Security
 
-- **Zero cloud, zero telemetry, zero network calls** - everything runs locally
-- **Embeddings computed locally** via ONNX Runtime (optional `@xenova/transformers`)
-- **Path traversal protection** - `safePath()` in middleware + kernel-level path jail in `interceptAtomicBatch()`
-- **Sensitive file blocking** - `.env`, `.pem`, `.key`, `id_rsa`, `id_ed25519` rejected by VFS hijack
-- **SQLite storage** - all data in local `.nreki.db`, no external services
-- **WASM memory safety** - `safeParse()` with cleanup for Tree-sitter parsers
-- **30/30 audit findings resolved** in v5.0.0 (see `tests/audit-fixes.test.ts`)
+- **Zero cloud, zero telemetry, zero network calls.** Everything runs locally.
+- **Path traversal protection** at middleware + kernel level with POSIX normalization.
+- **Sensitive file blocking** — `.env`, `.pem`, `.key`, `id_rsa` are rejected by the VFS.
+- **ACID transactions** — partial writes are impossible. Backup → temp → rename → cleanup.
+- **48 security tests** covering traversal, symlink escape, injection, and circuit breaker abuse.
+- **LSP Anti-Zombie Guard** — stdin pipe suffocation + SIGKILL kills the entire process tree (tsx wrappers, grandchildren). SSOT `cleanupState()` cleans all timers, pending requests, and listeners in one idempotent call.
 
 ---
 
@@ -350,80 +225,71 @@ nreki_guard action:"status"
 
 | Metric | Value |
 |--------|-------|
-| Tests | 704 (43 suites) |
+| Tests | 712 (44 suites) |
+| Architecture Health Index | 9.7/10 (self-scored) |
+| Languages | 4 (TypeScript, JavaScript, Go, Python) |
 | Failure modes sealed | 32 (P1-P32) |
-| Audit findings resolved | 30/30 |
+| Audit findings resolved | 30/30 + 22 additional |
+| Auto-Healing fix types | 8 CodeFix (TS) + LSP codeAction (Go/Py) |
+| Spectral benchmark | 11 projects, 55/55 correct, 0 false positives |
 | OpenDota benchmark | 6/6 correct verdicts |
-| Auto-Healing safe fixes | 8 CodeFix types |
-| Boot time (148 files) | 7.39s |
-| Warm-path rollback | ~50ms |
-| Blast radius query | ~20ms |
-| PageRank convergence (1,000 files) | < 50ms |
-| Tool definition overhead | ~660 tokens (81% reduction from v2) |
-| VSCode benchmark (5,584 files) | JIT boot 1.94s, total 3.32s, 642 files on-demand |
-| Mode detection | 85ms for 5,584 files |
+| VSCode (5,584 files) | JIT boot 1.94s, total 3.32s |
+| Router | 319 lines (87% reduction from 2,485) |
+| Tool overhead | ~660 tokens (3 tools replace 16) |
 
 ---
 
 ## Honest Limitations
 
-### Small Projects Don't Need the Kernel
+**Small projects don't need the kernel.** Projects under 50 files run in syntax mode (Tree-sitter only). The kernel boots for 50+ file projects where cross-file validation matters.
 
-NREKI auto-detects project size. Projects under 50 files run in syntax mode (Tree-sitter only, no compiler). The kernel only boots for projects with 50+ files where cross-file validation matters.
+**TypeScript Compiler API dependency.** Uses `ts.createEmitAndSemanticDiagnosticsBuilderProgram` and `ts.LanguageService`. Pinned to `typescript@^5.9.3`.
 
-### TypeScript Compiler API Dependency
+**Auto-Healing is conservative.** Structural fixes only. Business logic errors are returned to the agent, never auto-fixed. If the healer can't resolve ALL errors, everything rolls back.
 
-The NREKI Kernel depends on `ts.createEmitAndSemanticDiagnosticsBuilderProgram` and `ts.LanguageService`. These are public APIs but Microsoft modifies them between major TypeScript versions. NREKI pins `typescript@^5.9.3` and tests against each release. If TypeScript 6.0 introduces breaking changes, NREKI will require updates.
+**Go/Python TTRD is syntactic.** Without a type checker exposing resolved types, TTRD v2 uses structural pattern matching — accurate for signature changes, blind to inferred type regressions.
 
-### Auto-Healing Is Conservative
-
-The healer only applies 8 structural fix types from a strict whitelist. It will not fix business logic errors, type mismatches, or architectural mistakes. If the healer cannot resolve ALL errors, it rolls back completely and returns the original errors to the LLM. This is by design - partial healing could mask bugs.
-
-### Token Savings Are Estimates
-
-Token savings reported in tool responses use a `characters / 3.5` heuristic, not actual BPE tokenization. Real savings may differ by 20-40% depending on code density. The savings are real - the exact numbers are approximate.
-
-### Language Coverage
-
-| Language | Layer 1 (Syntax) | Layer 2 (Semantics) | Auto-Healing (L3.3) |
-|----------|:-:|:-:|:-:|
-| TypeScript | Yes | Yes | Yes |
-| JavaScript | Yes | Yes | Yes |
-| Python | Yes | No | No |
-| Go | Yes | No | No |
-
-Layer 2 and Auto-Healing require `tsconfig.json`. Python and Go projects operate with Layer 1 syntax validation only.
+**Token savings are estimates.** Uses `characters / 3.5` heuristic, not BPE tokenization. Real savings vary ~20-40%.
 
 ---
 
-## Technical Deep Dive
+## How It Works Internally
 
 ### The Intercept Cycle
 
-1. **Inject** - All edits enter VFS staging simultaneously (atomic batch)
-2. **Compile** - Incremental builder evaluates proposed future state
-3. **Shield 1** - Global diagnostics (TS6053, TS2307)
-4. **Shield 2** - Syntactic diagnostics on edited files only
-5. **Shield 3** - Semantic diagnostics on all affected files (cross-file blast radius)
-6. **Auto-Heal** - If errors found, attempt structural repair via CodeFix API (L3.3)
-7. **Verdict** - Errors resolved by healer → SAFE. Errors remain → BLOCK + full rollback
-8. **Commit** - Two-phase atomic write (backup → temp+rename → cleanup)
+1. **Inject** — All edits enter VFS simultaneously (atomic batch)
+2. **Compile** — Incremental TypeScript builder evaluates proposed future state
+3. **Shield 1-3** — Global → Syntactic → Semantic diagnostics
+4. **LSP Sidecars** — Go/Python files validated via gopls/pyright (Pull diagnostics LSP 3.17+)
+5. **Auto-Heal** — Dual Cascade: CodeFix API (TS) + LSP codeAction (Go/Py) through Ice Wall whitelist
+6. **TTRD** — Compare pre/post type contracts (TypeFlags for TS, Syntactic v2 for Go/Py)
+7. **Verdict** — All clear → Two-Phase Atomic Commit. Errors remain → Full rollback.
 
-### Known Failure Modes (P1-P32)
+### Architecture (v7.3 post-Strangler Fig)
 
-| Category | Problems |
-|----------|----------|
-| Compiler Cache | P8 (monotonic clock), P11 (periodic GC), P17 (zombie AST) |
-| Error Tracking | P9 (topological cardinality), P15 (path sanitization), P28 (syntactic blindness) |
-| Concurrency | P10 (FIFO mutex), P21 (multi-file deadlock), P25 (idempotent undo-log) |
-| File Operations | P4 (dynamic rootNames), P5 (tombstone deletion), P27 (recursive mkdir), P29 (TS6053 ghost), P30 (non-TS filter) |
-| Path Handling | P26 (POSIX normalization), P31 (virtual directories) |
-| Physical I/O | P2 (atomic commit), P18 (destruction & resurrection), P32 (physical rollback) |
-| Security | A1 (path jail), A5 (node_modules regex), A10 (sensitive file filter) |
+```
+NrekiKernel (Orchestrator)
+  ├── VFS (Map<string, string|null>), ACID rollback, mutex, logical clock
+  ├── TsCompilerWrapper (TypeScript backend)
+  │     ├── CompilerHost + DocumentRegistry + LanguageService
+  │     ├── Incremental builder with corruption recovery
+  │     ├── TTRD: TypeFlags toxicity scoring
+  │     └── Auto-Healer: 8 whitelisted CodeFix types
+  ├── LspSidecarBase (Go/Python backends)
+  │     ├── JSON-RPC 2.0 over stdio, Pull diagnostics (LSP 3.17+)
+  │     ├── requestCodeActions + Ice Wall whitelist
+  │     ├── TTRD Syntactic v2 (toxicity + bracket balancer)
+  │     ├── SSOT cleanupState() — one idempotent funnel for all death paths
+  │     └── Anti-Zombie: stdin suffocation + SIGKILL (kills entire process tree)
+  ├── GoLspSidecar → gopls (22 lines)
+  ├── PythonLspSidecar → pyright (24 lines)
+  └── TypeScriptCorsaBackend → tsgo (Project Corsa placeholder)
 
-### How Auto-Healing Decides
-
-Each fix must reduce the total error count. If applying a fix leaves the same number of errors or more, the fix is reverted and blacklisted. If all errors are resolved, the edit is committed. If some remain, everything is rolled back and the original errors are returned to the agent.
+Router (319 lines, 3 facades)
+  ├── nreki_navigate → handlers/navigate.ts
+  ├── nreki_code → handlers/code.ts
+  └── nreki_guard → handlers/guard.ts
+```
 
 ---
 
@@ -433,10 +299,10 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-Apache-2.0 - see [LICENSE](LICENSE).
+Apache-2.0 — see [LICENSE](LICENSE).
 
 ## Author
 
 **Jherson Eddie Tintaya Holguin** ([@Ruso-0](https://github.com/Ruso-0))
 
-Cusco, Peru.
+Arequipa, Peru.
