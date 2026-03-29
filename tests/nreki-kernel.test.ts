@@ -646,3 +646,43 @@ describe("NREKI Precision - Timeout (LT-3)", () => {
         expect(result.safe).toBe(true);
     });
 });
+
+// ─── Test 8: getLspOffset handles CRLF correctly ────────────────────
+
+describe("NREKI getLspOffset — CRLF handling", () => {
+    let kernel: NrekiKernel;
+    let dir: string;
+
+    beforeEach(() => {
+        dir = createTempProject({ "index.ts": "export const a = 1;\n" });
+        kernel = new NrekiKernel();
+        kernel.boot(dir);
+    });
+
+    afterEach(async () => {
+        await kernel.shutdownSidecars();
+        cleanupTempProject(dir);
+    });
+
+    it("getLspOffset handles CRLF correctly", () => {
+        // Content with Windows-style line endings
+        const content = "line one\r\nline two\r\nline three";
+        // line 0: "line one\r\n"  (10 bytes, offset 0..9)
+        // line 1: "line two\r\n"  (10 bytes, offset 10..19)
+        // line 2: "line three"    (offset 20)
+
+        const getLspOffset = (kernel as any).getLspOffset.bind(kernel);
+
+        // Line 0, char 0 → offset 0
+        expect(getLspOffset(content, 0, 0)).toBe(0);
+
+        // Line 1, char 0 → offset 10 (after "line one\r\n")
+        expect(getLspOffset(content, 1, 0)).toBe(10);
+
+        // Line 2, char 0 → offset 20 (after "line two\r\n")
+        expect(getLspOffset(content, 2, 0)).toBe(20);
+
+        // Line 2, char 5 → offset 25
+        expect(getLspOffset(content, 2, 5)).toBe(25);
+    });
+});

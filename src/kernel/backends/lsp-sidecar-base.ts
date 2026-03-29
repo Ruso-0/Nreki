@@ -64,6 +64,7 @@ interface LspDiagnostic {
 interface PendingRequest {
     resolve: (value: unknown) => void;
     reject: (error: Error) => void;
+    timer: NodeJS.Timeout;
 }
 
 // ─── Base Class ─────────────────────────────────────────────────────
@@ -81,11 +82,15 @@ export abstract class LspSidecarBase {
     private diagnostics = new Map<string, LspDiagnostic[]>();
     private openedFiles = new Set<string>();
 
+    protected readonly spawnEnv?: Record<string, string>;
     protected realProjectRoot: string;
     protected workspaceUri: string;
 
     /** True if the process has exited or failed to boot. */
     public isDead = false;
+
+    /** True if the LSP server supports textDocument/diagnostic (pull model) */
+    protected supportsPullDiagnostics = false;
 
     // ─── Settle Debounce ────────────────────────────────────────────
     private settleResolvers: Array<() => void> = [];
@@ -95,17 +100,23 @@ export abstract class LspSidecarBase {
     // ─── Anti-Zombie Guard ──────────────────────────────────────────
     private readonly killFn: () => void;
 
-    constructor(projectRoot: string, command: string[], languageId: string) {
+    constructor(
+        projectRoot: string,
+        command: string[],
+        languageId: string,
+        spawnEnv?: Record<string, string>,
+    ) {
         this.realProjectRoot = projectRoot;
         this.command = command;
         this.languageId = languageId;
+        this.spawnEnv = spawnEnv;
         // The workspace IS the real project. No tmp dirs. No fake go.mod.
         this.workspaceUri = this.toUri(projectRoot);
 
         // Anti-Zombie Guard: kill child process if Node exits unexpectedly.
         // Listeners are attached in ensureReady() (when proc exists) and removed
         // in shutdown() and proc "exit" to prevent MaxListenersExceededWarning.
-        this.killFn = () => { if (this.proc) { try { this.proc.kill("SIGKILL"); } catch { /* already dead */ } } };
+        this.killFn = () => { this.forceKill(); };
     }
 
     // ─── Path Utilities ─────────────────────────────────────────────
@@ -132,6 +143,7 @@ export abstract class LspSidecarBase {
             try {
                 this.proc = spawn(this.command[0], this.command.slice(1), {
                     cwd: this.realProjectRoot,
+                    env: this.spawnEnv ? { ...process.env, ...this.spawnEnv } : undefined,
                     stdio: ["pipe", "pipe", "pipe"],
                 });
 
@@ -143,27 +155,9 @@ export abstract class LspSidecarBase {
                 // ENOENT handler: binary not found in PATH
                 this.proc.on("error", (err: NodeJS.ErrnoException) => {
                     const isNotFound = err.code === "ENOENT";
-                    logger.error(
-                        `${this.command[0]} spawn failed: ${
-                            isNotFound
-                                ? `not found in PATH`
-                                : err.message
-                        }`,
-                    );
-                    this.isDead = true;
-                    this.proc = undefined;
-                    // PATCH-8: Remove anti-zombie listeners on spawn failure.
-                    // Without this, each failed boot() accumulates 3 orphan listeners
-                    // on the global process, triggering MaxListenersExceededWarning
-                    // and leaking memory after ~4 retries.
-                    process.removeListener("exit", this.killFn);
-                    process.removeListener("SIGINT", this.killFn);
-                    process.removeListener("SIGTERM", this.killFn);
-                    // Reject all pending requests
-                    for (const { reject: r } of this.pendingRequests.values()) {
-                        r(new Error(`${this.command[0]} not available`));
-                    }
-                    this.pendingRequests.clear();
+                    const msg = `[NREKI] ${this.command[0]} spawn failed: ${isNotFound ? "not found in PATH" : err.message}`;
+                    logger.error(msg);
+                    this.cleanupState(msg);
                 });
 
                 // Capture stderr for debugging
@@ -181,17 +175,7 @@ export abstract class LspSidecarBase {
 
                 // Clean exit: no redundant kill, prevent Windows ESRCH crash
                 this.proc.on("exit", () => {
-                    this.isDead = true;
-                    this.proc = undefined;
-                    this.diagnostics.clear();
-                    for (const { reject: r } of this.pendingRequests.values()) {
-                        r(new Error(`${this.command[0]} process exited unexpectedly`));
-                    }
-                    this.pendingRequests.clear();
-                    // Remove anti-zombie listeners to prevent accumulation
-                    process.removeListener("exit", this.killFn);
-                    process.removeListener("SIGINT", this.killFn);
-                    process.removeListener("SIGTERM", this.killFn);
+                    this.cleanupState(`[NREKI] ${this.command[0]} process exited unexpectedly`);
                 });
 
                 // LSP initialize handshake (10s timeout)
@@ -201,28 +185,31 @@ export abstract class LspSidecarBase {
                     capabilities: {
                         textDocument: {
                             publishDiagnostics: { relatedInformation: true },
+                            diagnostic: { dynamicRegistration: false },
                         },
                     },
                     workspaceFolders: [
                         { uri: this.workspaceUri, name: path.basename(this.realProjectRoot) },
                     ],
                 }, 10_000)
-                    .then(() => {
+                    .then((initResult) => {
+                        // Detect pull diagnostics support from server capabilities
+                        const serverCaps = initResult as any;
+                        if (serverCaps?.capabilities?.diagnosticProvider) {
+                            this.supportsPullDiagnostics = true;
+                            logger.info(`${this.command[0]} supports pull diagnostics (deterministic mode).`);
+                        }
                         this.notifyLsp("initialized", {});
                         logger.info(`${this.command[0]} sidecar booted successfully.`);
                         resolve();
                     })
                     .catch((e) => {
-                        this.isDead = true;
-                        if (this.proc) {
-                            try { this.proc.kill("SIGKILL"); } catch { /* already dead */ }
-                        }
-                        this.proc = undefined;
+                        this.forceKill();
                         reject(e);
                     });
             } catch (e) {
-                this.isDead = true;
-                this.proc = undefined;
+                const errMsg = e instanceof Error ? e.message : String(e);
+                this.cleanupState(`[NREKI] Synchronous boot failure for ${this.command[0]}: ${errMsg}`);
                 reject(e);
             }
         });
@@ -231,6 +218,55 @@ export abstract class LspSidecarBase {
     /** Check if the child process is alive and responding. */
     isHealthy(): boolean {
         return !!this.proc && this.proc.exitCode === null && !this.isDead;
+    }
+
+    /**
+     * SSOT (Single Source of Truth) para el ciclo de vida final.
+     * Idempotente: previene ejecución redundante si exit y forceKill colisionan.
+     * Simétrico: limpia TODO sin importar por qué murió el proceso.
+     */
+    private cleanupState(reasonMsg: string): void {
+        if (this.isDead) return;
+        this.isDead = true;
+        this.openedFiles.clear();
+        this.diagnostics.clear();
+
+        // 1. Settle Timers
+        if (this.settleTimer) {
+            clearTimeout(this.settleTimer);
+            this.settleTimer = undefined;
+        }
+        const queue = this.settleResolvers;
+        this.settleResolvers = [];
+        for (const r of queue) r();
+
+        // 2. Pending Request Timers (limpieza explícita, sin closures)
+        const err = new Error(reasonMsg);
+        for (const { reject, timer } of this.pendingRequests.values()) {
+            clearTimeout(timer);
+            reject(err);
+        }
+        this.pendingRequests.clear();
+
+        // 3. Process listeners
+        process.removeListener("exit", this.killFn);
+        process.removeListener("SIGINT", this.killFn);
+        process.removeListener("SIGTERM", this.killFn);
+
+        this.proc = undefined;
+    }
+
+    public forceKill(): void {
+        if (this.proc) {
+            try {
+                if (this.proc.stdin && !this.proc.stdin.destroyed) {
+                    this.proc.stdin.end();
+                    this.proc.stdin.destroy();
+                }
+                this.proc.kill("SIGKILL");
+            } catch { /* already dead */ }
+        }
+        this.cleanupState(`[NREKI] ${this.command[0]} process terminated forcefully`);
     }
 
     /**
@@ -245,17 +281,7 @@ export abstract class LspSidecarBase {
         } catch {
             // Unresponsive — force kill
         }
-        if (this.proc) {
-            try { this.proc.kill("SIGKILL"); } catch { /* already dead */ }
-        }
-        this.proc = undefined;
-        this.isDead = true;
-        this.openedFiles.clear();
-        this.diagnostics.clear();
-        // Remove anti-zombie listeners to prevent MaxListenersExceededWarning
-        process.removeListener("exit", this.killFn);
-        process.removeListener("SIGINT", this.killFn);
-        process.removeListener("SIGTERM", this.killFn);
+        this.forceKill();
     }
 
     // ─── Validation ─────────────────────────────────────────────────
@@ -304,9 +330,20 @@ export abstract class LspSidecarBase {
             }
         }
 
-        // Wait for diagnostics to settle
+        // Collect diagnostics: pull (deterministic) or push (settle timer)
         if (changed) {
-            await this.waitForSettle(5_000, 150);
+            if (this.supportsPullDiagnostics) {
+                // PULL MODE: Request diagnostics explicitly. Zero timers.
+                for (const edit of edits) {
+                    if (edit.content === null) continue;
+                    const relPath = this.toPosix(path.relative(this.realProjectRoot, edit.filePath));
+                    const uri = `${this.workspaceUri}/${relPath}`;
+                    await this.pullDiagnostics(uri);
+                }
+            } else {
+                // PUSH MODE (fallback): Wait for server to push diagnostics.
+                await this.waitForSettle(5_000, 150);
+            }
         }
 
         // Collect errors (severity 1 only)
@@ -330,6 +367,26 @@ export abstract class LspSidecarBase {
             }
         }
         return errors;
+    }
+
+    /**
+     * Pull diagnostics for a specific file (LSP 3.17+).
+     * Deterministic: waits for the server's actual response.
+     * No timers. No race conditions.
+     */
+    private async pullDiagnostics(uri: string): Promise<void> {
+        try {
+            const result = await this.request("textDocument/diagnostic", {
+                textDocument: { uri },
+            }, 10_000) as any;
+
+            // Pull response contains items directly (not via notification)
+            if (result?.items && Array.isArray(result.items)) {
+                this.diagnostics.set(uri, result.items);
+            }
+        } catch {
+            // Server may not support it for this file — fall through to push
+        }
     }
 
     /**
@@ -446,6 +503,9 @@ export abstract class LspSidecarBase {
                 ) {
                     const pending = this.pendingRequests.get(msg.id)!;
                     this.pendingRequests.delete(msg.id);
+
+                    clearTimeout(pending.timer);
+
                     if (msg.error) {
                         pending.reject(new Error((msg.error as RpcResponseError).message));
                     } else {
@@ -468,7 +528,7 @@ export abstract class LspSidecarBase {
     /** Send a JSON-RPC request and wait for response. Rejects on timeout. */
     protected request(method: string, params: unknown, timeoutMs = 15_000): Promise<unknown> {
         if (!this.proc || this.isDead) {
-            return Promise.reject(new Error(`${this.command[0]} is not running`));
+            return Promise.reject(new Error(`[NREKI] ${this.command[0]} is not running`));
         }
         const id = ++this.requestId;
         return new Promise<unknown>((resolve, reject) => {
@@ -477,10 +537,7 @@ export abstract class LspSidecarBase {
                 reject(new Error(`[NREKI] LSP request '${method}' timed out after ${timeoutMs}ms`));
             }, timeoutMs);
 
-            this.pendingRequests.set(id, {
-                resolve: (v: unknown) => { clearTimeout(timer); resolve(v); },
-                reject: (e: Error) => { clearTimeout(timer); reject(e); },
-            });
+            this.pendingRequests.set(id, { resolve, reject, timer });
 
             const msg: RpcRequest = { jsonrpc: "2.0", id, method, params };
             this.sendRaw(msg);
