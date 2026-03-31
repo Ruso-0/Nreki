@@ -315,7 +315,7 @@ export class SpectralTopologist {
 }
 
 export class SpectralMath {
-    public static analyzeTopology(N: number, edges: SparseEdge[]): {
+    public static analyzeTopology(N: number, edges: SparseEdge[], normalized: boolean = false): {
         fiedler: number; volume: number;
         v2?: Float64Array; lambda3?: number; v3?: Float64Array;
     } {
@@ -389,7 +389,35 @@ export class SpectralMath {
         // ─── NUEVO: Capturar seed post-mutación + Power Iteration con Deflación ───
 
         const dataSeed = seed; // Semilla POST-mutación exacta del original
-        const c = maxDegree * 2.0 + 1.0;
+
+        // ─── DUAL LAPLACIAN: Combinatorio vs Normalizado ───────────────
+        // Combinatorio (L = D - A): eigenvalues grow with N. Default for production.
+        // Normalizado (L_sym = I - D^{-1/2}AD^{-1/2}): eigenvalues in [0, 2]. For ML pipeline.
+        //
+        // TRAMPA MORTAL 2: c shift changes with the Laplacian type.
+        // Combinatorio: max eigenvalue ≈ 2×maxDegree → c = maxDegree×2+1
+        // Normalizado: max eigenvalue = 2 → c = 2.0
+        const c = normalized ? 2.0 : maxDegree * 2.0 + 1.0;
+
+        // TRAMPA MORTAL 1: v₁ of L_sym is NOT constant — it's proportional to √D.
+        // Pre-compute the normalized v₁ and D^{-1/2} for the normalized case.
+        const v1_norm = new Float64Array(N);
+        const invSqrtD = new Float64Array(N);
+
+        if (normalized) {
+            let vol = 0;
+            for (let i = 0; i < N; i++) vol += degree[i];
+            const rVol = vol > 0 ? 1.0 / Math.sqrt(vol) : 0;
+            for (let i = 0; i < N; i++) {
+                if (degree[i] > 0) {
+                    v1_norm[i] = Math.sqrt(degree[i]) * rVol;
+                    // TRAMPA MORTAL 2: degree[i]=0 → 1/√0 = Infinity → NaN.
+                    // Guard: invSqrtD stays 0 for isolated nodes.
+                    invSqrtD[i] = 1.0 / Math.sqrt(degree[i]);
+                }
+                // else: v1_norm[i] = 0, invSqrtD[i] = 0 (Float64Array default)
+            }
+        }
 
         const powerIteration = (
             deflateVectors: Float64Array[],
@@ -408,11 +436,21 @@ export class SpectralMath {
             let prevDelta = Infinity;
 
             for (let iter = 0; iter < 150; iter++) {
-                // 1. Deflate trivial eigenvector (constant)
-                let sum = 0;
-                for (let i = 0; i < N; i++) sum += vec[i];
-                const mean = sum / N;
-                for (let i = 0; i < N; i++) vec[i] -= mean;
+                // 1. Deflate trivial eigenvector
+                // TRAMPA MORTAL 1: L_sym's v₁ ∝ √D, NOT constant.
+                // Subtracting mean projects against wrong subspace → thermal noise.
+                if (normalized) {
+                    // Project out v₁ = √D / √vol
+                    let dot = 0;
+                    for (let i = 0; i < N; i++) dot += vec[i] * v1_norm[i];
+                    for (let i = 0; i < N; i++) vec[i] -= dot * v1_norm[i];
+                } else {
+                    // Combinatorio: v₁ = [1,1,...,1]/√N → subtract mean
+                    let sum = 0;
+                    for (let i = 0; i < N; i++) sum += vec[i];
+                    const mean = sum / N;
+                    for (let i = 0; i < N; i++) vec[i] -= mean;
+                }
 
                 // 2. Gram-Schmidt orthogonalization against previous vectors
                 for (const dv of deflateVectors) {
@@ -432,11 +470,27 @@ export class SpectralMath {
                 let norm = 0;
                 mu = 0;
                 for (let i = 0; i < N; i++) {
-                    let Lv_i = degree[i] * vec[i];
-                    const end = rowPtr[i + 1];
-                    for (let k = rowPtr[i]; k < end; k++) {
-                        Lv_i -= csrValues[k] * vec[colIdx[k]];
+                    let Lv_i: number;
+
+                    if (normalized) {
+                        // L_sym·v = v_i - Σ (w_ij / √(d_i × d_j)) × v_j
+                        // TRAMPA MORTAL 2: diagonal = 1.0 for connected nodes, 0 for isolated.
+                        // TRAMPA MORTAL 2: invSqrtD[i]=0 for degree=0 → no NaN.
+                        Lv_i = (degree[i] > 0) ? vec[i] : 0;
+                        const end = rowPtr[i + 1];
+                        for (let k = rowPtr[i]; k < end; k++) {
+                            const j = colIdx[k];
+                            Lv_i -= csrValues[k] * invSqrtD[i] * invSqrtD[j] * vec[j];
+                        }
+                    } else {
+                        // L·v = D·v - A·v (original combinatorio)
+                        Lv_i = degree[i] * vec[i];
+                        const end = rowPtr[i + 1];
+                        for (let k = rowPtr[i]; k < end; k++) {
+                            Lv_i -= csrValues[k] * vec[colIdx[k]];
+                        }
                     }
+
                     const val = c * vec[i] - Lv_i;
                     v_next[i] = val;
                     norm += val * val;
@@ -445,11 +499,7 @@ export class SpectralMath {
 
                 norm = Math.sqrt(norm);
                 if (norm < 1e-9) break;
-                // FIX: Dual convergence criterion.
-                // Check BOTH eigenvalue (mu) AND eigenvector stability.
-                // The eigenvalue converges quadratically faster than the
-                // eigenvector. Checking only mu can exit while the vector
-                // is still rotating, producing noisy v2/v3 components.
+                // Dual convergence criterion: eigenvalue AND eigenvector stability.
                 let maxVecDiff = 0;
                 for (let j = 0; j < N; j++) {
                     const diff = Math.abs(vec[j] - v_next[j] / norm);
@@ -466,10 +516,6 @@ export class SpectralMath {
             }
 
             // GAUGE FIXING (Phase Canonicalization)
-            // Lv = λv → if v is an eigenvector, -v is too.
-            // Power iteration converges to v or -v arbitrarily due to floating-point noise.
-            // To prevent a temporal neural network from seeing fictitious phase jumps between commits,
-            // we force deterministic orientation: the largest-magnitude component is always positive.
             let maxAbs = -1;
             let signMultiplier = 1;
             for (let i = 0; i < N; i++) {
