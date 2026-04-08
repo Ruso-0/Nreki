@@ -84,6 +84,7 @@ export interface NrekiInterceptResult {
     postContracts?: Map<string, Map<string, string>>;
     /** Non-fatal notices (e.g., degraded validation for LSP sidecars) */
     warnings?: string[];
+    architectureDiff?: string;
 }
 
 export type NrekiMode = "auto" | "syntax" | "file" | "project" | "hologram";
@@ -988,7 +989,11 @@ export class NrekiKernel {
      * Atomic batch validation: inject all edits into VFS, evaluate macro-state.
      * Triple shield: Global → Syntactic → Semantic.
      */
-    public async interceptAtomicBatch(edits: NrekiEdit[], dependents: string[] = []): Promise<NrekiInterceptResult> {
+    public async interceptAtomicBatch(
+        edits: NrekiEdit[],
+        dependents: string[] = [],
+        computeDiff: boolean = false
+    ): Promise<NrekiInterceptResult> {
         if (!this.booted) throw new Error("[NREKI] Kernel not booted");
         if (!edits || edits.length === 0) return { safe: true, exitCode: 0, latencyMs: "0.00" };
 
@@ -1094,6 +1099,56 @@ export class NrekiKernel {
                     }
                 }
             }
+
+            // ─── PRE-MUTATION TOPOLOGY (OPT-IN LATENCY SHIELD) ───
+            const isStructuralBatch = computeDiff
+                && explicitlyEditedFiles.size > 1
+                && this.rootNames.size <= 1000;
+
+            let preTopology: import("./spectral-topology.js").SpectralResult | undefined;
+            if (isStructuralBatch && this.mode === "project" && this.tsBackend.tsProgram) {
+                try {
+                    const { SpectralTopologist } = await import("./spectral-topology.js");
+                    preTopology = SpectralTopologist.analyze(this.tsBackend.tsProgram, this.rootNames);
+                } catch { /* silent on hot path */ }
+            }
+
+            // Helper DRY: reused in healed path AND clean path
+            const computeArchitectureDiff = async (): Promise<string | undefined> => {
+                if (!isStructuralBatch || !preTopology
+                    || this.mode !== "project" || !this.tsBackend.tsProgram) return undefined;
+                try {
+                    const { SpectralTopologist } = await import("./spectral-topology.js");
+                    const postTopology = SpectralTopologist.analyze(
+                        this.tsBackend.tsProgram, this.rootNames);
+
+                    const eulerPre = preTopology.cyclomaticComplexity ?? 0;
+                    const eulerPost = postTopology.cyclomaticComplexity ?? 0;
+                    const eulerShift = eulerPost - eulerPre;
+                    const eulerShiftStr = eulerShift > 0 ? `+${eulerShift}` : `${eulerShift}`;
+                    const eulerIcon = eulerShift < 0 ? "📉 (Decoupled)"
+                        : eulerShift > 0 ? "🍝 (Tangled)"
+                        : "⚖️ (Stable)";
+
+                    const delta = SpectralTopologist.computeDelta(preTopology, postTopology);
+                    const fiedlerShift = preTopology.fiedlerValue > 0
+                        ? ((delta.fiedlerPost - delta.fiedlerPre) / preTopology.fiedlerValue) * 100
+                        : 0;
+                    const icon = delta.verdict === "APPROVED" ? "✅"
+                        : delta.verdict === "APPROVED_DECOUPLING" ? "🚀 DECOUPLED"
+                        : "⚠️ FRACTURE RISK";
+
+                    // Combinatorial Laplacian: λ₂ not scale-invariant across different N.
+                    // Valid here: pre/post share same rootNames within a batch.
+                    return `\n\n**[NREKI ARCHITECTURE DIFF]** *(symbol-level topology)*\n` +
+                        `λ₂ (Algebraic Connectivity): ${delta.fiedlerPre.toFixed(4)} → ` +
+                        `${delta.fiedlerPost.toFixed(4)} ` +
+                        `(${fiedlerShift > 0 ? '+' : ''}${fiedlerShift.toFixed(1)}%) ${icon}\n` +
+                        `Circuit Rank β₁: ${eulerPre} → ${eulerPost} ` +
+                        `(${eulerShiftStr}) ${eulerIcon}\n` +
+                        `Verdict: ${delta.verdict.replace(/_/g, " ")}`;
+                } catch { return undefined; }
+            };
 
             // A-01: Wrap Phase 1-4 so partial VFS mutations are rolled back on throw
             // Sidecar edits hoisted for catch-path compensatory rollback (Bomba 1)
@@ -1319,6 +1374,8 @@ export class NrekiKernel {
 
                     this.restoreHologramVeil(temporarilyUnveiled);
 
+                    const architectureDiff = await computeArchitectureDiff();
+
                     return {
                         safe: true,
                         exitCode: 0,
@@ -1336,6 +1393,7 @@ export class NrekiKernel {
                               ))
                             : undefined,
                         warnings: sidecarWarnings.length > 0 ? sidecarWarnings : undefined,
+                        architectureDiff,
                     };
                 }
                 // ─── END Auto-Healing ────────────────────────────────────
@@ -1401,6 +1459,8 @@ export class NrekiKernel {
 
             this.restoreHologramVeil(temporarilyUnveiled);
 
+            const architectureDiff = await computeArchitectureDiff();
+
             return {
                 safe: true,
                 exitCode: 0,
@@ -1412,6 +1472,7 @@ export class NrekiKernel {
                       ))
                     : undefined,
                 warnings: sidecarWarnings.length > 0 ? sidecarWarnings : undefined,
+                architectureDiff,
             };
 
             } catch (phaseError) {

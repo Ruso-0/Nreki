@@ -544,3 +544,121 @@ export async function handlePrepareRefactor(
         content: [{ type: "text" as const, text: lines.join("\n") }],
     };
 }
+
+// ─── Orphan Candidates Oracle (Transitive Sweep) ────────────────────
+
+export async function handleOrphanOracle(
+    _params: NavigateParams,
+    deps: RouterDependencies,
+): Promise<McpToolResponse> {
+    const { engine } = deps;
+    await engine.initialize();
+
+    const stats = engine.getStats();
+    if (stats.filesIndexed === 0) await engine.indexDirectory(process.cwd());
+
+    const { map } = await engine.getRepoMap();
+    const graph = await engine.getDependencyGraph();
+
+    const ROOT_PATTERNS = [
+        /^(index|main|app|setup|server|cli|vite-env)\./i,
+        /^(next|vite|webpack|rollup|jest|vitest|tailwind|eslint|babel|playwright|cypress)\.config\./i,
+        /[/\\](pages|app|api|routes|bin|scripts|test|__tests__|tests|e2e)[/\\]/i,
+        /\.(test|spec|cy)\./i,
+        /^(middleware|instrumentation)\./i,
+        /\.(stories|story)\./i,
+        /[/\\](migrations?|seeds?|fixtures)[/\\]/i,
+        /^(sw|service-worker)\./i,
+    ];
+
+    const reachable = new Set<string>();
+    const roots: string[] = [];
+
+    // O(E) Forward graph from importedBy inversion
+    const forwardGraph = new Map<string, string[]>();
+    for (const entry of map.entries) {
+        forwardGraph.set(entry.filePath, []);
+    }
+    for (const [target, consumers] of graph.importedBy.entries()) {
+        for (const consumer of consumers) {
+            const depsList = forwardGraph.get(consumer) || [];
+            depsList.push(target);
+            forwardGraph.set(consumer, depsList);
+        }
+    }
+
+    // 1. Identify structural roots
+    for (const entry of map.entries) {
+        const file = entry.filePath;
+        const base = path.basename(file);
+        if (ROOT_PATTERNS.some(p => p.test(file)) || base.endsWith(".d.ts")) {
+            roots.push(file);
+            reachable.add(file);
+        }
+    }
+
+    // 2. DFS Reachability (Mark)
+    const stack = [...roots];
+    while (stack.length > 0) {
+        const current = stack.pop()!;
+        const neighbors = forwardGraph.get(current) || [];
+        for (const n of neighbors) {
+            if (!reachable.has(n)) {
+                reachable.add(n);
+                stack.push(n);
+            }
+        }
+    }
+
+    // 3. Sweep: unreachable files with exports = orphan candidates
+    const orphanFiles: Array<{ file: string; lines: number; exports: string[] }> = [];
+    let savedLines = 0;
+
+    for (const entry of map.entries) {
+        if (!reachable.has(entry.filePath) && entry.exports.length > 0) {
+            orphanFiles.push({
+                file: entry.filePath,
+                lines: entry.lineCount,
+                exports: entry.exports,
+            });
+            savedLines += entry.lineCount;
+        }
+    }
+
+    if (orphanFiles.length === 0) {
+        return {
+            content: [{
+                type: "text" as const,
+                text: `## 👻 Orphan Review\n\nTransitive reachability analysis complete. ` +
+                    `Your architecture is lean. No statically isolated modules found.`,
+            }],
+        };
+    }
+
+    orphanFiles.sort((a, b) => b.lines - a.lines);
+    const formatted = orphanFiles.map(df =>
+        `- \`${df.file}\` (${df.lines} lines)\n  *Exports:* ` +
+        `${df.exports.slice(0, 4).join(", ")}${df.exports.length > 4 ? "..." : ""}`
+    );
+
+    return {
+        content: [{
+            type: "text" as const,
+            text: `## 👻 Orphan Candidates Oracle (Zero Static Reachability)\n\n` +
+                `NREKI performed a **Mark-and-Sweep Reachability Analysis** ` +
+                `starting from framework roots.\n` +
+                `Found **${orphanFiles.length} files** that export logic but are ` +
+                `completely unreachable via static imports ` +
+                `(including transitive barrel sweeps).\n\n` +
+                `⚠️ **CRITICAL WARNING:**\n` +
+                `Static analysis cannot detect:\n` +
+                `1. Dynamic imports (\`await import()\`).\n` +
+                `2. Dependency Injection or Reflection.\n\n` +
+                `**Review manually before deleting.** ` +
+                `Potential savings: **~${savedLines} lines**.\n\n` +
+                `*Tip: Use \`nreki_code action:"batch_edit"\` to safely ` +
+                `tombstone them with \`new_code: null\`.*\n\n` +
+                `### Candidates:\n${formatted.join("\n")}`,
+        }],
+    };
+}

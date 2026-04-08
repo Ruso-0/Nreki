@@ -233,6 +233,10 @@ async function processKernelResult(
         );
     }
 
+    if (kernelResult.architectureDiff) {
+        ttrdFeedback += kernelResult.architectureDiff;
+    }
+
     return { committed: true, ttrdFeedback };
 }
 
@@ -695,6 +699,29 @@ export async function handleEdit(
             } catch { /* non-fatal */ }
         }
 
+        // ─── FIEDLER BRIDGE GUARD (v₂ ≈ 0 detection) ────────────────
+        let bridgeGuard = "";
+        try {
+            const graph = await engine.getDependencyGraph();
+            if (graph.clusters) {
+                const relPath = path.relative(process.cwd(), resolvedPath).replace(/\\/g, "/");
+                const cluster = graph.clusters.get(relPath);
+                if (cluster === "bridge") {
+                    const v2 = graph.v2Score?.get(relPath) || 0;
+                    const inDeg = graph.inDegree.get(relPath) || 0;
+                    bridgeGuard =
+                        `\n\n🛑 **NREKI STRUCTURAL GUARD**\n` +
+                        `Target \`${relPath}\` (v₂=${v2.toFixed(4)}) is a **CRITICAL STRUCTURAL BRIDGE** ` +
+                        `between architectural domains.\n` +
+                        `It is a **load-bearing wall** with ${inDeg} dependent file(s).\n\n` +
+                        `**DO NOT** bypass it by creating parallel paths.\n` +
+                        `If you modified its signature, use \`nreki_code action:"batch_edit"\` ` +
+                        `to migrate all dependents safely.\n` +
+                        `[NREKI: Fiedler Bridge Detection]`;
+                }
+            }
+        } catch { /* non-fatal: graph may not be available */ }
+
         return {
             content: [{
                 type: "text" as const,
@@ -708,7 +735,8 @@ export async function handleEdit(
                     (kernelResult?.errorText ? `\n\n${kernelResult.errorText}` : "") +
                     (kernelResult?.warnings?.length ? `\n\n${kernelResult.warnings.join("\n")}` : "") +
                     ttrdFeedback +
-                    blastRadiusWarning,
+                    blastRadiusWarning +
+                    bridgeGuard,
             }],
         };
     } finally {
@@ -872,7 +900,7 @@ export async function handleBatchEdit(
                 }
 
                 if (kernelEdits.length > 0) {
-                    const kernelResult = await deps.kernel.interceptAtomicBatch(kernelEdits, batchDependents);
+                    const kernelResult = await deps.kernel.interceptAtomicBatch(kernelEdits, batchDependents, true);
                     const committedFiles = Array.from(result.vfs!.keys());
 
                     const verifyResult = await processKernelResult(

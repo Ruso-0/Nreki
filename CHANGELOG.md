@@ -2,6 +2,34 @@
 
 All notable changes to NREKI will be documented in this file.
 
+## 8.0.0 (2026-04-02) — Antigravity: Spectral Architecture Engine
+
+### Breaking Changes
+- **Cache format:** `CACHE_FORMAT_VERSION` bumped from 1 to 2. Old `.nreki/repo-map.json` caches are auto-regenerated on first run. No manual action needed.
+- **`buildDependencyGraph`** is now `async` (returns `Promise<DependencyGraph>`). Only affects code that imports this function directly.
+- **`interceptAtomicBatch`** signature extended with optional `computeDiff: boolean = false` parameter. Backward compatible (defaults to `false`).
+
+### Features — Spectral Clustering & Architecture Intelligence
+- **Cyclomatic Complexity (β₁):** True topological circuit rank via Union-Find with path compression on the type constraint graph. Excludes `EXTERNAL::` nodes. Formula: `β₁ = E_int - V_int + C_int` (first Betti number). Added to `SpectralResult.cyclomaticComplexity`.
+- **Architecture Diff:** Real-time λ₂ and β₁ shift detection on `batch_edit`. Shows algebraic connectivity change, circuit rank delta, and verdict (`APPROVED` / `APPROVED_DECOUPLING` / `REJECTED_ENTROPY`). Opt-in via `computeDiff: true` on `interceptAtomicBatch`, auto-enabled for `batch_edit`.
+- **Spectral Clustering:** File-level macro-topology using the Fiedler vector (v₂) from the combinatorial Laplacian. Partitions the repository into `cluster_a` (positive polarity), `cluster_b` (negative polarity), `bridge` (v₂ ≈ 0, structural bottleneck), and `orphan` (zero degree). Bridge threshold: `ε = σ/γ` where `γ = λ₃/λ₂` (spectral gap ratio), bounded `[0.01, 0.15]`.
+- **Repo Map v2:** `repoMapToText` now renders files grouped by spectral cluster with topology metadata. Bridges sorted by stress ranking (`inDegree / |v₂|`). Header includes λ₂ value. Fallback rendering for pre-v8 caches.
+- **Orphan Oracle:** `nreki_navigate action:"orphan_oracle"` — Mark-and-Sweep reachability analysis from framework roots (index, main, config, tests, routes, stories, migrations, service workers). Reports files with exports that are completely unreachable via static imports. Includes dynamic import warning.
+- **Bridge Guard:** `handleEdit` now detects when the target file is a structural bridge (v₂ ≈ 0) and injects a real-time warning to the LLM with v₂ score, dependent count, and instructions to use `batch_edit` for signature changes.
+- **DependencyGraph extended:** New optional fields `clusters`, `v2Score`, `fiedler` on `DependencyGraph` and `DependencyGraphData`. Fully serializable for cache persistence.
+- **NrekiInterceptResult extended:** New optional field `architectureDiff` carries the formatted topology diff string.
+
+### Internal
+- `SpectralResult` interface extended with optional `cyclomaticComplexity` field.
+- `serializeGraph` / `deserializeGraph` updated for cluster data round-tripping.
+- `processKernelResult` concatenates `architectureDiff` to TTRD feedback.
+- Router dispatch extended with `orphan_oracle` case.
+- Zod schema for `nreki_navigate` extended with `orphan_oracle` action.
+- Test assertions updated for new repo map header format (`λ₂=` suffix).
+- All 712 tests pass.
+
+---
+
 ## 7.4.1 (2026-03-31) — Normalized Laplacian + Isolated Node Exile
 
 ### Features

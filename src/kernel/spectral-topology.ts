@@ -19,6 +19,7 @@ export interface SpectralResult {
     volume: number;
     nodeCount: number;
     edgeCount: number;
+    cyclomaticComplexity?: number;
     activeNodes?: number;
     v2?: Float64Array;
     lambda3?: number;
@@ -295,17 +296,94 @@ export class SpectralTopologist {
             return {
                 fiedlerValue: 0, volume: 0,
                 nodeCount: analysisNodes.size, edgeCount: analysisEdges.length,
+                cyclomaticComplexity: 0,
             };
         }
 
         const { sparseEdges, nodeIndex, N } = this.buildSparseGraph(analysisNodes, analysisEdges);
         const state = SpectralMath.analyzeTopology(N, sparseEdges);
 
+        // ─── TRUE CYCLOMATIC COMPLEXITY: β₁ = E_int - V_int + C_int ────
+        // Union-Find with path compression + union by rank, O(E × α(V)).
+        // Purified: excludes EXTERNAL:: nodes and their edges.
+
+        let cyclomaticComplexity = 0;
+
+        if (nodeIndex.size > 0) {
+            // 1. Identify internal nodes
+            let internalNodeCount = 0;
+            const isInternal = new Uint8Array(N);
+            for (const [name, id] of nodeIndex.entries()) {
+                if (!name.startsWith("EXTERNAL::")) {
+                    isInternal[id] = 1;
+                    internalNodeCount++;
+                }
+            }
+
+            // 2. Union-Find structures
+            const parent = new Int32Array(N);
+            const ufRank = new Uint8Array(N);
+            for (let i = 0; i < N; i++) parent[i] = i;
+
+            function find(i: number): number {
+                let root = i;
+                while (root !== parent[root]) root = parent[root];
+                let curr = i;
+                while (curr !== root) {
+                    const nxt = parent[curr];
+                    parent[curr] = root;
+                    curr = nxt;
+                }
+                return root;
+            }
+
+            let internalEdgeCount = 0;
+            let components = internalNodeCount;
+
+            // Numeric hash for undirected edge deduplication.
+            // N ≤ 25,000 (SpectralMath guard) → max key ≈ 2.5×10¹¹ < MAX_SAFE_INTEGER
+            const seenEdges = new Set<number>();
+
+            for (let i = 0; i < sparseEdges.length; i++) {
+                const u = sparseEdges[i].u;
+                const v = sparseEdges[i].v;
+
+                if (u !== v && isInternal[u] && isInternal[v]) {
+                    const min = Math.min(u, v);
+                    const max = Math.max(u, v);
+                    const edgeKey = min * 10000000 + max;
+
+                    if (!seenEdges.has(edgeKey)) {
+                        seenEdges.add(edgeKey);
+                        internalEdgeCount++;
+
+                        const rootU = find(u);
+                        const rootV = find(v);
+                        if (rootU !== rootV) {
+                            if (ufRank[rootU] < ufRank[rootV]) {
+                                parent[rootU] = rootV;
+                            } else if (ufRank[rootU] > ufRank[rootV]) {
+                                parent[rootV] = rootU;
+                            } else {
+                                parent[rootV] = rootU;
+                                ufRank[rootU]++;
+                            }
+                            components--;
+                        }
+                    }
+                }
+            }
+
+            // β₁ = E - V + C (topological invariant, always ≥ 0)
+            cyclomaticComplexity = Math.max(0, internalEdgeCount - internalNodeCount + components);
+        }
+
         return {
             fiedlerValue: state.fiedler,
             volume: state.volume,
             nodeCount: analysisNodes.size,
             edgeCount: analysisEdges.length,
+            cyclomaticComplexity,
             v2: state.v2,
             lambda3: state.lambda3,
             v3: state.v3,
