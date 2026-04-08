@@ -220,14 +220,15 @@ server.tool(
     "AST-powered code navigation and semantic search. Use for finding code, understanding project structure, and locating symbols.",
     {
         action: z
-            .enum(["search", "definition", "references", "outline", "map", "prepare_refactor"])
+            .enum(["search", "definition", "references", "outline", "map", "prepare_refactor", "orphan_oracle"])
             .describe(
                 "search: hybrid semantic+keyword search across codebase. " +
                 "definition: go-to-definition by symbol name. " +
                 "references: find all usages of a symbol. " +
                 "outline: list all symbols in a file. " +
                 "map: full repo structure map with pinned rules. " +
-                "prepare_refactor: analyze a symbol for safe renaming (classifies each occurrence as high-confidence or needs-review).",
+                "prepare_refactor: analyze a symbol for safe renaming (classifies each occurrence as high-confidence or needs-review). " +
+                "orphan_oracle: identify files with zero static reachability (candidates for dead code review).",
             ),
         query: z
             .string()

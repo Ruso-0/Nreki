@@ -33,7 +33,7 @@ export interface RepoMap {
 }
 
 /** Cache format version. Bump when CachedRepoMap structure changes. */
-const CACHE_FORMAT_VERSION = 1;
+const CACHE_FORMAT_VERSION = 2;
 
 export interface CachedRepoMap {
     formatVersion?: number;
@@ -50,6 +50,9 @@ export interface DependencyGraph {
     inDegree: Map<string, number>;
     /** Tier classification by in-degree percentile. */
     tiers: Map<string, "core" | "logic" | "leaf">;
+    clusters?: Map<string, "cluster_a" | "cluster_b" | "bridge" | "orphan">;
+    v2Score?: Map<string, number>;
+    fiedler?: number;
 }
 
 /** JSON-serializable form of DependencyGraph for caching. */
@@ -57,6 +60,9 @@ interface DependencyGraphData {
     importedBy: Record<string, string[]>;
     inDegree: Record<string, number>;
     tiers: Record<string, "core" | "logic" | "leaf">;
+    clusters?: Record<string, "cluster_a" | "cluster_b" | "bridge" | "orphan">;
+    v2Score?: Record<string, number>;
+    fiedler?: number;
 }
 
 // ─── Constants ──────────────────────────────────────────────────────
@@ -459,10 +465,10 @@ export function resolveImportFast(
  * Build a dependency graph from repo map entries.
  * Computes in-degree (how many files import each file) and classifies by percentile.
  */
-export function buildDependencyGraph(
+export async function buildDependencyGraph(
     entries: RepoMapEntry[],
     allFiles: string[],
-): DependencyGraph {
+): Promise<DependencyGraph> {
     const lookup = buildFastLookup(allFiles);
     const importedBy = new Map<string, Set<string>>();
     const inDegree = new Map<string, number>();
@@ -500,7 +506,91 @@ export function buildDependencyGraph(
         else tiers.set(file, "leaf");
     }
 
-    return { importedBy, inDegree, tiers };
+    // ─── MACRO-TOPOLOGY SPECTRAL CLUSTERING (Combinatorial Laplacian) ───
+    const clusters = new Map<string, "cluster_a" | "cluster_b" | "bridge" | "orphan">();
+    const v2Score = new Map<string, number>();
+    let fiedler = 0;
+
+    const nodeIndex = new Map<string, number>();
+    allFiles.forEach((f, i) => nodeIndex.set(f, i));
+    const sparseEdges: import("./kernel/spectral-topology.js").SparseEdge[] = [];
+
+    for (const [target, consumers] of importedBy.entries()) {
+        const v = nodeIndex.get(target);
+        if (v === undefined) continue;
+        for (const consumer of consumers) {
+            const u = nodeIndex.get(consumer);
+            if (u !== undefined && u !== v) {
+                sparseEdges.push({ u, v, weight: 1.0 });
+            }
+        }
+    }
+
+    if (allFiles.length > 2 && sparseEdges.length > 0) {
+        try {
+            const { SpectralMath } = await import("./kernel/spectral-topology.js");
+
+            // normalized=false: Combinatorial Laplacian.
+            // Prevents D^{-1/2} from crushing hub v₂ components into false bridges.
+            const spectral = SpectralMath.analyzeTopology(allFiles.length, sparseEdges, false);
+            fiedler = spectral.fiedler;
+
+            if (spectral.v2) {
+                // σ(v₂): mean ≈ 0 by Gram-Schmidt deflation
+                let sumSq = 0;
+                for (let i = 0; i < allFiles.length; i++) {
+                    sumSq += spectral.v2[i] * spectral.v2[i];
+                }
+                const sigma = Math.sqrt(sumSq / allFiles.length);
+
+                // γ = λ₃/λ₂: spectral gap ratio (bipartition confidence).
+                // The discriminated union on analyzeTopology guarantees that
+                // narrowing on `spectral.v2` (line 538 above) gives us
+                // `lambda3: number` — no more `!== undefined` paranoia.
+                // We still trap NaN explicitly: power iteration on hub-heavy
+                // graphs can overflow (c·v - L·v → Infinity - Infinity → NaN),
+                // and `NaN > 1e-9` is `false` AND `NaN <= 1e-9` is `false`,
+                // so the previous fallback silently degraded to gamma=1.0
+                // (a fictitious "λ₃ = λ₂") and produced phantom bridges.
+                // Fail-closed: NaN or near-zero fiedler → γ=∞ → 0 bridges.
+                const gamma = (Number.isNaN(spectral.fiedler) || spectral.fiedler <= 1e-9)
+                    ? Infinity
+                    : (spectral.lambda3 / spectral.fiedler);
+
+                // ε = σ/γ with hard bounds [0.01, 0.15]
+                const bridgeThreshold = gamma === Infinity
+                    ? 0
+                    : Math.max(0.01, Math.min(0.15, sigma / gamma));
+
+                for (let i = 0; i < allFiles.length; i++) {
+                    const file = allFiles[i];
+                    const val = spectral.v2[i];
+                    v2Score.set(file, val);
+                    const inDeg = inDegree.get(file) || 0;
+                    const fanOut = importedBy.get(file)?.size || 0;
+
+                    if (inDeg === 0 && fanOut === 0) {
+                        clusters.set(file, "orphan");
+                    } else if (Math.abs(val) < bridgeThreshold && (inDeg > 0 || fanOut > 0)) {
+                        clusters.set(file, "bridge");
+                    } else if (val > 0) {
+                        clusters.set(file, "cluster_a");
+                    } else {
+                        clusters.set(file, "cluster_b");
+                    }
+                }
+            }
+        } catch { /* Kernel no activo, fallback silencioso */ }
+    }
+
+    if (clusters.size === 0) {
+        for (const file of allFiles) {
+            clusters.set(file, "orphan");
+            v2Score.set(file, 0);
+        }
+    }
+
+    return { importedBy, inDegree, tiers, clusters, v2Score, fiedler };
 }
 
 /** Serialize DependencyGraph to JSON-safe format. */
@@ -517,7 +607,20 @@ function serializeGraph(graph: DependencyGraph): DependencyGraphData {
     for (const [k, v] of graph.tiers) {
         tiers[k] = v;
     }
-    return { importedBy, inDegree, tiers };
+
+    let clusters: Record<string, "cluster_a" | "cluster_b" | "bridge" | "orphan"> | undefined;
+    if (graph.clusters) {
+        clusters = {};
+        for (const [k, v] of graph.clusters) clusters[k] = v;
+    }
+
+    let v2Score: Record<string, number> | undefined;
+    if (graph.v2Score) {
+        v2Score = {};
+        for (const [k, v] of graph.v2Score) v2Score[k] = v;
+    }
+
+    return { importedBy, inDegree, tiers, clusters, v2Score, fiedler: graph.fiedler };
 }
 
 /** Deserialize DependencyGraphData back to DependencyGraph. */
@@ -530,7 +633,18 @@ function deserializeGraph(data: DependencyGraphData): DependencyGraph {
     const tiers = new Map<string, "core" | "logic" | "leaf">(
         Object.entries(data.tiers) as [string, "core" | "logic" | "leaf"][],
     );
-    return { importedBy, inDegree, tiers };
+
+    let clusters: Map<string, "cluster_a" | "cluster_b" | "bridge" | "orphan"> | undefined;
+    if (data.clusters) {
+        clusters = new Map(Object.entries(data.clusters)) as Map<string, "cluster_a" | "cluster_b" | "bridge" | "orphan">;
+    }
+
+    let v2Score: Map<string, number> | undefined;
+    if (data.v2Score) {
+        v2Score = new Map(Object.entries(data.v2Score).map(([k, v]) => [k, Number(v)]));
+    }
+
+    return { importedBy, inDegree, tiers, clusters, v2Score, fiedler: data.fiedler };
 }
 
 // ─── Repo Map Generation ────────────────────────────────────────────
@@ -587,7 +701,7 @@ export async function generateRepoMap(
     entries.sort((a, b) => stableCompare(a.filePath, b.filePath));
 
     const allRelPaths = entries.map(e => e.filePath);
-    const graph = buildDependencyGraph(entries, allRelPaths);
+    const graph = await buildDependencyGraph(entries, allRelPaths);
 
     return {
         version: "1.0.0",
@@ -603,65 +717,95 @@ export async function generateRepoMap(
 
 export function repoMapToText(map: RepoMap): string {
     const lines: string[] = [];
+    const fiedlerStr = map.graph?.fiedler !== undefined
+        ? map.graph.fiedler.toFixed(4) : "0.0000";
+    lines.push(`=== Repo Map (${map.totalFiles} files, ${map.totalLines} lines, λ₂=${fiedlerStr}) ===\n`);
 
-    lines.push(`=== Repo Map (${map.totalFiles} files, ${map.totalLines} lines) ===`);
-    lines.push("");
-
-    for (const entry of map.entries) {
-        lines.push(`${entry.filePath} (${entry.lineCount} lines)`);
-
-        if (entry.exports.length > 0) {
-            lines.push(`  exports: ${entry.exports.join(", ")}`);
-        }
-
-        for (const sig of entry.signatures) {
-            lines.push(`  ${sig}`);
-        }
-
-        if (entry.imports.length > 0) {
-            const shortened = entry.imports.map(shortenImport);
-            lines.push(`  imports: ${shortened.join(", ")}`);
-        }
-
-        lines.push("");
-    }
-
-    // Architecture tier summary (if graph available)
-    if (map.graph) {
-        const graph = map.graph;
-        const coreFiles: string[] = [];
-        const logicFiles: string[] = [];
-        let leafCount = 0;
-
+    if (!map.graph || !map.graph.clusters) {
+        // Fallback for pre-v7.5 caches (CACHE_FORMAT_VERSION = 1)
         for (const entry of map.entries) {
-            const tier = graph.tiers.get(entry.filePath);
-            const degree = graph.inDegree.get(entry.filePath) ?? 0;
-            if (tier === "core") {
-                coreFiles.push(`  ${entry.filePath} (imported by ${degree} files)`);
-            } else if (tier === "logic") {
-                logicFiles.push(`  ${entry.filePath} (imported by ${degree} files)`);
-            } else {
-                leafCount++;
+            lines.push(`${entry.filePath} (${entry.lineCount} lines)`);
+            if (entry.exports.length > 0) lines.push(`  exports: ${entry.exports.join(", ")}`);
+            for (const sig of entry.signatures) lines.push(`  ${sig}`);
+            if (entry.imports.length > 0) {
+                const shortened = entry.imports.map(shortenImport);
+                lines.push(`  imports: ${shortened.join(", ")}`);
             }
-        }
-
-        if (coreFiles.length > 0) {
-            lines.push("=== CORE DOMAIN (Top 25% - modify with caution) ===");
-            for (const f of coreFiles) lines.push(f);
             lines.push("");
         }
-
-        if (logicFiles.length > 0) {
-            lines.push("=== BUSINESS LOGIC (Middle tier) ===");
-            for (const f of logicFiles) lines.push(f);
-            lines.push("");
-        }
-
-        if (leafCount > 0) {
-            lines.push(`=== LEAF NODES (${leafCount} files - safe to experiment) ===`);
-            lines.push("");
-        }
+        return lines.join("\n");
     }
+
+    const grouped = {
+        bridge: [] as typeof map.entries,
+        cluster_a: [] as typeof map.entries,
+        cluster_b: [] as typeof map.entries,
+        orphan: [] as typeof map.entries,
+    };
+    for (const entry of map.entries) {
+        const c = map.graph.clusters.get(entry.filePath) || "orphan";
+        grouped[c].push(entry);
+    }
+
+    const renderGroup = (title: string, entries: typeof map.entries, warning = "") => {
+        if (entries.length === 0) return;
+        lines.push(`=== ${title} ===`);
+        if (warning) lines.push(`⚠️ ${warning}`);
+
+        if (title.includes("BRIDGE")) {
+            // Stress ranking: load / distance_to_center (physics-based)
+            entries.sort((a, b) => {
+                const v2A = Math.abs(map.graph!.v2Score?.get(a.filePath) || 0);
+                const v2B = Math.abs(map.graph!.v2Score?.get(b.filePath) || 0);
+                const degA = map.graph!.inDegree.get(a.filePath) || 0;
+                const degB = map.graph!.inDegree.get(b.filePath) || 0;
+                const stressA = degA / Math.max(v2A, 0.001);
+                const stressB = degB / Math.max(v2B, 0.001);
+                const diff = stressB - stressA;
+                // TIMSORT DETERMINISM GUARD: V8's Array.sort() (TimSort) breaks
+                // transitivity if the comparator returns NaN — the resulting
+                // order becomes implementation-defined, which would silently
+                // poison prompt cache byte-identity across runs. Force 0 (tie)
+                // on NaN so the sort stays stable and reproducible.
+                return Number.isNaN(diff) ? 0 : diff;
+            });
+        } else {
+            // PageRank proxy: inDegree descending, then line count
+            entries.sort((a, b) => {
+                const degA = map.graph!.inDegree.get(a.filePath) || 0;
+                const degB = map.graph!.inDegree.get(b.filePath) || 0;
+                if (degB !== degA) return degB - degA;
+                return b.lineCount - a.lineCount;
+            });
+        }
+
+        for (const entry of entries) {
+            const inDeg = map.graph!.inDegree.get(entry.filePath) || 0;
+            const v2 = map.graph!.v2Score?.get(entry.filePath) || 0;
+            const tier = map.graph!.tiers.get(entry.filePath);
+            const tierStr = tier === "core" ? "[☢️ CORE] "
+                : tier === "logic" ? "[⚙️ LOGIC] " : "";
+            const v2Str = title.includes("BRIDGE")
+                ? ` [v₂=${v2.toFixed(3)}, In:${inDeg}]`
+                : ` (In:${inDeg})`;
+
+            lines.push(`${tierStr}${entry.filePath} (${entry.lineCount} lines)${v2Str}`);
+            if (entry.exports.length > 0)
+                lines.push(`  exports: ${entry.exports.join(", ")}`);
+            for (const sig of entry.signatures) lines.push(`  ${sig}`);
+            if (entry.imports.length > 0) {
+                const shortened = entry.imports.map(shortenImport);
+                lines.push(`  imports: ${shortened.join(", ")}`);
+            }
+            lines.push("");
+        }
+    };
+
+    renderGroup("🌉 STRUCTURAL BRIDGES (v₂ ≈ 0)", grouped.bridge,
+        "CRITICAL BOTTLENECKS: Do NOT bypass. Modify via batch_edit if signatures change.\n");
+    renderGroup("📦 DOMAIN CLUSTER A (Positive Polarity)", grouped.cluster_a);
+    renderGroup("📦 DOMAIN CLUSTER B (Negative Polarity)", grouped.cluster_b);
+    renderGroup("👻 ORPHANS & LEAVES", grouped.orphan);
 
     return lines.join("\n");
 }

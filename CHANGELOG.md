@@ -2,6 +2,56 @@
 
 All notable changes to NREKI will be documented in this file.
 
+## 8.0.1 (2026-04-08) — IEEE 754 Hardening: NaN Sink Eradication
+
+### Fixed (Critical — Mathematical Soundness)
+- **Spectral Bridge Threshold:** Latent NaN sink in `repo-map.ts` `gamma` calculation. Power iteration on hub-heavy graphs could overflow (`c·v − L·v → Inf − Inf → NaN`), and IEEE 754 makes both `NaN > 1e-9` and `NaN <= 1e-9` evaluate to `false`. The previous fallback silently substituted `γ = 1.0` (a fictitious `λ₃ = λ₂`), producing **phantom architectural bridges** with zero spectral guarantee. Fixed via 8-layer defense in depth.
+- **`SpectralMath.analyzeTopology` return type:** Replaced "bag of optionals" (`v2?`, `lambda3?`, `v3?`) with a strict **discriminated union** that encodes the runtime invariant `v2 ⟺ lambda3 ⟺ v3`. Consumers narrowing on `if (result.v2)` now get `lambda3: number` and `v3: Float64Array` for free — no more paranoid `lambda3 !== undefined` checks downstream, and the type system actively prevents the original ternary from being written again.
+- **Numerical Sanity Firewall (Producer):** Added an `O(N)` perimeter check before the final return of `analyzeTopology`. If `res2.val`, `res3.val`, or any element of `res2.vec` / `res3.vec` is non-finite, the function falls back to the degenerate variant `{ fiedler: 0, volume }`. Restores the invariant "spectral vectors are finite, or they don't exist at all".
+- **HPC Hot-Loop Thermal Guard:** Added explicit `return { val: NaN, vec }` inside the SpMV power iteration. If `mu` or `norm` corrupt to NaN/Infinity mid-iteration, the loop aborts immediately, **skipping the gauge fixing pass over a poisoned `vec` array**. Saves up to 150 wasted iterations of NaN propagation and hands off cleanly to the perimeter firewall.
+- **λ₃ Short-Circuit:** If `λ₂` extraction yields NaN, skip the second power iteration entirely (would otherwise receive a poisoned `res2.vec` as deflation basis and contaminate from `iter=0`). Saves one full SpMV cycle on degenerate inputs.
+- **Denormal Float Guard:** Replaced `if (degree[i] > 0)` with `if (degree[i] > 1e-12)` in the normalized Laplacian path. Subnormal floats (~2.2e-308 and below) force the CPU FPU into microcode emulation causing **~100x pipeline stalls**, and `1.0 / Math.sqrt(1e-320) ≈ 1e+160` overflows in subsequent SpMV products. Threshold safely above the denormal range.
+- **Consumer NaN Trap:** Simplified the `gamma` ternary in `repo-map.ts` now that `lambda3` narrows to `number`. Explicit `Number.isNaN(spectral.fiedler)` check, fail-closed: NaN or near-zero `fiedler → γ=∞ → bridgeThreshold=0`. Second line of defense after the producer firewall.
+- **Timsort Determinism Guard:** V8's `Array.prototype.sort()` (TimSort) silently breaks transitivity if the comparator returns NaN, producing implementation-defined order that **would silently poison prompt cache byte-identity across runs**. The Bridge stress ranking comparator in `repoMapToText` now returns `0` (tie) on NaN to keep sort stable and reproducible.
+
+### Notes
+- **Bridge threshold bounds:** v8.0.0 CHANGELOG documented the bounds as `[0.01, 0.15]`. The implementation enforces these exact bounds — no change in v8.0.1. The fix only affects the `γ` denominator under pathological inputs.
+- **Kahan summation evaluated and rejected:** A rigorous HPC review considered Kahan-compensated summation for the SpMV accumulators (`norm`, `mu`) to mitigate catastrophic cancellation at large `N`. Explicitly discarded because it perturbs the last bits of the eigenvalue mantissa, which **would break byte-for-byte prompt cache consistency** (the project's "byte-identical sort" commitment, see commits `fc9c79d` and `824011f`). Trade-off: precision is bounded by naïve FP accumulation, but reproducibility is absolute. Documented decision, not technical debt.
+- **712 tests pass unchanged.** No behavioral regression on the happy path. The fixes only activate under conditions the existing test suite does not synthesize (overflow on `maxDegree*2+1` shift, denormal weights). Future work: a hub-overflow regression test for v8.1.
+
+### Internal
+- `tests/spectral-topology.test.ts:101-113` formally validates the `v2 ⟺ lambda3 ⟺ v3` invariant via `expect(result.lambda3).toBeDefined()` for non-trivial graphs. The discriminated union now enforces this at compile time.
+
+---
+
+## 8.0.0 (2026-04-02) — Antigravity: Spectral Architecture Engine
+
+### Breaking Changes
+- **Cache format:** `CACHE_FORMAT_VERSION` bumped from 1 to 2. Old `.nreki/repo-map.json` caches are auto-regenerated on first run. No manual action needed.
+- **`buildDependencyGraph`** is now `async` (returns `Promise<DependencyGraph>`). Only affects code that imports this function directly.
+- **`interceptAtomicBatch`** signature extended with optional `computeDiff: boolean = false` parameter. Backward compatible (defaults to `false`).
+
+### Features — Spectral Clustering & Architecture Intelligence
+- **Cyclomatic Complexity (β₁):** True topological circuit rank via Union-Find with path compression on the type constraint graph. Excludes `EXTERNAL::` nodes. Formula: `β₁ = E_int - V_int + C_int` (first Betti number). Added to `SpectralResult.cyclomaticComplexity`.
+- **Architecture Diff:** Real-time λ₂ and β₁ shift detection on `batch_edit`. Shows algebraic connectivity change, circuit rank delta, and verdict (`APPROVED` / `APPROVED_DECOUPLING` / `REJECTED_ENTROPY`). Opt-in via `computeDiff: true` on `interceptAtomicBatch`, auto-enabled for `batch_edit`.
+- **Spectral Clustering:** File-level macro-topology using the Fiedler vector (v₂) from the combinatorial Laplacian. Partitions the repository into `cluster_a` (positive polarity), `cluster_b` (negative polarity), `bridge` (v₂ ≈ 0, structural bottleneck), and `orphan` (zero degree). Bridge threshold: `ε = σ/γ` where `γ = λ₃/λ₂` (spectral gap ratio), bounded `[0.01, 0.15]`.
+- **Repo Map v2:** `repoMapToText` now renders files grouped by spectral cluster with topology metadata. Bridges sorted by stress ranking (`inDegree / |v₂|`). Header includes λ₂ value. Fallback rendering for pre-v8 caches.
+- **Orphan Oracle:** `nreki_navigate action:"orphan_oracle"` — Mark-and-Sweep reachability analysis from framework roots (index, main, config, tests, routes, stories, migrations, service workers). Reports files with exports that are completely unreachable via static imports. Includes dynamic import warning.
+- **Bridge Guard:** `handleEdit` now detects when the target file is a structural bridge (v₂ ≈ 0) and injects a real-time warning to the LLM with v₂ score, dependent count, and instructions to use `batch_edit` for signature changes.
+- **DependencyGraph extended:** New optional fields `clusters`, `v2Score`, `fiedler` on `DependencyGraph` and `DependencyGraphData`. Fully serializable for cache persistence.
+- **NrekiInterceptResult extended:** New optional field `architectureDiff` carries the formatted topology diff string.
+
+### Internal
+- `SpectralResult` interface extended with optional `cyclomaticComplexity` field.
+- `serializeGraph` / `deserializeGraph` updated for cluster data round-tripping.
+- `processKernelResult` concatenates `architectureDiff` to TTRD feedback.
+- Router dispatch extended with `orphan_oracle` case.
+- Zod schema for `nreki_navigate` extended with `orphan_oracle` action.
+- Test assertions updated for new repo map header format (`λ₂=` suffix).
+- All 712 tests pass.
+
+---
+
 ## 7.4.1 (2026-03-31) — Normalized Laplacian + Isolated Node Exile
 
 ### Features

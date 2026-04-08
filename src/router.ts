@@ -324,11 +324,12 @@ export async function handleNavigate(
         case "outline": response = await nav.handleOutline(params, deps); break;
         case "map": response = await nav.handleMap(params, deps); break;
         case "prepare_refactor": response = await nav.handlePrepareRefactor(params, deps); break;
+        case "orphan_oracle": response = await nav.handleOrphanOracle(params, deps); break;
         default:
             return {
                 content: [{
                     type: "text" as const,
-                    text: `Unknown nreki_navigate action: "${action}". Valid actions: search, definition, references, outline, map, prepare_refactor.`,
+                    text: `Unknown nreki_navigate action: "${action}". Valid actions: search, definition, references, outline, map, prepare_refactor, orphan_oracle.`,
                 }],
                 isError: true,
             };

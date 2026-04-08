@@ -230,7 +230,8 @@ describe("Repo Map Text Rendering", () => {
         // Header line
         expect(text).toContain("=== Repo Map (");
         expect(text).toContain("files,");
-        expect(text).toContain("lines) ===");
+        expect(text).toContain("lines,");
+        expect(text).toMatch(/λ₂=[\d.]+\) ===/);
 
         // File entries
         expect(text).toContain("src/auth.ts (");
@@ -316,7 +317,7 @@ describe("Repo Map Text Rendering", () => {
         const text = repoMapToText(map);
 
         // The header should use plain numbers, not locale-formatted (e.g., no commas in "1,234")
-        const headerMatch = text.match(/=== Repo Map \((\d+) files, (\d+) lines\) ===/);
+        const headerMatch = text.match(/=== Repo Map \((\d+) files, (\d+) lines, λ₂=[\d.]+\) ===/);
         expect(headerMatch).not.toBeNull();
         expect(Number(headerMatch![1])).toBe(map.totalFiles);
         expect(Number(headerMatch![2])).toBe(map.totalLines);
