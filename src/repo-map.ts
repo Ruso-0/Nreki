@@ -543,10 +543,19 @@ export async function buildDependencyGraph(
                 }
                 const sigma = Math.sqrt(sumSq / allFiles.length);
 
-                // γ = λ₃/λ₂: spectral gap ratio (bipartition confidence)
-                const gamma = spectral.fiedler > 1e-9 && spectral.lambda3 !== undefined
-                    ? spectral.lambda3 / spectral.fiedler
-                    : (spectral.fiedler <= 1e-9 ? Infinity : 1.0);
+                // γ = λ₃/λ₂: spectral gap ratio (bipartition confidence).
+                // The discriminated union on analyzeTopology guarantees that
+                // narrowing on `spectral.v2` (line 538 above) gives us
+                // `lambda3: number` — no more `!== undefined` paranoia.
+                // We still trap NaN explicitly: power iteration on hub-heavy
+                // graphs can overflow (c·v - L·v → Infinity - Infinity → NaN),
+                // and `NaN > 1e-9` is `false` AND `NaN <= 1e-9` is `false`,
+                // so the previous fallback silently degraded to gamma=1.0
+                // (a fictitious "λ₃ = λ₂") and produced phantom bridges.
+                // Fail-closed: NaN or near-zero fiedler → γ=∞ → 0 bridges.
+                const gamma = (Number.isNaN(spectral.fiedler) || spectral.fiedler <= 1e-9)
+                    ? Infinity
+                    : (spectral.lambda3 / spectral.fiedler);
 
                 // ε = σ/γ with hard bounds [0.01, 0.15]
                 const bridgeThreshold = gamma === Infinity
@@ -752,7 +761,13 @@ export function repoMapToText(map: RepoMap): string {
                 const degB = map.graph!.inDegree.get(b.filePath) || 0;
                 const stressA = degA / Math.max(v2A, 0.001);
                 const stressB = degB / Math.max(v2B, 0.001);
-                return stressB - stressA;
+                const diff = stressB - stressA;
+                // TIMSORT DETERMINISM GUARD: V8's Array.sort() (TimSort) breaks
+                // transitivity if the comparator returns NaN — the resulting
+                // order becomes implementation-defined, which would silently
+                // poison prompt cache byte-identity across runs. Force 0 (tie)
+                // on NaN so the sort stays stable and reproducible.
+                return Number.isNaN(diff) ? 0 : diff;
             });
         } else {
             // PageRank proxy: inDegree descending, then line count
