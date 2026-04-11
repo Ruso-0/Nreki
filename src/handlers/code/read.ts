@@ -11,6 +11,7 @@ import { safePath } from "../../utils/path-jail.js";
 import { shouldProcess } from "../../utils/file-filter.js";
 import { readSource } from "../../utils/read-source.js";
 import { extractDependencies, cleanSignature, isSensitiveSignature } from "../../utils/imports.js";
+import { tfcCompress } from "../../compressor-foveal.js";
 
 // ─── Read ───────────────────────────────────────────────────────────
 
@@ -107,7 +108,7 @@ export async function handleRead(
 
             let advice = "";
             if (deps.hook) {
-                const intercept = deps.hook.evaluateFileRead(resolvedPath, rawContent);
+                const intercept = deps.hook.evaluateFileRead(resolvedPath, rawContent, params.focus);
                 if (intercept.shouldIntercept) {
                     advice = `\n\n${intercept.suggestion}`;
                 }
@@ -201,6 +202,43 @@ export async function handleCompress(
             : undefined;
 
         const focus = typeof params.focus === "string" ? params.focus : undefined;
+
+        // TFC-PRO INJECTION
+        if (focus && !compression_level) {
+            const content = readSource(resolvedPath);
+            const tfcResult = await tfcCompress(resolvedPath, content, focus, engine);
+
+            if (tfcResult) {
+                engine.markFileRead(resolvedPath);
+
+                const compressedTokens = Embedder.estimateTokens(tfcResult.compressed);
+                engine.logUsage("nreki_compress_tfc",
+                    compressedTokens,
+                    compressedTokens,
+                    tfcResult.tokensSaved
+                );
+
+                const sessionReport = engine.getSessionReport();
+                return {
+                    content: [{
+                        type: "text" as const,
+                        text:
+                            `## NREKI TFC-PRO: ${path.basename(resolvedPath)}\n` +
+                            `**Foci:** [${tfcResult.zones.foveas.join(", ")}]\n` +
+                            `${tfcResult.originalSize.toLocaleString()} → ${tfcResult.compressedSize.toLocaleString()} chars ` +
+                            `(${(tfcResult.ratio * 100).toFixed(1)}% reduction)\n` +
+                            `  Fovea: 100% Resolution (Zero-Loss)\n` +
+                            `  Upstream: ${tfcResult.zones.upstream} local callers (Blast Radius)\n` +
+                            `  Downstream: ${tfcResult.zones.localParafovea} local | ${tfcResult.zones.externalParafovea} external\n` +
+                            `  Dark Matter: ${tfcResult.zones.darkMatterLines}L omitted\n\n` +
+                            `\`\`\`\n${tfcResult.compressed}\n\`\`\`\n\n` +
+                            `[NREKI saved ~${tfcResult.tokensSaved.toLocaleString()} tokens | ` +
+                            `Session: ~${sessionReport.totalTokensSaved.toLocaleString()} tokens | Cache Layout: Optimized]`,
+                    }],
+                };
+            }
+            // Focus not found — fall through to standard compression
+        }
 
         if (compression_level) {
             const result = await engine.compressFileAdvanced(resolvedPath, compression_level);

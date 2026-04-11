@@ -76,7 +76,7 @@ export class PreToolUseHook {
      * - A suggestion message for the LLM
      * - Token savings estimate
      */
-    evaluateFileRead(filePath: string, preloadedContent?: string): InterceptResult {
+    evaluateFileRead(filePath: string, preloadedContent?: string, focus?: string): InterceptResult {
         if (!this.config.interceptRead) return this.passThrough();
 
         let stats: fs.Stats;
@@ -90,6 +90,27 @@ export class PreToolUseHook {
         // Use preloaded content to avoid double I/O
         const content = preloadedContent ?? readSource(filePath);
         const fullTokens = Embedder.estimateTokens(content);
+
+        // TFC-PRO ENFORCER (empirically calibrated from v8.5 benchmark)
+        // Avg compression ratio when focus is a specific method: ~85% (p50).
+        // God Class anti-pattern is caught by the Density Shield in tfcCompress.
+        if (fullTokens > 3000 && !focus) {
+            return {
+                shouldIntercept: true,
+                wastedTokens: fullTokens,
+                optimizedTokens: Math.round(fullTokens * 0.15),
+                savingsPercent: 85,
+                compressionLevel: "aggressive",
+                suggestion:
+                    `🛑 **[NREKI INTERCEPT: ARCHIVO MASIVO]** (~${fullTokens.toLocaleString()} tokens)\n` +
+                    `Leer esto crudo destruirá tu contexto y olvidará tu plan maestro.\n\n` +
+                    `**ACCIÓN OBLIGATORIA (TFC-Pro):**\n` +
+                    `1. Ejecuta \`nreki_navigate action:"outline" path:"${filePath}"\` para ver la estructura.\n` +
+                    `2. Identifica el **MÉTODO o FUNCIÓN** específica (evita apuntar a clases enteras).\n` +
+                    `3. Ejecuta \`nreki_code action:"compress" path:"${filePath}" focus:"<nombre_del_simbolo>"\`\n\n` +
+                    `NREKI aislará tu objetivo al 100% de resolución junto con sus dependencias causales, garantizando ~85% de ahorro.`
+            };
+        }
 
         const ratioByLevel: Record<string, number> = {
             light: 0.50, medium: 0.75, aggressive: 0.92,

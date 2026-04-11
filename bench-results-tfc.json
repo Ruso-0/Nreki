@@ -1,0 +1,376 @@
+{
+  "summary": {
+    "totalFiles": 5,
+    "totalFoci": 15,
+    "successfulFoci": 13,
+    "fallbackRate": 0.1333333333333333,
+    "foveaFidelityRate": 1,
+    "avgTfcRatio": 0.8221420467741445,
+    "avgLegacyAggressiveRatio": 0.8534185880345333,
+    "avgLegacyTier3Ratio": 0.7136176632203731,
+    "avgTfcAdvantageOverAggressive": -0.014515752498121315,
+    "avgTfcAdvantageOverTier3": 0.09786158229192186,
+    "avgCacheSpeedup": 29.935443380422505,
+    "p50TfcRatio": 0.847679547282865,
+    "p95TfcRatio": 0.8990750459197061,
+    "minTfcRatio": 0.6317701732150401,
+    "maxTfcRatio": 0.8990750459197061
+  },
+  "results": [
+    {
+      "file": "src\\kernel\\nreki-kernel.ts",
+      "rawBytes": 84040,
+      "rawTokens": 23656,
+      "focusResults": [
+        {
+          "focus": "NrekiKernel",
+          "focusSize": 81280,
+          "tfcTokens": 23656,
+          "tfcRatio": 0,
+          "tfcAdvantageOverAggressive": -0.9793709841055124,
+          "tfcAdvantageOverTier3": -0.746660466689212,
+          "foveaFidelity": false,
+          "zones": {
+            "foveas": [],
+            "localParafovea": 0,
+            "externalParafovea": 0,
+            "upstream": 0,
+            "darkMatterLines": 0
+          },
+          "fellBack": true
+        },
+        {
+          "focus": "interceptAtomicBatch",
+          "focusSize": 20521,
+          "tfcTokens": 6929,
+          "tfcRatio": 0.707099376781487,
+          "tfcAdvantageOverAggressive": -0.27227160732402533,
+          "tfcAdvantageOverTier3": -0.039561089907725,
+          "foveaFidelity": true,
+          "zones": {
+            "foveas": [
+              "interceptAtomicBatch"
+            ],
+            "localParafovea": 11,
+            "externalParafovea": 8,
+            "upstream": 1,
+            "darkMatterLines": 653
+          },
+          "fellBack": false
+        },
+        {
+          "focus": "boot",
+          "focusSize": 13389,
+          "tfcTokens": 4502,
+          "tfcRatio": 0.8096888738586405,
+          "tfcAdvantageOverAggressive": -0.16968211024687185,
+          "tfcAdvantageOverTier3": 0.06302840716942848,
+          "foveaFidelity": true,
+          "zones": {
+            "foveas": [
+              "boot",
+              "isBooted"
+            ],
+            "localParafovea": 12,
+            "externalParafovea": 1,
+            "upstream": 3,
+            "darkMatterLines": 975
+          },
+          "fellBack": false
+        }
+      ],
+      "legacyAdvancedTokens": 488,
+      "legacyAdvancedRatio": 0.9793709841055124,
+      "legacyTier3Tokens": 5993,
+      "legacyTier3Ratio": 0.746660466689212,
+      "parseTime1stMs": 1754.8993,
+      "parseTime2ndMs": 14.815299999999752,
+      "cacheSpeedup": 118.45182345278391
+    },
+    {
+      "file": "src\\hologram\\shadow-generator.ts",
+      "rawBytes": 37777,
+      "rawTokens": 10300,
+      "focusResults": [
+        {
+          "focus": "classifyNode",
+          "focusSize": 4380,
+          "tfcTokens": 1569,
+          "tfcRatio": 0.847679547282865,
+          "tfcAdvantageOverAggressive": 0.06369896475859316,
+          "tfcAdvantageOverTier3": 0.11253391621490383,
+          "foveaFidelity": true,
+          "zones": {
+            "foveas": [
+              "classifyNode"
+            ],
+            "localParafovea": 3,
+            "externalParafovea": 0,
+            "upstream": 1,
+            "darkMatterLines": 666
+          },
+          "fellBack": false
+        },
+        {
+          "focus": "generateShadow",
+          "focusSize": 3830,
+          "tfcTokens": 1942,
+          "tfcRatio": 0.8114788204943272,
+          "tfcAdvantageOverAggressive": 0.02749823797005535,
+          "tfcAdvantageOverTier3": 0.07633318942636602,
+          "foveaFidelity": true,
+          "zones": {
+            "foveas": [
+              "generateShadow",
+              "classifyAndGenerateShadow"
+            ],
+            "localParafovea": 7,
+            "externalParafovea": 0,
+            "upstream": 1,
+            "darkMatterLines": 369
+          },
+          "fellBack": false
+        },
+        {
+          "focus": "scanProject",
+          "focusSize": 3408,
+          "tfcTokens": 1351,
+          "tfcRatio": 0.8688451829454353,
+          "tfcAdvantageOverAggressive": 0.0848646004211635,
+          "tfcAdvantageOverTier3": 0.13369955187747418,
+          "foveaFidelity": true,
+          "zones": {
+            "foveas": [
+              "scanProject"
+            ],
+            "localParafovea": 3,
+            "externalParafovea": 2,
+            "upstream": 0,
+            "darkMatterLines": 696
+          },
+          "fellBack": false
+        }
+      ],
+      "legacyAdvancedTokens": 2225,
+      "legacyAdvancedRatio": 0.7839805825242718,
+      "legacyTier3Tokens": 2728,
+      "legacyTier3Ratio": 0.7351456310679612,
+      "parseTime1stMs": 14.106700000000274,
+      "parseTime2ndMs": 3.318699999999808,
+      "cacheSpeedup": 4.250670443246178
+    },
+    {
+      "file": "src\\compressor.ts",
+      "rawBytes": 36217,
+      "rawTokens": 10145,
+      "focusResults": [
+        {
+          "focus": "Compressor",
+          "focusSize": 7530,
+          "tfcTokens": 3736,
+          "tfcRatio": 0.6317701732150401,
+          "tfcAdvantageOverAggressive": -0.0899646715360688,
+          "tfcAdvantageOverTier3": -0.13757433146706932,
+          "foveaFidelity": true,
+          "zones": {
+            "foveas": [
+              "AdvancedCompressor",
+              "CompressorOptions",
+              "Compressor"
+            ],
+            "localParafovea": 18,
+            "externalParafovea": 2,
+            "upstream": 1,
+            "darkMatterLines": 88
+          },
+          "fellBack": false
+        },
+        {
+          "focus": "structuralCompress",
+          "focusSize": 4395,
+          "tfcTokens": 1545,
+          "tfcRatio": 0.8477115899169131,
+          "tfcAdvantageOverAggressive": 0.12597674516580415,
+          "tfcAdvantageOverTier3": 0.07836708523480362,
+          "foveaFidelity": true,
+          "zones": {
+            "foveas": [
+              "structuralCompress"
+            ],
+            "localParafovea": 3,
+            "externalParafovea": 1,
+            "upstream": 2,
+            "darkMatterLines": 701
+          },
+          "fellBack": false
+        },
+        {
+          "focus": "AdvancedCompressor",
+          "focusSize": 3554,
+          "tfcTokens": 1514,
+          "tfcRatio": 0.8507815800591466,
+          "tfcAdvantageOverAggressive": 0.12904673530803767,
+          "tfcAdvantageOverTier3": 0.08143707537703715,
+          "foveaFidelity": true,
+          "zones": {
+            "foveas": [
+              "AdvancedCompressor"
+            ],
+            "localParafovea": 12,
+            "externalParafovea": 2,
+            "upstream": 0,
+            "darkMatterLines": 404
+          },
+          "fellBack": false
+        }
+      ],
+      "legacyAdvancedTokens": 2823,
+      "legacyAdvancedRatio": 0.7217348447511089,
+      "legacyTier3Tokens": 2340,
+      "legacyTier3Ratio": 0.7693445046821095,
+      "parseTime1stMs": 21.83580000000029,
+      "parseTime2ndMs": 2.581300000000283,
+      "cacheSpeedup": 8.459225971408939
+    },
+    {
+      "file": "src\\repo-map.ts",
+      "rawBytes": 34791,
+      "rawTokens": 9648,
+      "focusResults": [
+        {
+          "focus": "buildDependencyGraph",
+          "focusSize": 5672,
+          "tfcTokens": 1980,
+          "tfcRatio": 0.7948171183177847,
+          "tfcAdvantageOverAggressive": -0.04183296460095498,
+          "tfcAdvantageOverTier3": 0.019837848002693503,
+          "foveaFidelity": true,
+          "zones": {
+            "foveas": [
+              "buildDependencyGraph"
+            ],
+            "localParafovea": 5,
+            "externalParafovea": 0,
+            "upstream": 1,
+            "darkMatterLines": 513
+          },
+          "fellBack": false
+        },
+        {
+          "focus": "repoMapToText",
+          "focusSize": 4526,
+          "tfcTokens": 1568,
+          "tfcRatio": 0.8374648304457278,
+          "tfcAdvantageOverAggressive": 0.0008147475269881799,
+          "tfcAdvantageOverTier3": 0.062485560130636664,
+          "foveaFidelity": true,
+          "zones": {
+            "foveas": [
+              "repoMapToText"
+            ],
+            "localParafovea": 2,
+            "externalParafovea": 0,
+            "upstream": 1,
+            "darkMatterLines": 664
+          },
+          "fellBack": false
+        },
+        {
+          "focus": "renderGroup",
+          "focusSize": 2756,
+          "tfcTokens": 1011,
+          "tfcRatio": 0.8952169406189842,
+          "tfcAdvantageOverAggressive": 0.0585668577002445,
+          "tfcAdvantageOverTier3": 0.12023767030389299,
+          "foveaFidelity": true,
+          "zones": {
+            "foveas": [
+              "renderGroup"
+            ],
+            "localParafovea": 0,
+            "externalParafovea": 0,
+            "upstream": 1,
+            "darkMatterLines": 716
+          },
+          "fellBack": false
+        }
+      ],
+      "legacyAdvancedTokens": 1576,
+      "legacyAdvancedRatio": 0.8366500829187397,
+      "legacyTier3Tokens": 2171,
+      "legacyTier3Ratio": 0.7749792703150912,
+      "parseTime1stMs": 17.571199999999862,
+      "parseTime2ndMs": 1.5385000000001128,
+      "cacheSpeedup": 11.420994475137196
+    },
+    {
+      "file": "src\\database.ts",
+      "rawBytes": 31675,
+      "rawTokens": 8711,
+      "focusResults": [
+        {
+          "focus": "NrekiDB",
+          "focusSize": 28448,
+          "tfcTokens": 8711,
+          "tfcRatio": 0,
+          "tfcAdvantageOverAggressive": -0.9453564458730341,
+          "tfcAdvantageOverTier3": -0.5419584433474917,
+          "foveaFidelity": false,
+          "zones": {
+            "foveas": [],
+            "localParafovea": 0,
+            "externalParafovea": 0,
+            "upstream": 0,
+            "darkMatterLines": 0
+          },
+          "fellBack": true
+        },
+        {
+          "focus": "searchHybrid",
+          "focusSize": 2237,
+          "tfcTokens": 992,
+          "tfcRatio": 0.8862175282078195,
+          "tfcAdvantageOverAggressive": -0.05913891766521462,
+          "tfcAdvantageOverTier3": 0.34425908486032786,
+          "foveaFidelity": true,
+          "zones": {
+            "foveas": [
+              "searchHybrid"
+            ],
+            "localParafovea": 4,
+            "externalParafovea": 0,
+            "upstream": 1,
+            "darkMatterLines": 557
+          },
+          "fellBack": false
+        },
+        {
+          "focus": "setupSchema",
+          "focusSize": 2140,
+          "tfcTokens": 880,
+          "tfcRatio": 0.8990750459197061,
+          "tfcAdvantageOverAggressive": -0.04628139995332803,
+          "tfcAdvantageOverTier3": 0.35711660257221445,
+          "foveaFidelity": true,
+          "zones": {
+            "foveas": [
+              "setupSchema"
+            ],
+            "localParafovea": 0,
+            "externalParafovea": 0,
+            "upstream": 2,
+            "darkMatterLines": 603
+          },
+          "fellBack": false
+        }
+      ],
+      "legacyAdvancedTokens": 476,
+      "legacyAdvancedRatio": 0.9453564458730341,
+      "legacyTier3Tokens": 3990,
+      "legacyTier3Ratio": 0.5419584433474917,
+      "parseTime1stMs": 15.937799999999697,
+      "parseTime2ndMs": 2.2465000000001965,
+      "cacheSpeedup": 7.094502559536303
+    }
+  ]
+}

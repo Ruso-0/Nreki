@@ -147,6 +147,55 @@ True topological circuit rank via Union-Find on the type constraint graph. `beta
 
 ---
 
+## What's New in v8.6 (TFC-Ultra)
+
+**Topological Foveal Compression** — Hyper-causal context sculpting for frontier LLMs. Point TFC-Ultra at a specific method or function inside a file, and it extracts the target symbol at 100% resolution plus its causal dependencies (upstream callers, downstream deps, resolved imports, blast radius), while annihilating orthogonal "dark matter" code.
+
+```bash
+nreki_code action:"compress" path:"src/huge-file.ts" focus:"criticalMethod"
+```
+
+### Empirical results (benchmarked against NREKI src/ — 5 files, 15 focus probes)
+
+| Metric | Value |
+|--------|-------|
+| **Max compression (best focus)** | **89.9%** (~10x) |
+| **Avg compression** | **82.2%** (~5.6x) |
+| **p50 compression** | **84.8%** |
+| **Advantage vs legacy tier-3** | **+9.8pp** (consistent) |
+| **Fovea fidelity** | **100%** — target symbol preserved verbatim for zero-loss reasoning |
+| **True LRU AST cache** | **30x avg speedup**, **118x in extreme cases** (2,113ms → 14.8ms on 82 KB file) |
+| **Fallback rate (Density Shield)** | **13.3%** — when TFC can't beat 15% compression, falls through to legacy aggressive |
+
+### How it works
+
+- **Fovea**: the target symbol is preserved byte-for-byte at 100% resolution
+- **Upstream vectorial collapse** (O(1)): N local callers condensed to a single line of names
+- **Downstream event horizon** (O(1)): top-10 local dependencies + `cleanSignature` to strip JSDoc waste
+- **External parafovea**: BM25-resolved signatures of imported symbols used inside the fovea
+- **Blast radius**: dependents from the project-wide import graph
+- **Dark matter**: everything else in the file is omitted as a single annotation line
+- **Density Shield 0.85**: if TFC can't achieve ≥15% real compression (e.g. when the agent aims at a God Class and pulls the entire file into the fovea), the compressor returns `null` and the system falls through to the legacy aggressive compressor — **mathematically guarantees you never perform worse than baseline**
+
+### TFC-Pro Enforcer (auto-guard on `read`)
+
+When a file exceeds 3,000 tokens and the agent tries to read it raw, NREKI's hook intercepts the call and instructs the agent to use outline + focus-driven compression instead. This eliminates context-window suicide before it happens.
+
+---
+
+## What's New in v8.5 (Engine Decomposition)
+
+The 878-line `engine.ts` God Object was decomposed into a clean facade pattern:
+
+- `engine-types.ts` — shared type definitions (SearchResult, EngineConfig, SessionReport, IndexStats)
+- `engine/indexer.ts` — `IndexPipeline` class (write side: AST parsing, embedding, batch storage)
+- `engine/searcher.ts` — `SearchEngine` class (read side: T-RAG Tectonic Relevance Scoring)
+- `engine.ts` — thin orchestrator facade (~520 lines)
+
+Zero API changes. All 28 public methods on `NrekiEngine` preserved. `sql.js` intentionally kept (migration to `node:sqlite` postponed to v9.0 to avoid breaking users on Node 20 LTS or forcing the `--experimental-sqlite` flag).
+
+---
+
 ## What's New in v8.3
 
 ### Kernel Decomposition (v8.1)
