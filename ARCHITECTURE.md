@@ -6,6 +6,18 @@
 
 ---
 
+## 🗺️ Where to Start (For Maintainers)
+
+NREKI's architecture might seem dense, but 80% of its value comes from just 3 simple flows. If you are fixing a bug or adding a feature, start here:
+
+1. **How tools are routed:** Look at `src/router.ts`. It's the only entry point. It maps MCP tool names to handler functions.
+2. **How files are safely edited:** Look at `src/semantic-edit.ts`. This is the AST byte-splicing engine. It's pure string math.
+3. **How TS compilation is hijacked:** Look at `src/kernel/nreki-kernel.ts`. Specifically `interceptAtomicBatch()`. Follow the 3 phases (Inject VFS → Validate Sidecars → Healing Cascade).
+
+**Ignore the Spectral Topology and PageRank math** (`src/kernel/spectral-topology.ts` and `src/repo-map.ts`) unless you are explicitly working on the Architecture Health Index (AHI) or T-RAG search ranking. They are isolated mathematical subsystems that do not interfere with the core editing loop.
+
+---
+
 ## Overview
 
 Nreki is a **semantic verification kernel** for AI coding agents. It sits between the agent and the filesystem, intercepting every code edit, validating it against the full project's type system in RAM, and only committing to disk if the edit is provably safe.

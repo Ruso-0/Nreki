@@ -4,10 +4,24 @@ This workspace is protected by NREKI, an AST-aware, RAM-based ACID validation en
 
 To prevent context exhaustion and syntax corruption, you **MUST** strictly obey the following operational laws. Failure to do so will break the environment.
 
-## 1. 📖 READING & DISCOVERY (Strict Token Economy)
-* **NEVER use Native `Read File` for existing files.** It dumps raw text and permanently damages your context window.
-* **ALWAYS use `nreki_code action:"read"`**. NREKI auto-compresses AST structures (saving ~75% tokens) while preserving signatures.
-* **DEBUGGING EXCEPTION:** Use `nreki_code action:"read" compress:false` ONLY when you explicitly need to read the internal imperative logic of a function body.
+## 0. 🚨 EMERGENCY FALLBACK (MCP FAILURE)
+If the `nreki_*` tools fail to load, timeout, or return connection errors:
+1. **DO NOT PANIC or freeze.**
+2. **TEMPORARILY SUSPEND** the "NEVER use Native Read/Write" rules below.
+3. Fall back to your native `Read File`, `Write`, and `Replace` tools to complete the task.
+4. Inform the user: *"NREKI connection lost. Proceeding with native tools (AST safety disabled)."*
+
+*(Assuming NREKI is online, strictly obey the following laws):*
+
+## 1. 📖 READING & DISCOVERY (The TFC-Ultra Protocol)
+* **NEVER use Native `Read File` for existing files.** It dumps raw text, triggers "Attention Sinks" (Lost in the Middle), and permanently damages your context window.
+* **MANDATORY TFC-ULTRA FOR EDITS:** To understand or edit a specific logic block in a large file (>3000 tokens), DO NOT read the uncompressed file.
+  1. Run `nreki_navigate action:"outline" path:"<file>"` to map the structure.
+  2. Identify the exact **METHOD or FUNCTION** you need (DO NOT target entire classes/God Objects).
+  3. Run `nreki_code action:"compress" path:"<file>" focus:"<method_name>"`.
+  NREKI will isolate your target at 100% resolution, resolve its causal dependencies (upstream/downstream), and annihilate up to 98% of orthogonal noise.
+* **GENERAL EXPLORATION:** If skimming a smaller file without a specific target, use `nreki_code action:"read"` (auto-compresses to ~75% savings).
+* **DEBUGGING EXCEPTION:** Use `nreki_code action:"read" compress:false` ONLY when explicitly commanded by the human or the Circuit Breaker to trace full-file imperative logic.
 * **NAVIGATION:** Do not use grep/glob. Use `nreki_navigate` (`search`, `definition`, `references`, `outline`, `map`) for zero-noise, AST-precise discovery.
 
 ## 2. ✍️ SURGICAL EDITING & REFACTORING

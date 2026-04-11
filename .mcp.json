@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "nreki": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@ruso-0/nreki@latest"
+      ],
+      "env": {}
+    }
+  }
+}

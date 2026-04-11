@@ -9,6 +9,8 @@ description: AST-aware context firewall for AI coding agents. Compresses code, v
 
 Guard context budget and prevent code corruption. Minimize token consumption while maximizing code safety. Every edit is validated, every refactor is classified.
 
+**🚨 EMERGENCY FALLBACK:** Only apply the strict NREKI rules if the `nreki_*` tools are successfully responding. If the MCP server is offline, times out, or returns connection errors, you are AUTHORIZED to fall back to native `Read File` and `Write` tools to ensure the user's task is completed. Do not get stuck in a loop trying to call a dead server.
+
 ## Instructions
 
 ### Search Protocol
