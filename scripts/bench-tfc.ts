@@ -42,6 +42,7 @@ interface FileBench {
     rawBytes: number;
     rawTokens: number;
     focusResults: FocusBench[];
+    boundaryResults: BoundaryCase[];
     legacyAdvancedTokens: number;
     legacyAdvancedRatio: number;
     legacyTier3Tokens: number;
@@ -49,6 +50,16 @@ interface FileBench {
     parseTime1stMs: number;
     parseTime2ndMs: number; // 2nd call with different focus → cache hit
     cacheSpeedup: number;   // 1st / 2nd
+}
+
+interface BoundaryCase {
+    focus: string;
+    focusLines: number;
+    focusSize: number;
+    tfcRatio: number;
+    compressionFactor: number; // originalSize / compressedSize
+    tokensSaved: number;
+    fellBack: boolean;
 }
 
 interface FocusBench {
@@ -79,6 +90,11 @@ interface BenchSummary {
     p95TfcRatio: number;
     minTfcRatio: number;
     maxTfcRatio: number;
+    // Boundary ceiling
+    maxBoundaryRatio: number;          // best case compression ratio
+    maxBoundaryFactor: number;         // best case compression factor (raw/compressed)
+    maxBoundaryFocus: string;          // focus symbol that achieved it
+    maxBoundaryFile: string;           // file that achieved it
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────
@@ -217,11 +233,49 @@ async function main() {
 
         const cacheSpeedup = parseTime2ndMs > 0 ? parseTime1stMs / parseTime2ndMs : 1;
 
+        // ─── BOUNDARY CASES: THEORETICAL CEILING ───
+        // Measure TFC compression when the focus is one of the smallest symbols
+        // in the file. This documents the empirical best-case ceiling (limit
+        // described by Amdahl's law applied to context compression).
+        const smallestSymbols: ParsedChunk[] = [...parseResult.chunks]
+            .filter(c => c.symbolName.length > 0 && c.rawCode.length > 0)
+            .filter(c => !topSymbols.includes(c)) // avoid re-testing the largest ones
+            .sort((a, b) => a.rawCode.length - b.rawCode.length)
+            .slice(0, 3);
+
+        const boundaryResults: BoundaryCase[] = [];
+        for (const target of smallestSymbols) {
+            const boundaryResult = await tfcCompress(file, content, target.symbolName, engine);
+            const focusLines = target.endLine - target.startLine + 1;
+            if (!boundaryResult) {
+                boundaryResults.push({
+                    focus: target.symbolName,
+                    focusLines,
+                    focusSize: target.rawCode.length,
+                    tfcRatio: 0,
+                    compressionFactor: 1,
+                    tokensSaved: 0,
+                    fellBack: true,
+                });
+                continue;
+            }
+            boundaryResults.push({
+                focus: target.symbolName,
+                focusLines,
+                focusSize: target.rawCode.length,
+                tfcRatio: boundaryResult.ratio,
+                compressionFactor: boundaryResult.originalSize / Math.max(1, boundaryResult.compressedSize),
+                tokensSaved: boundaryResult.tokensSaved,
+                fellBack: false,
+            });
+        }
+
         results.push({
             file: relPath,
             rawBytes: size,
             rawTokens,
             focusResults,
+            boundaryResults,
             legacyAdvancedTokens,
             legacyAdvancedRatio,
             legacyTier3Tokens,
@@ -236,6 +290,13 @@ async function main() {
             const marker = fr.fellBack ? "✗" : fr.foveaFidelity ? "✓" : "⚠";
             console.log(`  ${marker} focus="${fr.focus}" → ${fr.tfcTokens}t (${(fr.tfcRatio * 100).toFixed(1)}%) Δ=${(fr.tfcAdvantageOverAggressive * 100).toFixed(1)}pp`);
         }
+        if (boundaryResults.length > 0) {
+            console.log(`  boundary (smallest symbols):`);
+            for (const br of boundaryResults) {
+                const marker = br.fellBack ? "✗" : "🎯";
+                console.log(`    ${marker} ${br.focus} (${br.focusLines}L) → ${(br.tfcRatio * 100).toFixed(1)}% / ${br.compressionFactor.toFixed(0)}x`);
+            }
+        }
         console.log(`  cache: 1st=${parseTime1stMs.toFixed(1)}ms 2nd=${parseTime2ndMs.toFixed(1)}ms speedup=${cacheSpeedup.toFixed(1)}x`);
         console.log();
     }
@@ -245,6 +306,22 @@ async function main() {
     const successful = allFoci.filter(f => !f.fellBack);
     const withFovea = successful.filter(f => f.foveaFidelity);
     const tfcRatiosSorted = [...successful.map(f => f.tfcRatio)].sort((a, b) => a - b);
+
+    // Boundary ceiling: best boundary case across all files
+    let maxBoundaryRatio = 0;
+    let maxBoundaryFactor = 1;
+    let maxBoundaryFocus = "";
+    let maxBoundaryFile = "";
+    for (const r of results) {
+        for (const br of r.boundaryResults) {
+            if (!br.fellBack && br.tfcRatio > maxBoundaryRatio) {
+                maxBoundaryRatio = br.tfcRatio;
+                maxBoundaryFactor = br.compressionFactor;
+                maxBoundaryFocus = br.focus;
+                maxBoundaryFile = r.file;
+            }
+        }
+    }
 
     const summary: BenchSummary = {
         totalFiles: results.length,
@@ -262,6 +339,10 @@ async function main() {
         p95TfcRatio: percentile(tfcRatiosSorted, 95),
         minTfcRatio: tfcRatiosSorted[0] ?? 0,
         maxTfcRatio: tfcRatiosSorted[tfcRatiosSorted.length - 1] ?? 0,
+        maxBoundaryRatio,
+        maxBoundaryFactor,
+        maxBoundaryFocus,
+        maxBoundaryFile,
     };
 
     console.log("━".repeat(70));
@@ -283,6 +364,9 @@ async function main() {
     console.log(`TFC ratio p50 / p95:        ${(summary.p50TfcRatio * 100).toFixed(1)}% / ${(summary.p95TfcRatio * 100).toFixed(1)}%`);
     console.log(`TFC ratio min / max:        ${(summary.minTfcRatio * 100).toFixed(1)}% / ${(summary.maxTfcRatio * 100).toFixed(1)}%`);
     console.log(`Cache speedup (avg):        ${summary.avgCacheSpeedup.toFixed(1)}x`);
+    console.log();
+    console.log(`Best case boundary:         ${(summary.maxBoundaryRatio * 100).toFixed(1)}% (${summary.maxBoundaryFactor.toFixed(0)}x)`);
+    console.log(`  on focus="${summary.maxBoundaryFocus}" in ${summary.maxBoundaryFile}`);
 
     // ─── Output files ───────────────────────────────────────────────
     fs.writeFileSync(OUTPUT_JSON, JSON.stringify({ summary, results }, null, 2));
@@ -315,6 +399,7 @@ function generateMarkdown(summary: BenchSummary, results: FileBench[]): string {
     lines.push(`| TFC p50 / p95 | ${(summary.p50TfcRatio * 100).toFixed(1)}% / ${(summary.p95TfcRatio * 100).toFixed(1)}% |`);
     lines.push(`| TFC min / max | ${(summary.minTfcRatio * 100).toFixed(1)}% / ${(summary.maxTfcRatio * 100).toFixed(1)}% |`);
     lines.push(`| Cache speedup (avg) | ${summary.avgCacheSpeedup.toFixed(1)}x |`);
+    lines.push(`| **Best case boundary** | **${(summary.maxBoundaryRatio * 100).toFixed(1)}% (${summary.maxBoundaryFactor.toFixed(0)}x)** |`);
     lines.push("");
 
     lines.push("## Per-file results\n");
@@ -325,6 +410,26 @@ function generateMarkdown(summary: BenchSummary, results: FileBench[]): string {
         const avgTfc = goodFoci.length > 0 ? goodFoci.reduce((a, f) => a + f.tfcRatio, 0) / goodFoci.length : 0;
         const avgDelta = goodFoci.length > 0 ? goodFoci.reduce((a, f) => a + f.tfcAdvantageOverAggressive, 0) / goodFoci.length : 0;
         lines.push(`| \`${r.file}\` | ${r.rawTokens}t | ${(r.legacyAdvancedRatio * 100).toFixed(1)}% | ${(r.legacyTier3Ratio * 100).toFixed(1)}% | ${goodFoci.length}/${r.focusResults.length} | ${(avgTfc * 100).toFixed(1)}% | ${(avgDelta * 100).toFixed(1)}pp |`);
+    }
+    lines.push("");
+
+    lines.push("## Boundary Analysis — Theoretical Ceiling\n");
+    lines.push("TFC compression ratio follows an Amdahl-style law:\n");
+    lines.push("```");
+    lines.push("Ratio ≈ 1 − (Preamble + Fovea + Markov_Mantle_O(1)) / TotalFileSize");
+    lines.push("```\n");
+    lines.push("The **smaller the focus** relative to the file, the closer compression approaches 100%. ");
+    lines.push("The boundary probes the smallest symbols in each file to document the empirical ceiling.\n");
+    lines.push(`**Best case observed**: **${(summary.maxBoundaryRatio * 100).toFixed(1)}% compression** (**${summary.maxBoundaryFactor.toFixed(0)}x**) `);
+    lines.push(`on focus \`${summary.maxBoundaryFocus}\` in \`${summary.maxBoundaryFile}\`.\n`);
+    lines.push("| File | Focus | Focus lines | TFC ratio | Compression |");
+    lines.push("|------|-------|-------------|-----------|-------------|");
+    for (const r of results) {
+        for (const br of r.boundaryResults) {
+            const marker = br.fellBack ? "✗ fallback" : "🎯";
+            const compression = br.fellBack ? "—" : `${br.compressionFactor.toFixed(0)}x`;
+            lines.push(`| \`${r.file}\` | \`${br.focus}\` | ${br.focusLines}L | ${(br.tfcRatio * 100).toFixed(1)}% | ${compression} ${marker} |`);
+        }
     }
     lines.push("");
 

@@ -155,17 +155,41 @@ True topological circuit rank via Union-Find on the type constraint graph. `beta
 nreki_code action:"compress" path:"src/huge-file.ts" focus:"criticalMethod"
 ```
 
-### Empirical results (benchmarked against NREKI src/ — 5 files, 15 focus probes)
+### Empirical results (benchmarked against NREKI src/ — 5 files, 15 focus probes + 15 boundary probes)
+
+**Operational case** (methods of medium-to-large size):
 
 | Metric | Value |
 |--------|-------|
-| **Max compression (best focus)** | **89.9%** (~10x) |
 | **Avg compression** | **82.2%** (~5.6x) |
 | **p50 compression** | **84.8%** |
+| **p95 compression** | **89.9%** (~10x) |
 | **Advantage vs legacy tier-3** | **+9.8pp** (consistent) |
 | **Fovea fidelity** | **100%** — target symbol preserved verbatim for zero-loss reasoning |
-| **True LRU AST cache** | **30x avg speedup**, **118x in extreme cases** (2,113ms → 14.8ms on 82 KB file) |
+| **True LRU AST cache** | **34x avg speedup**, **137x in extreme cases** (1,819ms → 13.3ms on 82 KB file) |
 | **Fallback rate (Density Shield)** | **13.3%** — when TFC can't beat 15% compression, falls through to legacy aggressive |
+
+**Best case boundary** (theoretical ceiling — small focus inside large file):
+
+| Metric | Value |
+|--------|-------|
+| **Max compression observed** | **98.2%** (**55x**) |
+| **Context** | focus `isBooted` (3-line getter) inside `nreki-kernel.ts` (82 KB, 1,640 lines) |
+| **Boundary probes** | 15 (top-3 smallest symbols per file), **0 fallbacks**, compression range: **30x–55x** |
+
+### The Amdahl law of focused compression
+
+TFC compression ratio follows an asymptotic limit:
+
+```
+Ratio ≈ 1 − (Preamble + Fovea + Markov_Mantle_O(1)) / TotalFileSize
+```
+
+- When the Fovea is a small getter (3 lines) inside a 1,640-line file, the numerator is minuscule vs. the denominator. **Ratio approaches 100%. Empirical ceiling: 98.2% (55x).**
+- When the Fovea is a large operational method (500 lines), the numerator grows. **Ratio drops to 70-80%.** Still preserves 100% of the causal information the agent needs.
+- When the Fovea is a God Class (entire file), the numerator **exceeds** the denominator due to parafovea overhead. **The Density Shield detects this and falls through to legacy aggressive**, guaranteeing the output is never worse than baseline.
+
+**This is not marketing. This is physics.** See [BENCH-TFC.md](BENCH-TFC.md) for the raw dogfooding benchmark with per-file breakdowns.
 
 ### How it works
 

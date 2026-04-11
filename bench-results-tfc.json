@@ -10,11 +10,15 @@
     "avgLegacyTier3Ratio": 0.7136176632203731,
     "avgTfcAdvantageOverAggressive": -0.014515752498121315,
     "avgTfcAdvantageOverTier3": 0.09786158229192186,
-    "avgCacheSpeedup": 29.935443380422505,
+    "avgCacheSpeedup": 34.14069454175505,
     "p50TfcRatio": 0.847679547282865,
     "p95TfcRatio": 0.8990750459197061,
     "minTfcRatio": 0.6317701732150401,
-    "maxTfcRatio": 0.8990750459197061
+    "maxTfcRatio": 0.8990750459197061,
+    "maxBoundaryRatio": 0.9817020145900768,
+    "maxBoundaryFactor": 54.65082508250825,
+    "maxBoundaryFocus": "isBooted",
+    "maxBoundaryFile": "src\\kernel\\nreki-kernel.ts"
   },
   "results": [
     {
@@ -79,13 +83,42 @@
           "fellBack": false
         }
       ],
+      "boundaryResults": [
+        {
+          "focus": "getStagingSize",
+          "focusLines": 1,
+          "focusSize": 57,
+          "tfcRatio": 0.9816899367119184,
+          "compressionFactor": 54.61477572559367,
+          "tokensSaved": 23222,
+          "fellBack": false
+        },
+        {
+          "focus": "toPosix",
+          "focusLines": 1,
+          "focusSize": 61,
+          "tfcRatio": 0.9779095608483501,
+          "compressionFactor": 45.268452706396936,
+          "tokensSaved": 23133,
+          "fellBack": false
+        },
+        {
+          "focus": "isBooted",
+          "focusLines": 3,
+          "focusSize": 64,
+          "tfcRatio": 0.9817020145900768,
+          "compressionFactor": 54.65082508250825,
+          "tokensSaved": 23223,
+          "fellBack": false
+        }
+      ],
       "legacyAdvancedTokens": 488,
       "legacyAdvancedRatio": 0.9793709841055124,
       "legacyTier3Tokens": 5993,
       "legacyTier3Ratio": 0.746660466689212,
-      "parseTime1stMs": 1754.8993,
-      "parseTime2ndMs": 14.815299999999752,
-      "cacheSpeedup": 118.45182345278391
+      "parseTime1stMs": 1819.3910999999998,
+      "parseTime2ndMs": 13.269200000000183,
+      "cacheSpeedup": 137.11385011907083
     },
     {
       "file": "src\\hologram\\shadow-generator.ts",
@@ -151,13 +184,42 @@
           "fellBack": false
         }
       ],
+      "boundaryResults": [
+        {
+          "focus": "ExportClassification",
+          "focusLines": 4,
+          "focusSize": 80,
+          "tfcRatio": 0.9741185608477351,
+          "compressionFactor": 38.637727759914256,
+          "tokensSaved": 10033,
+          "fellBack": false
+        },
+        {
+          "focus": "ScanStats",
+          "focusLines": 6,
+          "focusSize": 112,
+          "tfcRatio": 0.9750894615662016,
+          "compressionFactor": 40.143652561247215,
+          "tokensSaved": 10043,
+          "fellBack": false
+        },
+        {
+          "focus": "nodeText",
+          "focusLines": 3,
+          "focusSize": 135,
+          "tfcRatio": 0.9720380593081639,
+          "compressionFactor": 35.76289682539682,
+          "tokensSaved": 10012,
+          "fellBack": false
+        }
+      ],
       "legacyAdvancedTokens": 2225,
       "legacyAdvancedRatio": 0.7839805825242718,
       "legacyTier3Tokens": 2728,
       "legacyTier3Ratio": 0.7351456310679612,
-      "parseTime1stMs": 14.106700000000274,
-      "parseTime2ndMs": 3.318699999999808,
-      "cacheSpeedup": 4.250670443246178
+      "parseTime1stMs": 14.31899999999996,
+      "parseTime2ndMs": 1.4927000000002408,
+      "cacheSpeedup": 9.59268439739911
     },
     {
       "file": "src\\compressor.ts",
@@ -224,13 +286,42 @@
           "fellBack": false
         }
       ],
+      "boundaryResults": [
+        {
+          "focus": "CompressionTier",
+          "focusLines": 1,
+          "focusSize": 33,
+          "tfcRatio": 0.9787635544289537,
+          "compressionFactor": 47.08885941644562,
+          "tokensSaved": 9929,
+          "fellBack": false
+        },
+        {
+          "focus": "CompressionLevel",
+          "focusLines": 1,
+          "focusSize": 58,
+          "tfcRatio": 0.977355302070131,
+          "compressionFactor": 44.16044776119403,
+          "tokensSaved": 9915,
+          "fellBack": false
+        },
+        {
+          "focus": "Lang",
+          "focusLines": 1,
+          "focusSize": 70,
+          "tfcRatio": 0.9693000985776651,
+          "compressionFactor": 32.57339449541284,
+          "tokensSaved": 9833,
+          "fellBack": false
+        }
+      ],
       "legacyAdvancedTokens": 2823,
       "legacyAdvancedRatio": 0.7217348447511089,
       "legacyTier3Tokens": 2340,
       "legacyTier3Ratio": 0.7693445046821095,
-      "parseTime1stMs": 21.83580000000029,
-      "parseTime2ndMs": 2.581300000000283,
-      "cacheSpeedup": 8.459225971408939
+      "parseTime1stMs": 16.776300000000447,
+      "parseTime2ndMs": 2.9916999999995824,
+      "cacheSpeedup": 5.607614399840489
     },
     {
       "file": "src\\repo-map.ts",
@@ -295,13 +386,42 @@
           "fellBack": false
         }
       ],
+      "boundaryResults": [
+        {
+          "focus": "stableCompare",
+          "focusLines": 2,
+          "focusSize": 88,
+          "tfcRatio": 0.9736709610543463,
+          "compressionFactor": 37.98087739032621,
+          "tokensSaved": 9394,
+          "fellBack": false
+        },
+        {
+          "focus": "shortenImport",
+          "focusLines": 3,
+          "focusSize": 113,
+          "tfcRatio": 0.9752998667258996,
+          "compressionFactor": 40.485611510791365,
+          "tokensSaved": 9409,
+          "fellBack": false
+        },
+        {
+          "focus": "RepoMapEntry",
+          "focusLines": 7,
+          "focusSize": 149,
+          "tfcRatio": 0.971479342514438,
+          "compressionFactor": 35.06230529595015,
+          "tokensSaved": 9372,
+          "fellBack": false
+        }
+      ],
       "legacyAdvancedTokens": 1576,
       "legacyAdvancedRatio": 0.8366500829187397,
       "legacyTier3Tokens": 2171,
       "legacyTier3Ratio": 0.7749792703150912,
-      "parseTime1stMs": 17.571199999999862,
-      "parseTime2ndMs": 1.5385000000001128,
-      "cacheSpeedup": 11.420994475137196
+      "parseTime1stMs": 14.676699999999983,
+      "parseTime2ndMs": 1.6059999999997672,
+      "cacheSpeedup": 9.138667496887988
     },
     {
       "file": "src\\database.ts",
@@ -364,13 +484,42 @@
           "fellBack": false
         }
       ],
+      "boundaryResults": [
+        {
+          "focus": "ready",
+          "focusLines": 3,
+          "focusSize": 58,
+          "tfcRatio": 0.9677906061401207,
+          "compressionFactor": 31.04684317718941,
+          "tokensSaved": 8430,
+          "fellBack": false
+        },
+        {
+          "focus": "FileRecord",
+          "focusLines": 4,
+          "focusSize": 63,
+          "tfcRatio": 0.9693649960640252,
+          "compressionFactor": 32.642398286937905,
+          "tokensSaved": 8444,
+          "fellBack": false
+        },
+        {
+          "focus": "getVectorCount",
+          "focusLines": 3,
+          "focusSize": 69,
+          "tfcRatio": 0.9671346103384938,
+          "compressionFactor": 30.427145708582835,
+          "tokensSaved": 8424,
+          "fellBack": false
+        }
+      ],
       "legacyAdvancedTokens": 476,
       "legacyAdvancedRatio": 0.9453564458730341,
       "legacyTier3Tokens": 3990,
       "legacyTier3Ratio": 0.5419584433474917,
-      "parseTime1stMs": 15.937799999999697,
-      "parseTime2ndMs": 2.2465000000001965,
-      "cacheSpeedup": 7.094502559536303
+      "parseTime1stMs": 19.028599999999642,
+      "parseTime2ndMs": 2.056999999999789,
+      "cacheSpeedup": 9.250656295576857
     }
   ]
 }
