@@ -128,6 +128,58 @@ export interface SessionReport {
     autoContextInjections: number;
 }
 
+class SessionTracker {
+    private totalTokensSaved = 0;
+    private totalOriginalTokens = 0;
+    private compressionsByType = new Map<string, { count: number; saved: number; original: number }>();
+    private startTime = Date.now();
+    private autoContextInjections = 0;
+
+    public recordCompression(ext: string, originalTokens: number, savedTokens: number): void {
+        this.totalTokensSaved += savedTokens;
+        this.totalOriginalTokens += originalTokens;
+        const entry = this.compressionsByType.get(ext) ?? { count: 0, saved: 0, original: 0 };
+        entry.count++;
+        entry.saved += savedTokens;
+        entry.original += originalTokens;
+        this.compressionsByType.set(ext, entry);
+    }
+
+    public incrementAutoContext(): void {
+        this.autoContextInjections++;
+    }
+
+    public getReport(): SessionReport {
+        const durationMs = Date.now() - this.startTime;
+        const durationMinutes = durationMs / 60_000;
+        const totalSaved = this.totalTokensSaved;
+        const totalOriginal = this.totalOriginalTokens;
+
+        const byFileType: SessionReport["byFileType"] = [];
+        for (const [ext, data] of this.compressionsByType) {
+            byFileType.push({
+                ext,
+                count: data.count,
+                tokensSaved: data.saved,
+                originalTokens: data.original,
+                ratio: data.original > 0 ? 1 - (data.original - data.saved) / data.original : 0,
+            });
+        }
+        byFileType.sort((a, b) => b.tokensSaved - a.tokensSaved);
+
+        return {
+            durationMinutes: Math.round(durationMinutes * 10) / 10,
+            totalTokensSaved: totalSaved,
+            totalOriginalTokens: totalOriginal,
+            overallRatio: totalOriginal > 0 ? totalSaved / totalOriginal : 0,
+            savedUsdSonnet: (totalSaved / 1_000_000) * 3,
+            savedUsdOpus: (totalSaved / 1_000_000) * 15,
+            byFileType,
+            autoContextInjections: this.autoContextInjections,
+        };
+    }
+}
+
 export class NrekiEngine {
     private db: NrekiDB;
     private embedder: Embedder;
@@ -146,13 +198,7 @@ export class NrekiEngine {
     private safelyReadFiles = new Set<string>();
 
     /** Session-level savings tracker. */
-    private sessionSavings = {
-        totalTokensSaved: 0,
-        totalOriginalTokens: 0,
-        compressionsByType: new Map<string, { count: number; saved: number; original: number }>(),
-        startTime: Date.now(),
-        autoContextInjections: 0,
-    };
+    private sessionTracker = new SessionTracker();
 
     constructor(config: EngineConfig = {}) {
         this.config = {
@@ -220,85 +266,64 @@ export class NrekiEngine {
      * In Pro mode, generates embeddings for hybrid search.
      */
     async indexFile(filePath: string): Promise<ParseResult | null> {
-        if (this.config.enableEmbeddings) {
-            await this.initializeEmbedder();
-        } else {
-            await this.initialize();
-        }
+        if (this.config.enableEmbeddings) await this.initializeEmbedder();
+        else await this.initialize();
 
-        // FIX 7: Check file size and extension before processing
         let stat: fs.Stats;
-        try {
-            stat = fs.statSync(filePath);
-        } catch {
-            return null;
-        }
+        try { stat = fs.statSync(filePath); } catch { return null; }
 
-        const filterResult = shouldProcess(filePath, stat.size);
-        if (!filterResult.process) {
-            // Clean up stale chunks if this file was previously indexed
-            // but now exceeds size limits or is filtered out.
+        if (!shouldProcess(filePath, stat.size).process) {
             this.db.clearChunks(filePath);
             return null;
         }
 
-        // Read file content (BOM-safe for tree-sitter)
         let content: string;
-        try {
-            content = readSource(filePath);
-        } catch {
-            return null; // File may have been deleted
-        }
+        try { content = readSource(filePath); } catch { return null; }
 
-        // Check extension support - unsupported files get plaintext fallback
         const ext = path.extname(filePath).toLowerCase();
         if (!this.parser.isSupported(ext)) {
-            // Plaintext fallback: index entire file as one chunk for BM25 keyword search.
-            // No AST features (no validation, no structural compression, no semantic edit)
-            // but search WILL find content in this file.
-            if (!this.db.fileNeedsUpdate(filePath, content)) return null;
-
-            const lineCount = content.split("\n").length;
-            // Use content as shorthand so BM25 keyword index can search it
-            const shorthand = `[file] ${path.basename(filePath)} (${lineCount} lines)\n${content}`;
-
-            this.db.clearChunks(filePath);
-
-            if (this.config.enableEmbeddings) {
-                await this.initializeEmbedder();
-                const { embedding } = await this.embedder.embed(content.slice(0, 1000));
-                this.db.insertChunk(filePath, shorthand, content, "file", 1, lineCount, embedding);
-            } else {
-                this.db.insertChunk(filePath, shorthand, content, "file", 1, lineCount, new Float32Array(0));
-            }
-
-            const hash = this.db.hashContent(content);
-            this.db.upsertFile(filePath, hash);
-
-            return {
-                filePath,
-                chunks: [{ shorthand, rawCode: content, nodeType: "file", startLine: 1, endLine: lineCount, startIndex: 0, endIndex: content.length, symbolName: "" }],
-                totalLines: lineCount,
-                language: ext.slice(1),
-            };
+            return this.indexPlaintextFallback(filePath, content, ext);
         }
 
-        // Merkle diffing: skip unchanged files
         if (!this.db.fileNeedsUpdate(filePath, content)) return null;
 
-        // Parse AST
+        return this.indexAstChunks(filePath, content);
+    }
+
+    private async indexPlaintextFallback(filePath: string, content: string, ext: string): Promise<ParseResult | null> {
+        if (!this.db.fileNeedsUpdate(filePath, content)) return null;
+
+        const lineCount = content.split("\n").length;
+        const shorthand = `[file] ${path.basename(filePath)} (${lineCount} lines)\n${content}`;
+
+        this.db.clearChunks(filePath);
+
+        let embedding: Float32Array = new Float32Array(0);
+        if (this.config.enableEmbeddings) {
+            await this.initializeEmbedder();
+            ({ embedding } = await this.embedder.embed(content.slice(0, 1000)));
+        }
+
+        this.db.insertChunk(filePath, shorthand, content, "file", 1, lineCount, embedding);
+        this.db.upsertFile(filePath, this.db.hashContent(content));
+
+        return {
+            filePath,
+            chunks: [{ shorthand, rawCode: content, nodeType: "file", startLine: 1, endLine: lineCount, startIndex: 0, endIndex: content.length, symbolName: "" }],
+            totalLines: lineCount,
+            language: ext.slice(1),
+        };
+    }
+
+    private async indexAstChunks(filePath: string, content: string): Promise<ParseResult | null> {
         const result = await this.parser.parse(filePath, content);
         if (result.chunks.length === 0) {
-            // File was emptied or parser couldn't extract anything.
-            // Clear old chunks to prevent ghost data in search results.
             this.db.clearChunks(filePath);
             return result;
         }
 
-        // Clear old chunks for this file
         this.db.clearChunks(filePath);
 
-        // Generate embeddings (or null placeholder) and store in batch
         const chunkData: Array<{
             path: string;
             shorthand: string;
@@ -313,12 +338,9 @@ export class NrekiEngine {
         }> = [];
 
         for (const chunk of result.chunks) {
-            let embedding: Float32Array;
+            let embedding: Float32Array = new Float32Array(0);
             if (this.config.enableEmbeddings) {
                 ({ embedding } = await this.embedder.embed(chunk.shorthand));
-            } else {
-                // Lite mode: empty embedding placeholder
-                embedding = new Float32Array(0);
             }
             chunkData.push({
                 path: filePath,
@@ -334,12 +356,8 @@ export class NrekiEngine {
             });
         }
 
-        // Batch insert with transaction
         this.db.insertChunksBatch(chunkData);
-
-        // Update file hash
-        const hash = this.db.hashContent(content);
-        this.db.upsertFile(filePath, hash);
+        this.db.upsertFile(filePath, this.db.hashContent(content));
 
         return result;
     }
@@ -448,7 +466,6 @@ export class NrekiEngine {
      * @author Jherson Eddie Tintaya Holguin (Ruso-0)
      */
     async search(query: string, limit: number = 10): Promise<SearchResult[]> {
-        // 1. Fetch deep pool (5x limit) to overcome Semantic Dilution (ensure dependents make the cut)
         const fetchLimit = limit * 5;
         let rawResults: import("./database.js").HybridSearchResult[];
 
@@ -463,26 +480,33 @@ export class NrekiEngine {
 
         if (rawResults.length === 0) return [];
 
-        // 2. Load Topological Graph (cached after first call)
         const graph = await this.getDependencyGraph();
         const projectRoot = this.getProjectRoot();
 
-        // 3. Identify Epicenters (Top 3 pure semantic matches — where the definition lives)
         const epicenters = new Set<string>();
         for (const r of rawResults.slice(0, 3)) {
             epicenters.add(path.relative(projectRoot, r.path).replace(/\\/g, "/"));
         }
 
-        // 4. Apply Tectonic Relevance Scoring (TRS)
-        const scoredResults: SearchResult[] = rawResults.map(r => {
+        const scoredResults = this.applyTectonicRelevanceScoring(rawResults, graph, epicenters, projectRoot);
+
+        scoredResults.sort((a, b) => b.score - a.score);
+        return scoredResults.slice(0, limit);
+    }
+
+    private applyTectonicRelevanceScoring(
+        rawResults: import("./database.js").HybridSearchResult[],
+        graph: DependencyGraph,
+        epicenters: Set<string>,
+        projectRoot: string,
+    ): SearchResult[] {
+        return rawResults.map(r => {
             const relPath = path.relative(projectRoot, r.path).replace(/\\/g, "/");
 
-            // Orphan detection: files outside the dependency graph degrade gracefully
             const isTracked = graph.inDegree.has(relPath);
             const tier = graph.tiers.get(relPath);
             const inDegree = graph.inDegree.get(relPath) || 0;
 
-            // Blast Radius detection: does this file import an epicenter?
             let isBlastRadius = false;
             for (const epi of epicenters) {
                 if (epi !== relPath && graph.importedBy.get(epi)?.has(relPath)) {
@@ -491,22 +515,15 @@ export class NrekiEngine {
                 }
             }
 
-            // Software Physics Math:
-            // Mass = PageRank Tier Weight (Core: 0.5, Logic: 0.2) + Logarithmic Gravity
             let gravity = 1.0;
             if (isTracked && tier) {
                 const wTier = tier === "core" ? 0.5 : (tier === "logic" ? 0.2 : 0.0);
-                // Damping factor prevents massive hubs from overwhelming semantic relevance
                 gravity = 1.0 + wTier + (0.15 * Math.log2(1 + inDegree));
             }
 
-            // Blast Boost: +50% relevance if it's a dependent of an epicenter
             const blastBoost = isBlastRadius ? 1.5 : 1.0;
-
-            // TRS = RRF * Gravity * BlastBoost
             const trs = r.rrf_score * gravity * blastBoost;
 
-            // Top dependents for Sensory Injection (computed here, displayed in router.ts)
             let topDependents: string[] = [];
             if (epicenters.has(relPath) && inDegree > 0) {
                 const deps = graph.importedBy.get(relPath);
@@ -535,10 +552,6 @@ export class NrekiEngine {
                 },
             };
         });
-
-        // 5. Sort by TRS and return top K
-        scoredResults.sort((a, b) => b.score - a.score);
-        return scoredResults.slice(0, limit);
     }
 
     // ─── Compression ──────────────────────────────────────────────
@@ -605,14 +618,7 @@ export class NrekiEngine {
 
         // Track session savings
         const ext = path.extname(filePath).toLowerCase() || ".unknown";
-        this.sessionSavings.totalTokensSaved += result.tokensSaved;
-        this.sessionSavings.totalOriginalTokens += Embedder.estimateTokens(content);
-
-        const entry = this.sessionSavings.compressionsByType.get(ext) ?? { count: 0, saved: 0, original: 0 };
-        entry.count++;
-        entry.saved += result.tokensSaved;
-        entry.original += Embedder.estimateTokens(content);
-        this.sessionSavings.compressionsByType.set(ext, entry);
+        this.sessionTracker.recordCompression(ext, Embedder.estimateTokens(content), result.tokensSaved);
 
         return result;
     }
@@ -632,7 +638,7 @@ export class NrekiEngine {
 
     /** Increment the auto-context injection counter */
     incrementAutoContext(): void {
-        this.sessionSavings.autoContextInjections++;
+        this.sessionTracker.incrementAutoContext();
     }
 
     /**
@@ -648,33 +654,7 @@ export class NrekiEngine {
 
     /** Get a comprehensive session savings report. */
     getSessionReport(): SessionReport {
-        const durationMs = Date.now() - this.sessionSavings.startTime;
-        const durationMinutes = durationMs / 60_000;
-        const totalSaved = this.sessionSavings.totalTokensSaved;
-        const totalOriginal = this.sessionSavings.totalOriginalTokens;
-
-        const byFileType: SessionReport["byFileType"] = [];
-        for (const [ext, data] of this.sessionSavings.compressionsByType) {
-            byFileType.push({
-                ext,
-                count: data.count,
-                tokensSaved: data.saved,
-                originalTokens: data.original,
-                ratio: data.original > 0 ? 1 - (data.original - data.saved) / data.original : 0,
-            });
-        }
-        byFileType.sort((a, b) => b.tokensSaved - a.tokensSaved);
-
-        return {
-            durationMinutes: Math.round(durationMinutes * 10) / 10,
-            totalTokensSaved: totalSaved,
-            totalOriginalTokens: totalOriginal,
-            overallRatio: totalOriginal > 0 ? totalSaved / totalOriginal : 0,
-            savedUsdSonnet: (totalSaved / 1_000_000) * 3,
-            savedUsdOpus: (totalSaved / 1_000_000) * 15,
-            byFileType,
-            autoContextInjections: this.sessionSavings.autoContextInjections,
-        };
+        return this.sessionTracker.getReport();
     }
 
     // ─── Accessors ─────────────────────────────────────────────────
@@ -688,6 +668,8 @@ export class NrekiEngine {
     getProjectRoot(): string {
         return this.config.watchPaths[0] || process.cwd();
     }
+
+    // ─── DB Delegation Wrappers (Facade) ───────────────────────────
 
     /** Persistent key-value store for session state (uses existing metadata table in SQLite) */
     getMetadata(key: string): string | null {
@@ -823,7 +805,7 @@ export class NrekiEngine {
         }
     }
 
-    // ─── Statistics ────────────────────────────────────────────────
+    // ─── DB Delegation Wrappers (Stats & Tracking) ─────────────────
 
     /** Get indexing statistics. */
     getStats(): IndexStats {
@@ -837,8 +819,6 @@ export class NrekiEngine {
             watchedPaths: this.config.watchPaths,
         };
     }
-
-    // ─── Token Tracking ───────────────────────────────────────────
 
     /** Log token usage for a tool invocation. */
     logUsage(

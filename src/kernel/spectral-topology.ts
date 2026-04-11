@@ -636,6 +636,39 @@ export class SpectralMath {
                 for (let i = 0; i < N; i++) vec[i] *= -1;
             }
 
+            // ─── 4ta Capa: RAYLEIGH RESIDUAL GUARD ───
+            // Verificación post-convergencia: ||Mv - μv||∞ < 1e-3
+            // Si la iteración convergió a basura por ruido térmico de 64-bits,
+            // dispara NaN que el Numerical Sanity Firewall atrapa.
+            let maxResidual = 0;
+            for (let i = 0; i < N; i++) {
+                let Lv_i: number;
+
+                if (normalized) {
+                    if (degree[i] === 0) continue;
+                    Lv_i = vec[i]; // Diagonal de L_sym = 1.0
+                    const end = rowPtr[i + 1];
+                    for (let k = rowPtr[i]; k < end; k++) {
+                        const j = colIdx[k];
+                        Lv_i -= csrValues[k] * invSqrtD[i] * invSqrtD[j] * vec[j];
+                    }
+                } else {
+                    Lv_i = degree[i] * vec[i]; // Combinatorio
+                    const end = rowPtr[i + 1];
+                    for (let k = rowPtr[i]; k < end; k++) {
+                        Lv_i -= csrValues[k] * vec[colIdx[k]];
+                    }
+                }
+
+                const val_i = c * vec[i] - Lv_i;
+                const residual = Math.abs(val_i - mu * vec[i]);
+                if (residual > maxResidual) maxResidual = residual;
+            }
+
+            if (maxResidual > 1e-3) {
+                return { val: NaN, vec };
+            }
+
             return { val: Math.max(0, c - mu), vec };
         };
 

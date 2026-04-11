@@ -10,84 +10,22 @@ import { logger, setTxId, clearTxId } from "../utils/logger.js";
 import { latencyTracker } from "../utils/latency-tracker.js";
 import { TsCompilerWrapper } from "./backends/ts-compiler-wrapper.js";
 import type { LspSidecarBase } from "./backends/lsp-sidecar-base.js";
+import { AsyncMutex } from "./mutex.js";
+import type {
+    NrekiStructuredError, NrekiEdit,
+    NrekiInterceptResult,
+    TsHealingContext, LspHealingContext,
+} from "./types.js";
+import { extractRawSignatures, detectSignatureRegression, isToxicType } from "./ttrd.js";
+import { attemptAutoHealing, attemptLspAutoHealing } from "./healer.js";
 
-// ─── Async FIFO Mutex (P10) ────────────────────────────────────────
+export { AsyncMutex } from "./mutex.js";
+export type {
+    NrekiStructuredError, NrekiEdit, TypeRegression,
+    NrekiInterceptResult, NrekiMode, PreEditContract,
+} from "./types.js";
 
-export class AsyncMutex {
-    private queue: (() => void)[] = [];
-    private locked = false;
 
-    async lock(queueTimeoutMs: number = 60_000): Promise<() => void> {
-        return new Promise((resolve, reject) => {
-            let settled = false;
-            let timer: NodeJS.Timeout;
-            const release = () => {
-                if (this.queue.length > 0) this.queue.shift()!();
-                else this.locked = false;
-            };
-            const doResolve = () => {
-                if (!settled) {
-                    settled = true;
-                    clearTimeout(timer);
-                    resolve(release);
-                }
-            };
-            if (!this.locked) {
-                this.locked = true;
-                doResolve();
-            } else {
-                timer = setTimeout(() => {
-                    if (!settled) {
-                        settled = true;
-                        const idx = this.queue.indexOf(doResolve);
-                        if (idx !== -1) this.queue.splice(idx, 1);
-                        reject(new Error(`[NREKI] Mutex queue timeout after ${queueTimeoutMs}ms - deadlock prevented`));
-                    }
-                }, queueTimeoutMs);
-                this.queue.push(doResolve);
-            }
-        });
-    }
-
-    async withLock<T>(fn: () => Promise<T> | T): Promise<T> {
-        const unlock = await this.lock();
-        try {
-            return await fn();
-        } finally {
-            unlock();
-        }
-    }
-}
-
-// ─── Types ─────────────────────────────────────────────────────────
-
-export interface NrekiStructuredError {
-    file: string; line: number; column: number; code: string; message: string;
-}
-
-export interface NrekiEdit {
-    targetFile: string; proposedContent: string | null;
-}
-
-export interface TypeRegression {
-    filePath: string;
-    symbol: string;
-    oldType: string;
-    newType: string;
-}
-
-export interface NrekiInterceptResult {
-    safe: boolean; exitCode: number; latencyMs?: string;
-    structured?: NrekiStructuredError[]; errorText?: string;
-    healedFiles?: string[]; // Extra files touched by the Auto-Healer (for nreki_undo backups)
-    regressions?: TypeRegression[];
-    postContracts?: Map<string, Map<string, string>>;
-    /** Non-fatal notices (e.g., degraded validation for LSP sidecars) */
-    warnings?: string[];
-    architectureDiff?: string;
-}
-
-export type NrekiMode = "auto" | "syntax" | "file" | "project" | "hologram";
 
 // ─── NREKI Kernel ─────────────────────────────────────────────────
 //
@@ -97,11 +35,6 @@ export type NrekiMode = "auto" | "syntax" | "file" | "project" | "hologram";
 //
 // @author Jherson Eddie Tintaya Holguin (Ruso-0)
 
-export interface PreEditContract {
-    typeStr: string;    // Truncated type string for logs (150 chars max)
-    toxicity: number;   // Exact toxicity score via TypeFlags O(1)
-    isUntyped: boolean; // true if the type is bare any or unknown
-}
 
 export class NrekiKernel {
     private projectRoot!: string;
@@ -196,118 +129,6 @@ export class NrekiKernel {
      * Usa Regex SOLO para anclar el inicio (def/func), y un
      * Bracket Balancer para parsear el interior.
      */
-    /**
-     * TTRD Sintáctico v2.1 — Hardened Regex Scanner.
-     * Fixes over v2:
-     *   - Python: ^\s* instead of ^ to capture indented class methods
-     *   - Python: Triple-quoted string ("""/''') skip before bracket balancer
-     *   - Go: [a-zA-Z_] instead of [A-Z] to capture private functions
-     */
-    private extractRawSignatures(content: string, ext: string): Map<string, string> {
-        const signatures = new Map<string, string>();
-        if (ext !== ".py" && ext !== ".go") return signatures;
-
-        // FIX: ^\s* captures indented class methods. [a-zA-Z_] captures Go private funcs.
-        const startRegex = ext === ".py"
-            ? /^\s*(?:async\s+)?def\s+([a-zA-Z_]\w*)\s*\(/gm
-            : /^func\s+(?:\([^)]*\)\s+)?([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/gm;
-
-        let match;
-        while ((match = startRegex.exec(content)) !== null) {
-            const symbolName = match[1];
-            const startIndex = match.index;
-            let i = startIndex + match[0].length - 1;
-
-            let parenDepth = 0;
-            let inString: string | null = null;
-            let foundEnd = false;
-
-            for (; i < content.length; i++) {
-                const ch = content[i];
-                if (inString) {
-                    if (ch === '\\') i++;
-                    else if (ch === inString) inString = null;
-                    continue;
-                }
-                // FIX: Triple-quoted string detection (Python """/''')
-                if ((ch === '"' || ch === "'") && i + 2 < content.length
-                    && content[i + 1] === ch && content[i + 2] === ch) {
-                    const tripleQuote = ch + ch + ch;
-                    const endTriple = content.indexOf(tripleQuote, i + 3);
-                    if (endTriple !== -1) { i = endTriple + 2; continue; }
-                    break; // Unterminated triple-quote — abort this signature
-                }
-                if (ch === '"' || ch === "'" || ch === '`') {
-                    inString = ch; continue;
-                }
-                if (ch === '(') parenDepth++;
-                else if (ch === ')') {
-                    parenDepth--;
-                    if (parenDepth === 0) { foundEnd = true; i++; break; }
-                }
-            }
-
-            if (foundEnd) {
-                let sigEnd = i;
-                if (ext === ".py") {
-                    while (sigEnd < content.length && content[sigEnd] !== ':') sigEnd++;
-                    if (sigEnd < content.length) sigEnd++;
-                } else if (ext === ".go") {
-                    while (sigEnd < content.length && content[sigEnd] !== '{') sigEnd++;
-                }
-                const rawSig = content.substring(startIndex, sigEnd).replace(/\s+/g, ' ').trim();
-                signatures.set(symbolName, rawSig);
-            }
-        }
-        return signatures;
-    }
-
-    /**
-     * TTRD Sintáctico - Detector de Regresión por Toxicidad Estructural.
-     * NO cuenta caracteres. Detecta 3 crímenes específicos:
-     * 1. Inyección tóxica (Any/interface{} donde no existía)
-     * 2. Colapso de retorno (pérdida de -> en Python, return type en Go)
-     * 3. Amnesia de parámetros (pérdida total de anotaciones de tipo)
-     */
-    private detectSignatureRegression(
-        oldSig: string,
-        newSig: string,
-        ext: string
-    ): { isRegression: boolean; reason: string } {
-        // 1. INYECCIÓN TÓXICA
-        const toxicRegex = ext === ".py" ? /\b(Any|any)\b/ : /\b(any|interface\{\})\b/;
-        if (!toxicRegex.test(oldSig) && toxicRegex.test(newSig)) {
-            return { isRegression: true, reason: `Injected toxic untyped '${ext === ".py" ? "Any" : "interface{}"}'` };
-        }
-
-        // 2. COLAPSO ESTRUCTURAL (Pérdida del Retorno)
-        if (ext === ".py") {
-            const hadReturn = /->\s*[^:]+/.test(oldSig);
-            const hasReturn = /->\s*[^:]+/.test(newSig);
-            if (hadReturn && !hasReturn) {
-                return { isRegression: true, reason: "Lost return type annotation (->)" };
-            }
-
-            // 3. AMNESIA DE PARÁMETROS (Pérdida total)
-            const oldParams = oldSig.match(/\((.*)\)/)?.[1] || "";
-            const newParams = newSig.match(/\((.*)\)/)?.[1] || "";
-            const oldAnnotations = (oldParams.match(/:/g) || []).length;
-            const newAnnotations = (newParams.match(/:/g) || []).length;
-
-            if (oldAnnotations > 0 && newAnnotations === 0) {
-                return { isRegression: true, reason: "Stripped all parameter type annotations" };
-            }
-        } else if (ext === ".go") {
-            const oldReturn = oldSig.substring(oldSig.lastIndexOf(')') + 1).replace('{', '').trim();
-            const newReturn = newSig.substring(newSig.lastIndexOf(')') + 1).replace('{', '').trim();
-            if (oldReturn.length > 0 && newReturn.length === 0) {
-                return { isRegression: true, reason: "Lost return type annotation" };
-            }
-        }
-
-        return { isRegression: false, reason: "" };
-    }
-
     // DRY: Config loading delegated to backend (Strangler Fig Phase 2A).
     // Kernel copies references after the call. All 32 usages of this.rootNames
     // and 13 usages of this.compilerOptions continue working unchanged.
@@ -620,12 +441,7 @@ export class NrekiKernel {
      * Shared with file fragility tracker via static method.
      */
     public static isToxicType(typeStr: string): boolean {
-        const s = typeStr.trim();
-        // Bare empty types
-        if (s === "object" || s.replace(/\s/g, "") === "{}") return true;
-        // Toxic keywords anywhere in the type string (handles parameters, returns, generics)
-        if (/\b(any|unknown|Function)\b/.test(s)) return true;
-        return false;
+        return isToxicType(typeStr);
     }
 
     /**
@@ -644,345 +460,6 @@ export class NrekiKernel {
 
     // ─── NREKI L3.3: Self-Healing Agent Loop ─────────────────────────
 
-    /**
-     * Iterative AST healing engine.
-     * Repairs structural errors one by one, incrementally recompiling
-     * the universe in RAM between each fix to ensure perfect byte offsets.
-     * If a fix causes cascade, performs micro-rollback and discards it.
-     *
-     * Strict Entropy Reduction Invariant:
-     *   |E(S₀ + Δ)| ≤ |E₀| - 1
-     *   Any patch resulting in ≥ |E₀| errors is reverted in O(1).
-     *
-     * Fixed bugs:
-     *   BUG 1: String(diag.code) → safe Number cast (TS expects number[])
-     *   BUG 2: explicitlyEditedFiles mutated by reference → cloned on entry
-     *   BUG 3: getSemanticDiagnosticsOfNextAffectedFile is stateful → compute ONCE
-     *   BUG 4: new Map(this.vfs) copied entire VFS → micro-UndoLog O(touched files)
-     *   BUG 5: localEditedFiles.delete(p) in micro-rollback blinded Shield 2 →
-     *          only delete files the healer added, never the LLM's files
-     */
-    private async attemptAutoHealing(
-        initialErrors: NrekiStructuredError[],
-        parentEditedFiles: Set<string>,
-        filesToEvaluate: Set<string>
-    ): Promise<{ healed: boolean; appliedFixes: string[]; newlyTouchedFiles: Set<string>; finalErrors: NrekiStructuredError[] }> {
-        if (initialErrors.length === 0) {
-            return { healed: false, appliedFixes: [], newlyTouchedFiles: new Set(), finalErrors: initialErrors };
-        }
-
-        const MAX_ITERATIONS = 10;
-        const fixDescriptions = new Set<string>();
-
-        const localEditedFiles = new Set(parentEditedFiles);
-        const newlyTouchedFiles = new Set<string>();
-
-        const healUndoLog = new Map<string, {
-            content: string | null | undefined; time: Date | undefined; wasInRoot: boolean;
-        }>();
-
-        const failedFixHashes = new Set<string>();
-
-        let currentErrors: NrekiStructuredError[] = initialErrors;
-        let iteration = 0;
-
-        while (currentErrors.length > 0 && iteration < MAX_ITERATIONS) {
-            let appliedAnyFix = false;
-
-            for (const error of currentErrors) {
-                const fixes = await this.tsBackend.getAutoFixes(error.file, error);
-                if (fixes.length === 0) continue;
-                const bestFix = fixes[0];
-                const fixHash = `${error.file}:${error.line}:${bestFix.description}`;
-                if (failedFixHashes.has(fixHash)) continue;
-
-                // Backup state before applying fix
-                const microUndoLog = new Map<string, {
-                    content: string | null | undefined; time: Date | undefined; wasInRoot: boolean;
-                }>();
-
-                for (const change of bestFix.changes) {
-                    const changePath = change.filePath;
-                    const state = {
-                        content: this.vfs.has(changePath) ? this.vfs.get(changePath) : undefined,
-                        time: this.vfsClock.get(changePath),
-                        wasInRoot: this.rootNames.has(changePath),
-                    };
-                    microUndoLog.set(changePath, state);
-                    if (!healUndoLog.has(changePath)) healUndoLog.set(changePath, state);
-                }
-
-                // Apply fix to VFS
-                for (const change of bestFix.changes) {
-                    const changePath = change.filePath;
-                    let content = this.vfs.get(changePath) ?? this.tsBackend.host.readFile(changePath) ?? "";
-
-                    const sortedChanges = [...change.textChanges].sort((a, b) => b.start - a.start);
-
-                    for (const textChange of sortedChanges) {
-                        const start = textChange.start;
-                        const end = start + textChange.length;
-                        content = content.slice(0, start) + textChange.newText + content.slice(end);
-                    }
-
-                    this.vfs.set(changePath, content);
-                    this.vfsClock.set(changePath, new Date(this.logicalTime));
-                    localEditedFiles.add(changePath);
-
-                    if (!parentEditedFiles.has(changePath)) newlyTouchedFiles.add(changePath);
-                    if (!this.rootNames.has(changePath) && this.isTypeScriptFile(changePath)) {
-                        this.rootNames.add(changePath);
-                    }
-                }
-
-                // Recompile after fix
-                this.logicalTime += 1000;
-                this.tsBackend.updateProgram();
-                const newEvaluate = new Set(filesToEvaluate);
-                for (const f of localEditedFiles) newEvaluate.add(f);
-                const newErrors = await this.tsBackend.getDiagnostics(newEvaluate, localEditedFiles, this.mode);
-
-                if (newErrors.length >= currentErrors.length) {
-                    // MICRO-ROLLBACK
-                    for (const [p, state] of microUndoLog.entries()) {
-                        if (state.content !== undefined) this.vfs.set(p, state.content); else this.vfs.delete(p);
-                        if (state.time) this.vfsClock.set(p, state.time); else this.vfsClock.delete(p);
-                        if (state.wasInRoot) this.rootNames.add(p); else this.rootNames.delete(p);
-
-                        if (!parentEditedFiles.has(p)) {
-                            localEditedFiles.delete(p);
-                        }
-                        newlyTouchedFiles.delete(p);
-                    }
-                    this.logicalTime += 1000;
-                    this.tsBackend.updateProgram();
-                    failedFixHashes.add(fixHash);
-                } else {
-                    // FIX ACCEPTED
-                    const changesPreview = bestFix.changes.map(c => {
-                        const file = path.basename(c.filePath);
-                        const texts = c.textChanges.map(t => t.newText.trim()).filter(Boolean);
-                        return `${file}: [${texts.join(", ")}]`;
-                    }).join(" | ");
-
-                    fixDescriptions.add(`- ${bestFix.description} -> \`${changesPreview}\``);
-                    appliedAnyFix = true;
-                    currentErrors = newErrors;
-
-                    break;
-                }
-            }
-
-            if (!appliedAnyFix) break;
-            iteration++;
-        }
-
-        // Healing result evaluation
-        if (currentErrors.length > 0) {
-            if (healUndoLog.size > 0) {
-                for (const [p, state] of healUndoLog.entries()) {
-                    if (state.content !== undefined) this.vfs.set(p, state.content); else this.vfs.delete(p);
-                    if (state.time) this.vfsClock.set(p, state.time); else this.vfsClock.delete(p);
-                    if (state.wasInRoot) this.rootNames.add(p); else this.rootNames.delete(p);
-                }
-                this.logicalTime += 1000;
-                for (const p of healUndoLog.keys()) {
-                    if (this.vfs.has(p)) this.vfsClock.set(p, new Date(this.logicalTime));
-                }
-                this.tsBackend.updateProgram();
-            }
-
-            this._healingStats.failed++;
-            return { healed: false, appliedFixes: [], newlyTouchedFiles: new Set(), finalErrors: initialErrors };
-        }
-
-        this._healingStats.applied++;
-        for (const file of localEditedFiles) parentEditedFiles.add(file);
-
-        return {
-            healed: true,
-            appliedFixes: Array.from(fixDescriptions),
-            newlyTouchedFiles,
-            finalErrors: []
-        };
-    }
-
-    /**
-     * NREKI L3.4: LSP Auto-Healing (Go / Python)
-     * DISEÑO ACORAZADO:
-     * - Latencia JSON-RPC es alta (~300ms/ciclo). Límite estricto de 2 iteraciones.
-     * - Whitelist ultra-conservadora: SOLO CodeActions con "import" o "add" en título.
-     * - Rechaza explícitamente "remove" y "delete" (destructivos).
-     * - Micro-rollback dual: VFS de NREKI + VFS del sidecar (cura Split-Brain).
-     * - Macro-rollback completo si quedan errores al final.
-     */
-    private async attemptLspAutoHealing(
-        sidecar: LspSidecarBase,
-        initialErrors: NrekiStructuredError[],
-        parentEditedFiles: Set<string>
-    ): Promise<{ healed: boolean; appliedFixes: string[]; newlyTouchedFiles: Set<string>; finalErrors: NrekiStructuredError[] }> {
-
-        if (initialErrors.length === 0 || sidecar.isDead) {
-            return { healed: false, appliedFixes: [], newlyTouchedFiles: new Set(), finalErrors: initialErrors };
-        }
-
-        const MAX_ITERATIONS = 2;
-        const fixDescriptions = new Set<string>();
-        const localEditedFiles = new Set(parentEditedFiles);
-        const newlyTouchedFiles = new Set<string>();
-
-        const healUndoLog = new Map<string, { content: string | null | undefined; time: Date | undefined }>();
-        const failedFixHashes = new Set<string>();
-
-        let currentErrors = initialErrors;
-        let iteration = 0;
-
-        while (currentErrors.length > 0 && iteration < MAX_ITERATIONS) {
-            let appliedAnyFix = false;
-
-            for (const error of currentErrors) {
-                const lspRange = {
-                    start: { line: error.line - 1, character: Math.max(0, error.column - 1) },
-                    end: { line: error.line - 1, character: error.column }
-                };
-
-                const diagnostic = {
-                    range: lspRange,
-                    message: error.message,
-                    code: error.code.replace(`${sidecar.languageId}-`, ""),
-                };
-
-                let fixes: any[] = [];
-                try {
-                    fixes = await (sidecar as any).requestCodeActions(error.file, diagnostic);
-                } catch { continue; }
-
-                if (!fixes || fixes.length === 0) continue;
-
-                // EL MURO DE HIELO: Whitelist estricta por title
-                const safeFixes = fixes.filter((f: any) => {
-                    const title = (f.title || "").toLowerCase();
-                    if (title.includes("remove") || title.includes("delete")) return false;
-                    return title.includes("import") || title.includes("add ");
-                });
-
-                if (safeFixes.length === 0) continue;
-
-                const bestFix = safeFixes[0];
-                const fixDesc = bestFix.title || `Add import in ${path.basename(error.file)}`;
-                const fixHash = `${error.file}:${error.line}:${fixDesc}`;
-
-                if (failedFixHashes.has(fixHash)) continue;
-
-                const changePath = this.toPosix(path.resolve(this.projectRoot, bestFix.filePath || error.file));
-
-                // PATH JAIL: Validate LSP-suggested path against workspace root.
-                // A compromised gopls/pyright could suggest a path outside the project.
-                const healerRootPosix = this.toPosix(path.resolve(this.projectRoot));
-                if (!changePath.startsWith(healerRootPosix + "/") && changePath !== healerRootPosix) {
-                    failedFixHashes.add(fixHash);
-                    continue; // Reject path traversal from LSP
-                }
-
-                // Backup VFS (Micro-Rollback log)
-                const state = {
-                    content: this.vfs.has(changePath) ? this.vfs.get(changePath) : undefined,
-                    time: this.vfsClock.get(changePath)
-                };
-                if (!healUndoLog.has(changePath)) healUndoLog.set(changePath, state);
-
-                // Aplicar Fix traduciendo coordenadas LSP → byte offsets
-                let content: string;
-                try {
-                    content = this.vfs.get(changePath) ?? fs.readFileSync(changePath, "utf-8");
-                } catch {
-                    // File vanished between diagnostic and fix — skip this fix, try the next one
-                    failedFixHashes.add(fixHash);
-                    continue;
-                }
-
-                const startIdx = this.getLspOffset(content, bestFix.range.start.line, bestFix.range.start.character);
-                const endIdx = this.getLspOffset(content, bestFix.range.end.line, bestFix.range.end.character);
-
-                content = content.slice(0, startIdx) + bestFix.newText + content.slice(endIdx);
-
-                this.vfs.set(changePath, content);
-                this.vfsClock.set(changePath, new Date(this.logicalTime));
-                localEditedFiles.add(changePath);
-                if (!parentEditedFiles.has(changePath)) newlyTouchedFiles.add(changePath);
-
-                // Re-evaluar contra el Sidecar (Round-Trip)
-                this.logicalTime += 1000;
-                let newErrors: NrekiStructuredError[] = [];
-                try {
-                    const scEdits = Array.from(localEditedFiles).map(f => ({
-                        filePath: f, content: this.vfs.get(f) ?? null
-                    }));
-                    newErrors = await sidecar.validateEdits(scEdits);
-                } catch {
-                    newErrors = currentErrors;
-                }
-
-                // TEOREMA DE REDUCCIÓN ESTRICTA — GLOBAL (not per-file)
-                // Evaluate against the ENTIRE error pool. A fix that silences
-                // api.py but breaks 50 consumers must be rejected.
-                if (newErrors.length >= currentErrors.length) {
-                    // MICRO-ROLLBACK NREKI VFS
-                    if (state.content !== undefined) this.vfs.set(changePath, state.content);
-                    else this.vfs.delete(changePath);
-
-                    if (state.time) this.vfsClock.set(changePath, state.time);
-                    else this.vfsClock.delete(changePath);
-
-                    if (!parentEditedFiles.has(changePath)) localEditedFiles.delete(changePath);
-                    newlyTouchedFiles.delete(changePath);
-
-                    // MICRO-ROLLBACK SIDECAR VFS (Synchronous — cures Split-Brain)
-                    try {
-                        await sidecar.validateEdits([{ filePath: changePath, content: state.content ?? null }]);
-                    } catch {
-                        sidecar.isDead = true;
-                    }
-
-                    failedFixHashes.add(fixHash);
-                } else {
-                    // FIX ACEPTADO
-                    fixDescriptions.add(`- LSP Auto-Heal (${sidecar.languageId}): ${fixDesc}`);
-                    appliedAnyFix = true;
-                    currentErrors = newErrors;
-                    break;
-                }
-            }
-
-            if (!appliedAnyFix) break;
-            iteration++;
-        }
-
-        // MACRO-ROLLBACK si quedan errores
-        if (currentErrors.length > 0) {
-            const rollbacks = [];
-            for (const [p, state] of healUndoLog.entries()) {
-                if (state.content !== undefined) this.vfs.set(p, state.content);
-                else this.vfs.delete(p);
-                rollbacks.push({ filePath: p, content: state.content ?? null });
-            }
-            if (rollbacks.length > 0) {
-                this.logicalTime += 1000;
-                try {
-                    await sidecar.validateEdits(rollbacks);
-                } catch {
-                    sidecar.isDead = true;
-                }
-            }
-            this._healingStats.failed++;
-            return { healed: false, appliedFixes: [], newlyTouchedFiles: new Set(), finalErrors: initialErrors };
-        }
-
-        this._healingStats.applied++;
-        for (const file of localEditedFiles) parentEditedFiles.add(file);
-
-        return { healed: true, appliedFixes: Array.from(fixDescriptions), newlyTouchedFiles, finalErrors: [] };
-    }
 
     /**
      * SINGLE ENTRY POINT (P21, P22).
@@ -1095,7 +572,7 @@ export class NrekiKernel {
                     const ext = path.extname(posixPath).toLowerCase();
                     if (ext === ".py" || ext === ".go") {
                         const oldContent = this.vfs.get(posixPath) ?? this.tsBackend.host.readFile(posixPath) ?? "";
-                        preRawSignatures.set(posixPath, this.extractRawSignatures(oldContent, ext));
+                        preRawSignatures.set(posixPath, extractRawSignatures(oldContent, ext));
                     }
                 }
             }
@@ -1152,117 +629,33 @@ export class NrekiKernel {
 
             // A-01: Wrap Phase 1-4 so partial VFS mutations are rolled back on throw
             // Sidecar edits hoisted for catch-path compensatory rollback (Bomba 1)
-            const sidecarEdits = new Map<LspSidecarBase, Array<{filePath: string; content: string | null}>>();
+            let sidecarEdits = new Map<LspSidecarBase, Array<{filePath: string; content: string | null}>>();
             try {
 
             // PHASE 1: Inject entire batch into VFS
-            for (const edit of edits) {
-                const posixPath = this.toPosix(path.resolve(this.projectRoot, edit.targetFile));
-                const rootPosix = this.toPosix(path.resolve(this.projectRoot));
-
-                // A1: Path Jail - block traversal attempts at kernel level
-                if (!posixPath.startsWith(rootPosix + "/") && posixPath !== rootPosix) {
-                    throw new Error(
-                        `[NREKI] Security rejection: Path traversal blocked. ` +
-                        `"${edit.targetFile}" resolves outside project root.`
-                    );
-                }
-
-                const currentlyInRoots = this.rootNames.has(posixPath);
-
-                // P25: Idempotent undo-log - first touch only
-                if (!rollbackState.has(posixPath)) {
-                    rollbackState.set(posixPath, {
-                        content: this.vfs.has(posixPath) ? this.vfs.get(posixPath) : undefined,
-                        time: this.vfsClock.get(posixPath),
-                        wasInRoot: currentlyInRoots,
-                    });
-                }
-
-                this.vfs.set(posixPath, edit.proposedContent);
-                this.vfsClock.set(posixPath, new Date(this.logicalTime));
-                if (!this.mutatedFiles.has(posixPath)) transactionMutated.add(posixPath);
-                this.mutatedFiles.add(posixPath);
-
-                // P29: Tombstone removes from rootNames
-                // P30: Only TS files enter rootNames
-                if (edit.proposedContent === null) {
-                    this.rootNames.delete(posixPath);
-                } else {
-                    explicitlyEditedFiles.add(posixPath);
-                    if (!currentlyInRoots && this.isTypeScriptFile(posixPath)) {
-                        this.rootNames.add(posixPath);
-                    }
-                    // E1: Build directory hierarchy for O(1) lookup
-                    let dir = path.posix.dirname(posixPath);
-                    while (dir.length >= rootPosix.length && dir !== rootPosix && dir !== ".") {
-                        this.vfsDirectories.add(dir);
-                        dir = path.posix.dirname(dir);
-                    }
-                }
-            }
+            this.phase1_injectVfs(edits, rollbackState, transactionMutated, explicitlyEditedFiles);
 
             // PHASE 2: Rebuild incremental program
             this.tsBackend.updateProgram();
-                // DR/LS synced via tsBackend
 
             // BUG 3 FIXED: Compute AI errors exactly ONCE.
-            // getFatalErrors consumes the stateful getSemanticDiagnosticsOfNextAffectedFile iterator.
-            // Cannot call it again without updateProgram() in between.
             const originalFatalErrors = await this.tsBackend.getDiagnostics(filesToEvaluate, explicitlyEditedFiles, this.mode);
 
             // ─── Phase 2.5: LSP Sidecar Validation (Go, Python) ─────────
-            const sidecarWarnings: string[] = [];
-
-            // Collect non-TS edits grouped by sidecar
-            sidecarEdits.clear();
-            for (const edit of edits) {
-                const posixPath = this.toPosix(path.resolve(this.projectRoot, edit.targetFile));
-                const ext = path.extname(posixPath).toLowerCase();
-                const sidecar = this.lspSidecars.get(ext);
-                if (!sidecar) continue;
-                const list = sidecarEdits.get(sidecar) || [];
-                list.push({ filePath: posixPath, content: edit.proposedContent });
-                sidecarEdits.set(sidecar, list);
-            }
-
-            // Boot + validate each sidecar
-            for (const [sidecar, scEdits] of sidecarEdits) {
-                if (!sidecar.isHealthy()) {
-                    try {
-                        await sidecar.boot();
-                    } catch {
-                        sidecarWarnings.push(
-                            `[⚠️ NREKI WARNING: '${sidecar.command[0]}' not found or crashed. ` +
-                            `Layer 2 Semantic Shield OFFLINE for ${sidecar.languageId} files. ` +
-                            `Code passed syntax only. Install to enable strict validation.]`,
-                        );
-                        continue;
-                    }
-                }
-                try {
-                    const sidecarErrors = await sidecar.validateEdits(scEdits);
-                    // ACID: Merge sidecar errors. If ANY backend rejects, NOTHING touches disk.
-                    // NOTE: This mutates the array. Name reflects merged state, not "original" snapshot.
-                    originalFatalErrors.push(...sidecarErrors);
-                } catch {
-                    sidecarWarnings.push(
-                        `[⚠️ NREKI WARNING: ${sidecar.languageId} validation timed out. ` +
-                        `Code passed without semantic check.]`,
-                    );
-                }
-            }
+            const sidecarResult = await this.phase2_validateSidecars(edits, originalFatalErrors);
+            sidecarEdits = sidecarResult.sidecarEdits;
+            const sidecarWarnings = sidecarResult.sidecarWarnings;
             // ─── End Phase 2.5 ───────────────────────────────────────────
 
             // ─── TTRD SINTÁCTICO: Evaluación Post-Mutación ───
             for (const [posixPath, oldSigsMap] of preRawSignatures.entries()) {
                 const newContent = this.vfs.get(posixPath) ?? "";
                 const ext = path.extname(posixPath).toLowerCase();
-                const newSigsMap = this.extractRawSignatures(newContent, ext);
+                const newSigsMap = extractRawSignatures(newContent, ext);
                 for (const [symbol, oldSig] of oldSigsMap.entries()) {
                     const newSig = newSigsMap.get(symbol);
                     if (newSig) {
-                        const { isRegression, reason } = this.detectSignatureRegression(oldSig, newSig, ext);
+                        const { isRegression, reason } = detectSignatureRegression(oldSig, newSig, ext);
                         if (isRegression) {
                             sidecarWarnings.push(
                                 `[⚠️ TTRD WARNING] Type degradation detected in ${path.basename(posixPath)}::${symbol}().\n  Reason: ${reason}\n  Old: \`${oldSig}\`\n  New: \`${newSig}\``
@@ -1276,67 +669,12 @@ export class NrekiKernel {
             if (originalFatalErrors.length > 0) {
 
                 // ─── NREKI L3.3: Iterative Auto-Healing (Dual Cascade) ─────────────────
-                const tsOnlyErrors = originalFatalErrors.filter(e => this.isTypeScriptFile(e.file));
-                const lspOnlyErrors = originalFatalErrors.filter(e => !this.isTypeScriptFile(e.file));
-
                 const tHealStart = performance.now();
-                let isFullyHealed = true;
-                const allAppliedFixes: string[] = [];
-                const allNewlyTouchedFiles = new Set<string>();
-
-                // 1. Sanación TypeScript (CodeFix API, ~20ms/ciclo)
-                let remainingTsErrors: NrekiStructuredError[] = tsOnlyErrors;
-                if (tsOnlyErrors.length > 0) {
-                    const tsHealing = await this.attemptAutoHealing(tsOnlyErrors, explicitlyEditedFiles, filesToEvaluate);
-                    if (!tsHealing.healed) isFullyHealed = false;
-                    remainingTsErrors = tsHealing.finalErrors;
-                    allAppliedFixes.push(...tsHealing.appliedFixes);
-                    for (const f of tsHealing.newlyTouchedFiles) allNewlyTouchedFiles.add(f);
-                }
-
-                // 2. Sanación LSP (Go/Python, ~300ms/ciclo) — SOLO SI TS SANÓ
-                let remainingLspErrors: NrekiStructuredError[] = lspOnlyErrors;
-                if (isFullyHealed && lspOnlyErrors.length > 0) {
-                    const errorsBySidecar = new Map<LspSidecarBase, NrekiStructuredError[]>();
-                    for (const err of lspOnlyErrors) {
-                        const ext = path.extname(err.file).toLowerCase();
-                        const sidecar = this.lspSidecars.get(ext);
-                        if (sidecar) {
-                            const arr = errorsBySidecar.get(sidecar) || [];
-                            arr.push(err);
-                            errorsBySidecar.set(sidecar, arr);
-                        }
-                    }
-                    remainingLspErrors = [];
-                    for (const [sidecar, errors] of errorsBySidecar.entries()) {
-                        const lspHealing = await this.attemptLspAutoHealing(sidecar, errors, explicitlyEditedFiles);
-                        if (!lspHealing.healed) {
-                            isFullyHealed = false;
-                            remainingLspErrors.push(...lspHealing.finalErrors);
-                        } else {
-                            allAppliedFixes.push(...lspHealing.appliedFixes);
-                            for (const f of lspHealing.newlyTouchedFiles) allNewlyTouchedFiles.add(f);
-                        }
-                    }
-                }
-
-                // Construir resultado unificado
-                const healing = {
-                    healed: isFullyHealed && (remainingTsErrors.length + remainingLspErrors.length) === 0,
-                    appliedFixes: allAppliedFixes,
-                    newlyTouchedFiles: allNewlyTouchedFiles,
-                    finalErrors: [...remainingTsErrors, ...remainingLspErrors],
-                };
+                const healing = await this.phase4_healingCascade(
+                    originalFatalErrors, explicitlyEditedFiles, filesToEvaluate, transactionMutated
+                );
 
                 if (healing.healed) {
-                    // CRITICAL FIX: Register healed files in mutatedFiles so commitToDisk()
-                    // persists them. Without this, auto-healed collateral files exist only
-                    // in VFS RAM and vanish when the transaction ends.
-                    for (const f of healing.newlyTouchedFiles) {
-                        if (!this.mutatedFiles.has(f)) transactionMutated.add(f);
-                        this.mutatedFiles.add(f);
-                    }
-
                     const latency = (performance.now() - t0).toFixed(2);
                     const healLatency = (performance.now() - tHealStart).toFixed(2);
 
@@ -1508,6 +846,282 @@ export class NrekiKernel {
             clearTxId();
         }
         });
+    }
+
+    // ─── Extracted Phases (v8.3) ──────────────────────────────────────
+
+    private phase1_injectVfs(
+        edits: NrekiEdit[],
+        rollbackState: Map<string, { content: string | null | undefined; time: Date | undefined; wasInRoot: boolean }>,
+        transactionMutated: Set<string>,
+        explicitlyEditedFiles: Set<string>,
+    ): void {
+        for (const edit of edits) {
+            const posixPath = this.toPosix(path.resolve(this.projectRoot, edit.targetFile));
+            const rootPosix = this.toPosix(path.resolve(this.projectRoot));
+
+            if (!posixPath.startsWith(rootPosix + "/") && posixPath !== rootPosix) {
+                throw new Error(
+                    `[NREKI] Security rejection: Path traversal blocked. ` +
+                    `"${edit.targetFile}" resolves outside project root.`
+                );
+            }
+
+            const currentlyInRoots = this.rootNames.has(posixPath);
+
+            if (!rollbackState.has(posixPath)) {
+                rollbackState.set(posixPath, {
+                    content: this.vfs.has(posixPath) ? this.vfs.get(posixPath) : undefined,
+                    time: this.vfsClock.get(posixPath),
+                    wasInRoot: currentlyInRoots,
+                });
+            }
+
+            this.vfs.set(posixPath, edit.proposedContent);
+            this.vfsClock.set(posixPath, new Date(this.logicalTime));
+            if (!this.mutatedFiles.has(posixPath)) transactionMutated.add(posixPath);
+            this.mutatedFiles.add(posixPath);
+
+            if (edit.proposedContent === null) {
+                this.rootNames.delete(posixPath);
+            } else {
+                explicitlyEditedFiles.add(posixPath);
+                if (!currentlyInRoots && this.isTypeScriptFile(posixPath)) {
+                    this.rootNames.add(posixPath);
+                }
+                let dir = path.posix.dirname(posixPath);
+                const rootPosixDir = this.toPosix(path.resolve(this.projectRoot));
+                while (dir.length >= rootPosixDir.length && dir !== rootPosixDir && dir !== ".") {
+                    this.vfsDirectories.add(dir);
+                    dir = path.posix.dirname(dir);
+                }
+            }
+        }
+    }
+
+    private async phase2_validateSidecars(
+        edits: NrekiEdit[],
+        originalFatalErrors: NrekiStructuredError[],
+    ): Promise<{
+        sidecarEdits: Map<LspSidecarBase, Array<{ filePath: string; content: string | null }>>;
+        sidecarWarnings: string[];
+    }> {
+        const sidecarEdits = new Map<LspSidecarBase, Array<{ filePath: string; content: string | null }>>();
+        const sidecarWarnings: string[] = [];
+
+        for (const edit of edits) {
+            const posixPath = this.toPosix(path.resolve(this.projectRoot, edit.targetFile));
+            const ext = path.extname(posixPath).toLowerCase();
+            const sidecar = this.lspSidecars.get(ext);
+            if (!sidecar) continue;
+            const list = sidecarEdits.get(sidecar) || [];
+            list.push({ filePath: posixPath, content: edit.proposedContent });
+            sidecarEdits.set(sidecar, list);
+        }
+
+        for (const [sidecar, scEdits] of sidecarEdits) {
+            if (!sidecar.isHealthy()) {
+                try {
+                    await sidecar.boot();
+                } catch {
+                    sidecarWarnings.push(
+                        `[⚠️ NREKI WARNING: '${sidecar.command[0]}' not found or crashed. ` +
+                        `Layer 2 Semantic Shield OFFLINE for ${sidecar.languageId} files. ` +
+                        `Code passed syntax only. Install to enable strict validation.]`,
+                    );
+                    continue;
+                }
+            }
+            try {
+                const sidecarErrors = await sidecar.validateEdits(scEdits);
+                originalFatalErrors.push(...sidecarErrors);
+            } catch {
+                sidecarWarnings.push(
+                    `[⚠️ NREKI WARNING: ${sidecar.languageId} validation timed out. ` +
+                    `Code passed without semantic check.]`,
+                );
+            }
+        }
+
+        return { sidecarEdits, sidecarWarnings };
+    }
+
+    private async phase4_healingCascade(
+        originalFatalErrors: NrekiStructuredError[],
+        explicitlyEditedFiles: Set<string>,
+        filesToEvaluate: Set<string>,
+        transactionMutated: Set<string>,
+    ): Promise<{
+        healed: boolean;
+        appliedFixes: string[];
+        newlyTouchedFiles: Set<string>;
+        finalErrors: NrekiStructuredError[];
+    }> {
+        const tsOnlyErrors = originalFatalErrors.filter(e => this.isTypeScriptFile(e.file));
+        const lspOnlyErrors = originalFatalErrors.filter(e => !this.isTypeScriptFile(e.file));
+
+        let isFullyHealed = true;
+        const allAppliedFixes: string[] = [];
+        const allNewlyTouchedFiles = new Set<string>();
+
+        let remainingTsErrors: NrekiStructuredError[] = tsOnlyErrors;
+        if (tsOnlyErrors.length > 0) {
+            const tsContext: TsHealingContext = {
+                mode: this.mode,
+                readContent: (p) => this.vfs.get(p) ?? this.tsBackend.host.readFile(p) ?? "",
+                getAutoFixes: (f, e) => this.tsBackend.getAutoFixes(f, e),
+                createSavepoint: (p) => ({
+                    content: this.vfs.has(p) ? this.vfs.get(p) : undefined,
+                    time: this.vfsClock.get(p),
+                    wasInRoot: this.rootNames.has(p),
+                }),
+                applyMicroPatch: (p, content) => {
+                    this.vfs.set(p, content);
+                    this.vfsClock.set(p, new Date(this.logicalTime));
+                    if (this.isTypeScriptFile(p) && !this.rootNames.has(p)) {
+                        this.rootNames.add(p);
+                    }
+                },
+                recompileAndEvaluate: async (evalSet, editSet) => {
+                    this.logicalTime += 1000;
+                    this.tsBackend.updateProgram();
+                    return await this.tsBackend.getDiagnostics(evalSet, editSet, this.mode);
+                },
+                executeRollback: (undoLog, isMacro) => {
+                    for (const [p, state] of undoLog.entries()) {
+                        if (state.content !== undefined) this.vfs.set(p, state.content);
+                        else this.vfs.delete(p);
+                        if (state.time) this.vfsClock.set(p, state.time);
+                        else this.vfsClock.delete(p);
+                        if (state.wasInRoot) this.rootNames.add(p);
+                        else this.rootNames.delete(p);
+                    }
+                    this.logicalTime += 1000;
+                    if (isMacro) {
+                        for (const p of undoLog.keys()) {
+                            if (this.vfs.has(p)) this.vfsClock.set(p, new Date(this.logicalTime));
+                        }
+                    }
+                    this.tsBackend.updateProgram();
+                },
+                recordStat: (healed) => {
+                    if (healed) this._healingStats.applied++;
+                    else this._healingStats.failed++;
+                },
+            };
+
+            const tsHealing = await attemptAutoHealing(
+                tsOnlyErrors, explicitlyEditedFiles, filesToEvaluate, tsContext
+            );
+            if (!tsHealing.healed) isFullyHealed = false;
+            remainingTsErrors = tsHealing.finalErrors;
+            allAppliedFixes.push(...tsHealing.appliedFixes);
+            for (const f of tsHealing.newlyTouchedFiles) allNewlyTouchedFiles.add(f);
+            if (tsHealing.healed) {
+                for (const f of tsHealing.newlyTouchedFiles) explicitlyEditedFiles.add(f);
+            }
+        }
+
+        let remainingLspErrors: NrekiStructuredError[] = lspOnlyErrors;
+        if (isFullyHealed && lspOnlyErrors.length > 0) {
+            const errorsBySidecar = new Map<LspSidecarBase, NrekiStructuredError[]>();
+            for (const err of lspOnlyErrors) {
+                const ext = path.extname(err.file).toLowerCase();
+                const sidecar = this.lspSidecars.get(ext);
+                if (sidecar) {
+                    const arr = errorsBySidecar.get(sidecar) || [];
+                    arr.push(err);
+                    errorsBySidecar.set(sidecar, arr);
+                }
+            }
+            remainingLspErrors = [];
+            for (const [sidecar, errors] of errorsBySidecar.entries()) {
+                const lspContext: LspHealingContext = {
+                    languageId: sidecar.languageId,
+                    isDead: () => sidecar.isDead,
+                    readContent: (p) => {
+                        const v = this.vfs.get(p);
+                        if (v !== undefined && v !== null) return v;
+                        return fs.readFileSync(p, "utf-8");
+                    },
+                    resolvePath: (rawPath) => {
+                        const resolved = this.toPosix(path.resolve(this.projectRoot, rawPath));
+                        const rootPosix = this.toPosix(path.resolve(this.projectRoot));
+                        if (!resolved.startsWith(rootPosix + "/") && resolved !== rootPosix) {
+                            return null;
+                        }
+                        return resolved;
+                    },
+                    getLspOffset: (content, line, character) =>
+                        this.getLspOffset(content, line, character),
+                    requestCodeActions: (file, diagnostic) =>
+                        (sidecar as any).requestCodeActions(file, diagnostic),
+                    validateLspEdits: async (editedFiles) => {
+                        this.logicalTime += 1000;
+                        const scEdits = Array.from(editedFiles).map(f => ({
+                            filePath: f, content: this.vfs.get(f) ?? null,
+                        }));
+                        return await sidecar.validateEdits(scEdits);
+                    },
+                    createSavepoint: (p) => ({
+                        content: this.vfs.has(p) ? this.vfs.get(p) : undefined,
+                        time: this.vfsClock.get(p),
+                    }),
+                    applyMicroPatch: (p, content) => {
+                        this.vfs.set(p, content);
+                        this.vfsClock.set(p, new Date(this.logicalTime));
+                    },
+                    executeRollback: async (undoLog, isMacro) => {
+                        const rollbacks: Array<{ filePath: string; content: string | null }> = [];
+                        for (const [p, state] of undoLog.entries()) {
+                            if (state.content !== undefined) this.vfs.set(p, state.content);
+                            else this.vfs.delete(p);
+                            if (state.time) this.vfsClock.set(p, state.time);
+                            else this.vfsClock.delete(p);
+                            rollbacks.push({ filePath: p, content: state.content ?? null });
+                        }
+                        if (isMacro) this.logicalTime += 1000;
+                        if (rollbacks.length > 0) {
+                            try {
+                                await sidecar.validateEdits(rollbacks);
+                            } catch {
+                                sidecar.isDead = true;
+                            }
+                        }
+                    },
+                    recordStat: (healed) => {
+                        if (healed) this._healingStats.applied++;
+                        else this._healingStats.failed++;
+                    },
+                };
+
+                const lspHealing = await attemptLspAutoHealing(errors, explicitlyEditedFiles, lspContext);
+                if (!lspHealing.healed) {
+                    isFullyHealed = false;
+                    remainingLspErrors.push(...lspHealing.finalErrors);
+                } else {
+                    allAppliedFixes.push(...lspHealing.appliedFixes);
+                    for (const f of lspHealing.newlyTouchedFiles) allNewlyTouchedFiles.add(f);
+                    for (const f of lspHealing.newlyTouchedFiles) explicitlyEditedFiles.add(f);
+                }
+            }
+        }
+
+        const healed = isFullyHealed && (remainingTsErrors.length + remainingLspErrors.length) === 0;
+
+        if (healed) {
+            for (const f of allNewlyTouchedFiles) {
+                if (!this.mutatedFiles.has(f)) transactionMutated.add(f);
+                this.mutatedFiles.add(f);
+            }
+        }
+
+        return {
+            healed,
+            appliedFixes: allAppliedFixes,
+            newlyTouchedFiles: allNewlyTouchedFiles,
+            finalErrors: [...remainingTsErrors, ...remainingLspErrors],
+        };
     }
 
     /**

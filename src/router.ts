@@ -127,22 +127,29 @@ export function applyContextHeartbeat(
     }
 
     try {
-        const currentCalls = deps.circuitBreaker.getStats().totalToolCalls;
-        let lastInjectCalls = parseInt(
-            deps.engine.getMetadata("nreki_plan_last_inject") || "0",
+        // ─── FÍSICA DE CONTEXTO: Token Drift Dinámico ───
+        // La amnesia del LLM ocurre por volumen de tokens procesados, no por turnos.
+        const usage = deps.engine.getUsageStats();
+        const currentDrift = usage.total_input + usage.total_output;
+
+        let lastInjectDrift = parseInt(
+            deps.engine.getMetadata("nreki_plan_last_drift") || "0",
             10,
         );
 
-        // FIX: Use strict < instead of <=. With <=, equal values (tool failure
-        // without counter increment) reset lastInjectCalls to 0, causing
-        // currentCalls - 0 >= 15 to be true on every subsequent call.
-        // This injects thousands of heartbeat tokens per session.
-        if (currentCalls < lastInjectCalls) {
-            lastInjectCalls = 0;
-            deps.engine.setMetadata("nreki_plan_last_inject", "0");
+        if (currentDrift < lastInjectDrift) {
+            lastInjectDrift = 0;
+            deps.engine.setMetadata("nreki_plan_last_drift", "0");
         }
 
-        if (currentCalls - lastInjectCalls >= 15) {
+        const driftDelta = currentDrift - lastInjectDrift;
+
+        // VÁLVULA DE ESCAPE: Opus 4.6 requiere anclajes más frecuentes (~15k).
+        // Override via ENV sin recompilar. Default seguro: 15,000.
+        const envThreshold = parseInt(process.env.NREKI_DRIFT_THRESHOLD || "0", 10);
+        const TOKEN_DRIFT_THRESHOLD = envThreshold > 0 ? envThreshold : 15000;
+
+        if (driftDelta >= TOKEN_DRIFT_THRESHOLD) {
             const safeActions = [
                 "read", "search", "map", "status",
                 "definition", "references", "outline",
@@ -235,7 +242,7 @@ export function applyContextHeartbeat(
                 if (memoryPayload.trim().length > 0) {
                     const header =
                         `=================================================================\n` +
-                        ` [NREKI CONTEXT HEARTBEAT]\n` +
+                        ` [NREKI CONTEXT HEARTBEAT] (Drift: ${driftDelta.toLocaleString()} tokens | Limit: ${TOKEN_DRIFT_THRESHOLD.toLocaleString()})\n` +
                         ` Context compaction detected. Restoring session state:\n` +
                         `=================================================================\n\n`;
 
@@ -261,8 +268,8 @@ export function applyContextHeartbeat(
                     };
 
                     deps.engine.setMetadata(
-                        "nreki_plan_last_inject",
-                        String(currentCalls),
+                        "nreki_plan_last_drift",
+                        String(currentDrift),
                     );
 
                     return newResponse;

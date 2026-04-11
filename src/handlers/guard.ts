@@ -410,9 +410,10 @@ export async function handleSetPlan(
     }
 
     deps.engine.setMetadata("nreki_master_plan", resolvedPath);
+    const usage = deps.engine.getUsageStats();
     deps.engine.setMetadata(
-        "nreki_plan_last_inject",
-        String(deps.circuitBreaker.getStats().totalToolCalls),
+        "nreki_plan_last_drift",
+        String(usage.total_input + usage.total_output),
     );
 
     return {

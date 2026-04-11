@@ -6,6 +6,7 @@ import { applyContextHeartbeat, type McpToolResponse, type RouterDependencies } 
 
 function makeMockDeps(overrides: {
     totalToolCalls?: number;
+    tokenDrift?: number;
     escalationLevel?: number;
     metadata?: Record<string, string>;
     planPath?: string;
@@ -34,12 +35,16 @@ function makeMockDeps(overrides: {
         }
     }
 
+    // Token drift for heartbeat physics
+    const drift = overrides.tokenDrift ?? 0;
+
     return {
         engine: {
             initialize: vi.fn(),
             getMetadata: (key: string) => metadata[key] ?? null,
             setMetadata: (key: string, value: string) => { metadata[key] = value; },
             getStats: () => ({ filesIndexed: 0, totalChunks: 0, totalRawChars: 0, totalShorthandChars: 0, compressionRatio: 0, watchedPaths: [] }),
+            getUsageStats: () => ({ total_input: Math.floor(drift / 2), total_output: Math.ceil(drift / 2), total_saved: 0, tool_calls: target }),
         } as any,
         monitor: {} as any,
         sandbox: {} as any,
@@ -77,9 +82,9 @@ describe("Context Heartbeat: Prerequisites", () => {
     });
 });
 
-describe("Context Heartbeat: applyContextHeartbeat (real function)", () => {
-    it("does not inject heartbeat when < 15 tool calls have passed", () => {
-        const deps = makeMockDeps({ totalToolCalls: 5 });
+describe("Context Heartbeat: applyContextHeartbeat (token drift)", () => {
+    it("does not inject heartbeat when drift < 15000 tokens (default threshold)", () => {
+        const deps = makeMockDeps({ tokenDrift: 5000 });
         const response = makeResponse("original result");
 
         const result = applyContextHeartbeat("read", response, deps);
@@ -87,8 +92,8 @@ describe("Context Heartbeat: applyContextHeartbeat (real function)", () => {
         expect(result.content[0].text).toBe("original result");
     });
 
-    it("injects heartbeat on safe action after 15+ tool calls", () => {
-        const deps = makeMockDeps({ totalToolCalls: 16 });
+    it("injects heartbeat on safe action after 15000+ tokens of drift", () => {
+        const deps = makeMockDeps({ tokenDrift: 20000 });
         const response = makeResponse("original result");
 
         const result = applyContextHeartbeat("read", response, deps);
@@ -98,7 +103,7 @@ describe("Context Heartbeat: applyContextHeartbeat (real function)", () => {
     });
 
     it("does NOT inject heartbeat on unsafe actions (edit, undo, filter_output)", () => {
-        const deps = makeMockDeps({ totalToolCalls: 16 });
+        const deps = makeMockDeps({ tokenDrift: 20000 });
 
         for (const action of ["edit", "undo", "filter_output", "compress"]) {
             const response = makeResponse("result");
@@ -109,7 +114,7 @@ describe("Context Heartbeat: applyContextHeartbeat (real function)", () => {
 
     it("injects on all safe actions (read, search, map, status, definition, references, outline)", () => {
         for (const action of ["read", "search", "map", "status", "definition", "references", "outline"]) {
-            const deps = makeMockDeps({ totalToolCalls: 16 });
+            const deps = makeMockDeps({ tokenDrift: 20000 });
             const response = makeResponse("result");
             const result = applyContextHeartbeat(action, response, deps);
             expect(result.content[0].text).toContain("CONTEXT HEARTBEAT");
@@ -117,7 +122,7 @@ describe("Context Heartbeat: applyContextHeartbeat (real function)", () => {
     });
 
     it("does not inject on error responses", () => {
-        const deps = makeMockDeps({ totalToolCalls: 16 });
+        const deps = makeMockDeps({ tokenDrift: 20000 });
         const response: McpToolResponse = {
             content: [{ type: "text" as const, text: "error" }],
             isError: true,
@@ -128,33 +133,33 @@ describe("Context Heartbeat: applyContextHeartbeat (real function)", () => {
     });
 
     it("does not inject during high escalation (level >= 2)", () => {
-        const deps = makeMockDeps({ totalToolCalls: 16, escalationLevel: 2 });
+        const deps = makeMockDeps({ tokenDrift: 20000, escalationLevel: 2 });
         const response = makeResponse("result");
 
         const result = applyContextHeartbeat("read", response, deps);
         expect(result.content[0].text).not.toContain("CONTEXT HEARTBEAT");
     });
 
-    it("restart detection: resets marker when currentCalls < lastInjectCalls", () => {
-        // Simulate a previous session that set lastInjectCalls to 45
+    it("restart detection: resets marker when currentDrift < lastInjectDrift", () => {
+        // Simulate a previous session that set lastInjectDrift to 100000
         const deps = makeMockDeps({
-            totalToolCalls: 16,
-            metadata: { "nreki_plan_last_inject": "45" },
+            tokenDrift: 20000,
+            metadata: { "nreki_plan_last_drift": "100000" },
         });
         const response = makeResponse("result");
 
-        // currentCalls (16) < lastInjectCalls (45) → should reset and inject
+        // currentDrift (30000) < lastInjectDrift (100000) → should reset and inject
         const result = applyContextHeartbeat("read", response, deps);
         expect(result.content[0].text).toContain("CONTEXT HEARTBEAT");
     });
 
-    it("updates last_inject marker after injection", () => {
+    it("updates last_drift marker after injection", () => {
         const metadata: Record<string, string> = {};
-        const deps = makeMockDeps({ totalToolCalls: 16, metadata });
+        const deps = makeMockDeps({ tokenDrift: 20000, metadata });
         const response = makeResponse("result");
 
         applyContextHeartbeat("read", response, deps);
-        expect(metadata["nreki_plan_last_inject"]).toBe("16");
+        expect(metadata["nreki_plan_last_drift"]).toBe("20000");
     });
 });
 

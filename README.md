@@ -2,7 +2,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/npm/v/@ruso-0/nreki?style=for-the-badge&color=blue" alt="npm version">
-  <img src="https://img.shields.io/badge/Tests-712-brightgreen?style=for-the-badge" alt="712 Tests">
+  <img src="https://img.shields.io/badge/Tests-713-brightgreen?style=for-the-badge" alt="713 Tests">
   <img src="https://img.shields.io/badge/AHI-9.7%2F10-brightgreen?style=for-the-badge" alt="AHI 9.7/10">
   <img src="https://img.shields.io/badge/Languages-TS%20%7C%20JS%20%7C%20Go%20%7C%20Python-blue?style=for-the-badge" alt="Multi-language">
   <img src="https://img.shields.io/badge/Cloud-Zero-orange?style=for-the-badge" alt="Zero Cloud">
@@ -24,7 +24,7 @@ AI proposes edit -> NREKI intercepts in RAM -> Compiler/LSP validates
   |              Some remain? ------> Full rollback. Disk untouched. Errors returned to agent.
 ```
 
-3 tools. 712 tests. 4 languages. Works with any MCP-compatible agent. Apache 2.0.
+3 tools. 713 tests. 4 languages. Works with any MCP-compatible agent. Apache 2.0.
 
 ---
 
@@ -144,6 +144,47 @@ Candidates:
 ### Cyclomatic Complexity (beta_1)
 
 True topological circuit rank via Union-Find on the type constraint graph. `beta_1 = E - V + C` (first Betti number). Measures how many independent cycles exist in your dependency graph — not McCabe complexity, but *architectural* complexity.
+
+---
+
+## What's New in v8.3
+
+### Kernel Decomposition (v8.1)
+
+The 2,080-line God Object `nreki-kernel.ts` was decomposed into 4 focused modules:
+
+- `mutex.ts` — AsyncMutex FIFO with timeout protection
+- `types.ts` — All interfaces + IoC contracts (`TsHealingContext`, `LspHealingContext`)
+- `ttrd.ts` — Pure functions: `extractRawSignatures`, `detectSignatureRegression`, `isToxicType`
+- `healer.ts` — Both healers rewritten with Inversion of Control — healers no longer touch VFS, vfsClock, or tsBackend directly. Testable in isolation.
+
+### Production Hardening (v8.2)
+
+- **Token Drift Heartbeat** — Replaced call-count heuristic (15 calls) with token-physics (15,000 tokens default). ENV override: `NREKI_DRIFT_THRESHOLD`. Telemetry injected into header: `(Drift: X tokens | Limit: Y)`.
+- **Search Engine Segregation** — `VectorIndex` and `KeywordIndex` extracted to `src/search/`. Pure JavaScript, zero SQLite coupling. Ready for `node:sqlite` migration in v9.0.
+- **Handler Barrel Pattern** — 1,119-line `handlers/code.ts` split into `code/kernel-bridge.ts`, `code/read.ts`, `code/edit.ts`, `code/utils.ts`. Rate limiter stays in router (correct layer separation).
+- **WASM Deps Frozen** — `sql.js` and `tree-sitter-wasms` pinned to exact versions. No silent breakage from upstream updates.
+
+### Rayleigh Residual Guard (v8.3)
+
+Added a 4th defense layer to the spectral power iteration. Post-convergence, the solver computes `||Mv - μv||∞` and dies with `NaN` if the residual exceeds `1e-3`. This traps silent IEEE 754 drift that slips past the 3 existing guards (thermal, divergence, numerical sanity firewall).
+
+### interceptAtomicBatch Phase Extraction (v8.3)
+
+The 520-line ACID orchestrator was flattened into 3 private methods within `NrekiKernel`:
+
+- `phase1_injectVfs` — Path jail + VFS injection
+- `phase2_validateSidecars` — Go/Python LSP validation
+- `phase4_healingCascade` — Dual healer cascade (TS CodeFix API + LSP codeAction)
+
+Catch path untouched. ACID rollback semantics intact. The orchestrator now reads like a document.
+
+### engine.ts Flattening (v8.3)
+
+- **SessionTracker class** — Session state (`sessionSavings`) encapsulated. Saves one `Embedder.estimateTokens(content)` call per compression.
+- **`indexFile` split** — 124-line method → 28-line orchestrator + `indexPlaintextFallback` + `indexAstChunks`.
+- **`search` split** — 93-line method → 27-line orchestrator + `applyTectonicRelevanceScoring`.
+- **DB Facade grouping** — Delegation wrappers visually grouped under explicit `Facade` section headers.
 
 ---
 
@@ -324,7 +365,7 @@ Re-injects 4-layer session state every ~15 tool calls to survive context compact
 
 | Metric | Value |
 |--------|-------|
-| Tests | 712 (44 suites) |
+| Tests | 713 (44 suites) |
 | Architecture Health Index | 9.7/10 (self-scored) |
 | Languages | 4 (TypeScript, JavaScript, Go, Python) |
 | Failure modes sealed | 32 (P1-P32) |
