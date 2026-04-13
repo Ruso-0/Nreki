@@ -21,7 +21,7 @@ export async function handleUndo(
         return {
             content: [{
                 type: "text" as const,
-                text: `Security error: ${(err as Error).message}\n\n[NREKI saved ~0 tokens]`,
+                text: `Security error: ${(err as Error).message}`,
             }],
         };
     }
@@ -31,14 +31,14 @@ export async function handleUndo(
         return {
             content: [{
                 type: "text" as const,
-                text: `## nreki_undo: SUCCESS\n\n${message}\n\n[NREKI: file restored]`,
+                text: `## nreki_undo: SUCCESS\n\n${message}`,
             }],
         };
     } catch (err) {
         return {
             content: [{
                 type: "text" as const,
-                text: `## nreki_undo: FAILED\n\n${(err as Error).message}\n\n[NREKI saved ~0 tokens]`,
+                text: `## nreki_undo: FAILED\n\n${(err as Error).message}`,
             }],
         };
     }
@@ -61,7 +61,7 @@ export async function handleFilterOutput(
         return {
             content: [{
                 type: "text" as const,
-                text: `Error: "output" is required for the filter_output action.\n\n[NREKI saved ~0 tokens]`,
+                text: `Error: "output" is required for the filter_output action.`,
             }],
         };
     }
@@ -121,7 +121,7 @@ export async function handleFilterOutput(
 
     const saved = Math.max(0, result.original_tokens - result.filtered_tokens);
     summaryLines.push("");
-    summaryLines.push(`[NREKI saved ~${saved.toLocaleString()} tokens on this filter]`);
+    summaryLines.push(`${saved.toLocaleString()} tokens saved by filter.`);
 
     return {
         content: [{

@@ -29,7 +29,7 @@ export async function handlePin(
         return {
             content: [{
                 type: "text" as const,
-                text: "Error: `text` is required for the pin action.\n\n[NREKI saved ~0 tokens]",
+                text: "Error: `text` is required for the pin action.",
             }],
         };
     }
@@ -39,7 +39,7 @@ export async function handlePin(
         return {
             content: [{
                 type: "text" as const,
-                text: `## Pin: FAILED\n\n${result.error}\n\n[NREKI saved ~0 tokens]`,
+                text: `Pin failed: ${result.error}`,
             }],
         };
     }
@@ -48,13 +48,7 @@ export async function handlePin(
     return {
         content: [{
             type: "text" as const,
-            text:
-                `## Pin: ADDED\n\n` +
-                `**ID:** ${result.pin.id}\n` +
-                `**Rule:** ${result.pin.text}\n` +
-                `**Total pins:** ${pins.length}/${10}\n\n` +
-                `This rule will appear in every nreki_navigate action:"map" response.\n\n` +
-                `[NREKI saved ~0 tokens]`,
+            text: `[OK] Pin added: ID "${result.pin.id}" — "${result.pin.text}" (${pins.length}/10)`,
         }],
     };
 }
@@ -81,7 +75,7 @@ export async function handleUnpin(
         return {
             content: [{
                 type: "text" as const,
-                text: "Error: `index` or `id` is required for the unpin action.\n\n[NREKI saved ~0 tokens]",
+                text: "Error: `index` or `id` is required for the unpin action.",
             }],
         };
     }
@@ -91,7 +85,7 @@ export async function handleUnpin(
         return {
             content: [{
                 type: "text" as const,
-                text: `## Pin: NOT FOUND\n\nNo pin with id "${pinId}" exists.\n\n[NREKI saved ~0 tokens]`,
+                text: `Pin not found: ID "${pinId}"`,
             }],
         };
     }
@@ -99,7 +93,7 @@ export async function handleUnpin(
     return {
         content: [{
             type: "text" as const,
-            text: `## Pin: REMOVED\n\n**ID:** ${pinId}\n\nThis rule will no longer appear in nreki_navigate action:"map" responses.\n\n[NREKI saved ~0 tokens]`,
+            text: `[OK] Pin removed: ID "${pinId}"`,
         }],
     };
 }
@@ -118,21 +112,17 @@ export async function handleStatus(
     const stats = engine.getStats();
     const indexSection = [
         "",
-        "───────────────────────────────────────────",
-        "  📁 Index Status:",
-        `     Files:       ${stats.filesIndexed}`,
-        `     Chunks:      ${stats.totalChunks}`,
-        `     Compression: ${(stats.compressionRatio * 100).toFixed(1)}%`,
-        `     Watched:     ${stats.watchedPaths.join(", ")}`,
-        "═══════════════════════════════════════════",
+        "Index Status:",
+        `  Files: ${stats.filesIndexed}`,
+        `  Chunks: ${stats.totalChunks}`,
+        `  Compression: ${(stats.compressionRatio * 100).toFixed(1)}%`,
+        `  Watched: ${stats.watchedPaths.join(", ")}`,
     ].join("\n");
 
     const latencySection = [
         "",
-        "───────────────────────────────────────────",
-        "  ⏱️  Latency (last 200 ops):",
+        "Latency (last 200 ops):",
         latencyTracker.getSummary(),
-        "───────────────────────────────────────────",
     ].join("\n");
 
     const heavyFiles = engine.getTopHeavyFiles(5);
@@ -140,33 +130,29 @@ export async function handleStatus(
     if (heavyFiles.length > 0) {
         dangerZones = [
             "",
-            "───────────────────────────────────────────",
-            "  ☢️ DANGER ZONES (Heaviest unread files):",
-            "  Do NOT read these raw. Use nreki_code action:\"compress\".",
+            "DANGER ZONES (Heaviest unread files):",
+            "Do NOT read these raw. Use nreki_code action:\"compress\".",
             ...heavyFiles.map(f =>
-                `     - ${path.relative(process.cwd(), f.path)} (~${f.estimated_tokens.toLocaleString()} tokens)`
+                `  - ${path.relative(process.cwd(), f.path)} (~${f.estimated_tokens.toLocaleString()} tokens)`
             ),
-            "───────────────────────────────────────────",
         ].join("\n");
     }
 
     let recommendations = "";
     if (prediction.alertLevel === "critical") {
         recommendations =
-            "\n\n⚠️ RECOMMENDATIONS:\n" +
+            "\n\nRECOMMENDATIONS:\n" +
             "  1. Switch to aggressive compression for all file reads\n" +
             "  2. Use nreki_navigate action:\"search\" instead of reading files directly\n" +
             "  3. Minimize output length - emit only patches\n" +
             "  4. Consider starting a new session soon";
     } else if (prediction.alertLevel === "warning") {
         recommendations =
-            "\n\n💡 RECOMMENDATIONS:\n" +
+            "\n\nRECOMMENDATIONS:\n" +
             "  1. Use nreki_code action:\"compress\" for files > 100 lines\n" +
             "  2. Prefer nreki_navigate action:\"search\" over grep/glob\n" +
             "  3. Keep responses concise";
     }
-
-    const saved = Embedder.estimateTokens(report + indexSection + dangerZones);
 
     return {
         content: [{
@@ -176,8 +162,7 @@ export async function handleStatus(
                 indexSection +
                 latencySection +
                 dangerZones +
-                recommendations +
-                `\n\n[NREKI saved ~${saved.toLocaleString()} tokens on this query]`,
+                recommendations,
         }],
     };
 }
@@ -230,35 +215,16 @@ export async function handleReport(
             ? "Opus" : "Sonnet")
         : "Unknown";
 
-    const pad = (v: string | number, w: number) => String(v).padStart(w);
     const usdStr = Math.max(
         sessionReport.savedUsdSonnet,
         sessionReport.savedUsdOpus,
     ).toFixed(2);
 
     const receipt = [
-        "",
-        "+--------------------------------------------------+",
-        "|          NREKI SESSION RECEIPT                    |",
-        "+--------------------------------------------------+",
-        `|  Input Tokens Saved:      ${pad(sessionReport.totalTokensSaved.toLocaleString(), 16)}    |`,
-        `|  Output Tokens Avoided:   ${pad(usageStats.total_saved.toLocaleString(), 16)}    |`,
-        `|  Search Queries:          ${pad(usageStats.tool_calls, 16)}    |`,
-        `|  Surgical Edits:          ${pad(cbStats.totalToolCalls, 16)}    |`,
-        `|  Syntax Errors Blocked:   ${pad(cbStats.loopsDetected, 16)}    |`,
-        `|  Doom Loops Prevented:    ${pad(cbStats.loopsDetected, 16)}    |`,
-        `|  Breaker Redirects:      ${pad(cbStats.redirectsIssued, 16)}    |`,
-        `|  Redirects Recovered:    ${pad(cbStats.redirectsSuccessful, 16)}    |`,
-        `|  Pinned Rules Active:     ${pad(pins.length, 16)}    |`,
-        `|  Context Injections:      ${pad(sessionReport.autoContextInjections, 16)}    |`,
-        "+--------------------------------------------------+",
-        `|  ESTIMATED SAVINGS:       ${pad("$" + usdStr, 16)}    |`,
-        `|  MODEL:                   ${pad(modelName, 16)}    |`,
-        `|  TOOLS USED:              ${pad(usageStats.tool_calls + " calls", 16)}    |`,
-        "+--------------------------------------------------+",
-        "",
-        "💡 Did NREKI save your session?",
-        "   Share this receipt → https://github.com/Ruso-0/nreki/discussions",
+        "NREKI Session Report",
+        `Duration: ${sessionReport.durationMinutes}min | Tokens Saved: ${sessionReport.totalTokensSaved.toLocaleString()} | Output Avoided: ${usageStats.total_saved.toLocaleString()}`,
+        `Edits: ${cbStats.totalToolCalls} | Loops Blocked: ${cbStats.loopsDetected} | Redirects: ${cbStats.redirectsIssued}/${cbStats.redirectsSuccessful}`,
+        `Pins: ${pins.length} | Injections: ${sessionReport.autoContextInjections} | Est. Savings: $${usdStr} (${modelName})`,
     ].join("\n");
 
     let healthScoreStr = "";
@@ -270,28 +236,25 @@ export async function handleReport(
     }
 
     const report = [
-        "===================================================",
-        "  NREKI - Session Report",
-        "===================================================",
+        "NREKI - Session Report",
         "",
-        `  Session Duration:     ${sessionReport.durationMinutes} min`,
-        `  Total Tokens Saved:   ${sessionReport.totalTokensSaved.toLocaleString()}`,
-        `  Total Processed:      ${sessionReport.totalOriginalTokens.toLocaleString()}`,
-        `  Overall Compression:  ${(sessionReport.overallRatio * 100).toFixed(1)}%`,
+        `Session Duration: ${sessionReport.durationMinutes} min`,
+        `Total Tokens Saved: ${sessionReport.totalTokensSaved.toLocaleString()}`,
+        `Total Processed: ${sessionReport.totalOriginalTokens.toLocaleString()}`,
+        `Overall Compression: ${(sessionReport.overallRatio * 100).toFixed(1)}%`,
         "",
-        "  USD Saved (estimated):",
-        `    Sonnet ($3/M input):   $${sessionReport.savedUsdSonnet.toFixed(3)}`,
-        `    Opus ($15/M input):    $${sessionReport.savedUsdOpus.toFixed(3)}`,
+        "USD Saved (estimated):",
+        `  Sonnet ($3/M input): $${sessionReport.savedUsdSonnet.toFixed(3)}`,
+        `  Opus ($15/M input): $${sessionReport.savedUsdOpus.toFixed(3)}`,
         "",
-        "  Per-File-Type Breakdown:",
+        "Per-File-Type Breakdown:",
         fileTypeRows,
         "",
-        `  Burn Rate:            ${burnRate.tokensPerMinute.toLocaleString()} tok/min`,
-        `  Trend:                ${trendMsg}`,
-        `  Prediction:           ${prediction.message}`,
+        `Burn Rate: ${burnRate.tokensPerMinute.toLocaleString()} tok/min`,
+        `Trend: ${trendMsg}`,
+        `Prediction: ${prediction.message}`,
         "",
-        `  Model Recommendation: ${modelRec}`,
-        "===================================================",
+        `Model Recommendation: ${modelRec}`,
     ].join("\n");
 
     return {
@@ -325,12 +288,7 @@ export async function handleReset(
     return {
         content: [{
             type: "text" as const,
-            text:
-                `## Circuit Breaker: RESET\n\n` +
-                `**Previous level:** ${prevLevel}\n` +
-                `**Status:** All clear. You may retry the edit. ` +
-                `If you get stuck again, the breaker starts fresh from Level 1.\n\n` +
-                `[NREKI: circuit breaker reset by human]`,
+            text: `[OK] Circuit breaker reset from level ${prevLevel}.`,
         }],
     };
 }

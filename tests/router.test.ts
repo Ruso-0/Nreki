@@ -132,7 +132,7 @@ describe("handleNavigate", () => {
         ]);
         const result = await handleNavigate("search", { action: "search", query: "init" }, deps);
         expect(result.content[0].text).toContain("init");
-        expect(result.content[0].text).toContain("NREKI");
+        expect(result.content[0].text).toContain("Search");
     });
 
     it("dispatches 'definition' action correctly", async () => {

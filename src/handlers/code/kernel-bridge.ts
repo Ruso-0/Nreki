@@ -135,10 +135,9 @@ export async function processKernelResult(
                     text:
                         `${rejectionHeader}` +
                         `Layer 1 (syntax) passed, but Layer 2 (cross-file semantics) detected errors.\n` +
-                        `\ud83d\udee1\ufe0f **DISK UNTOUCHED: Caught in RAM. No files modified.**${structuredInfo}\n\n` +
+                        `DISK UNTOUCHED — caught in RAM, no files modified.${structuredInfo}\n\n` +
                         `Fix the type errors and retry. If you changed a function signature, ` +
-                        `use \`nreki_code action:"batch_edit"\` to update all callers in one atomic transaction.\n\n` +
-                        `[NREKI: validated in ${kernelResult.latencyMs}ms]`,
+                        `use \`nreki_code action:"batch_edit"\` to update all callers in one atomic transaction.`,
                 }],
                 isError: true,
             },

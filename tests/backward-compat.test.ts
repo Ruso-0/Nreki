@@ -116,7 +116,6 @@ describe("Backward Compatibility: nreki_navigate tools", () => {
     it("nreki_search → nreki_navigate action:'search'", async () => {
         const result = await handleNavigate("search", { action: "search", query: "database initialization", limit: 5 }, deps);
         expect(result.content[0].text).toContain("Search");
-        expect(result.content[0].text).toContain("NREKI");
         expect(result.isError).toBeUndefined();
     });
 
@@ -141,7 +140,6 @@ describe("Backward Compatibility: nreki_navigate tools", () => {
     it("nreki_map → nreki_navigate action:'map'", async () => {
         const result = await handleNavigate("map", { action: "map", refresh: false }, deps);
         expect(result.content[0].text).toContain("Repo Map");
-        expect(result.content[0].text).toContain("prompt-cacheable");
     });
 });
 
@@ -231,7 +229,6 @@ describe("Backward Compatibility: nreki_guard tools", () => {
     it("nreki_session_report → nreki_guard action:'report'", async () => {
         const result = await handleGuard("report", { action: "report" }, deps);
         expect(result.content[0].text).toContain("Session Report");
-        expect(result.content[0].text).toContain("RECEIPT");
         expect(result.content[0].text).toContain("Tokens Saved");
     });
 });

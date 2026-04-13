@@ -28,12 +28,12 @@ function generateLevel1Redirect(
     const sym = symbol ?? "the failing symbol";
     const fil = file ?? "the current file";
     return (
-        `🔄 **[NREKI: BREAK & BUILD - LEVEL 1]**\n\n` +
+        `**BREAK & BUILD - LEVEL 1**\n\n` +
         `You are stuck in a syntax/error loop attempting to patch \`${sym}\` in \`${fil}\`.\n` +
         `Repeated fixes to the same code are failing with the same pattern:\n` +
         `> ${error}\n\n` +
         `**STRATEGY SHIFT: Stop patching. Rewrite from scratch.**\n\n` +
-        `1. Use \`nreki_code action:"read" compress:false path:"${fil}"\` to read the UNCOMPRESSED code. You CANNOT rewrite the logic if you read it compressed.\n` +
+        `1. Use \`nreki_code action:"read" compress:false force_raw:true path:"${fil}"\` to read the UNCOMPRESSED code. You CANNOT rewrite the logic if you read it compressed.\n` +
         `2. DO NOT use the native Write tool (it bypasses AST validation).\n` +
         `3. Use \`nreki_code action:"edit" mode:"insert_after" symbol:"${sym}"\` to safely append a NEW function \`${sym}_v2\` below the original. NREKI will validate it.\n` +
         `4. Implement the intended behavior cleanly from zero in \`${sym}_v2\`.\n` +
@@ -51,12 +51,12 @@ function generateLevel2Redirect(
     const sym = symbol ?? "the failing symbol";
     const fil = file ?? "the current file";
     return (
-        `🔄 **[NREKI: BREAK & BUILD - LEVEL 2: DECOMPOSE]**\n\n` +
+        `**BREAK & BUILD - LEVEL 2: DECOMPOSE**\n\n` +
         `Rewriting \`${sym}\` in \`${fil}\` as a single function also failed.\n` +
         `The complexity is too high for monolithic code. Time to divide and conquer.\n` +
         `> ${error}\n\n` +
         `**MANDATORY STRATEGY: Break the logic into smaller pieces.**\n\n` +
-        `1. Use \`nreki_code action:"read" compress:false path:"${fil}"\` to read the full uncompressed code of \`${sym}\` and understand its responsibilities.\n` +
+        `1. Use \`nreki_code action:"read" compress:false force_raw:true path:"${fil}"\` to read the full uncompressed code of \`${sym}\` and understand its responsibilities.\n` +
         `2. Identify 2-3 distinct responsibilities inside \`${sym}\`.\n` +
         `3. DO NOT use the native Write tool (it bypasses AST validation).\n` +
         `4. Use \`nreki_code action:"edit" mode:"insert_before" symbol:"${sym}"\` to add small, pure helper functions above \`${sym}\` (data in → data out). NREKI will validate them.\n` +
@@ -74,7 +74,7 @@ function generateLevel3HardStop(
     const sym = symbol ?? "the failing symbol";
     const fil = file ?? "the current file";
     return (
-        `🛑 **[NREKI: CIRCUIT BREAKER - HARD STOP]**\n\n` +
+        `**CIRCUIT BREAKER - HARD STOP**\n\n` +
         `NREKI has tried redirecting you twice and you are still stuck on \`${sym}\` in \`${fil}\`.\n` +
         `> ${error}\n\n` +
         `**STOP. Ask the human how to proceed.**\n\n` +
@@ -173,7 +173,7 @@ export function wrapWithCircuitBreaker(
             response = {
                 content: [{
                     type: "text" as const,
-                    text: `[NREKI] Fatal tool error: ${(err as Error).message}\n\n[NREKI saved ~0 tokens]`,
+                    text: `Fatal tool error: ${(err as Error).message}`,
                 }],
                 isError: true,
             };

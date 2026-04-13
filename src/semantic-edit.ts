@@ -440,6 +440,24 @@ export async function batchSemanticEdit(
         for (const { edit, chunk } of mappedEdits) {
             const key = `${edit.path}::${edit.symbol}`;
             oldRawCodes.set(key, chunk.rawCode);
+
+            // ─── LEY 4: GUILLOTINA DE OUTPUT (batch) ───
+            const batchPayloadLines = (edit.new_code ?? edit.replace_text ?? "").split("\n").length;
+            const batchOldLines = chunk.rawCode.split("\n").length;
+            if (batchPayloadLines > 80) {
+                return {
+                    success: false, editCount: edits.length, fileCount: editsByFile.size, files: [],
+                    error: `Blocked: Payload for "${edit.symbol}" is ${batchPayloadLines}L (limit: 80L). Decompose into smaller functions.`,
+                };
+            }
+            const batchMode = edit.mode || "replace";
+            if ((batchMode === "replace") && batchOldLines > 40) {
+                return {
+                    success: false, editCount: edits.length, fileCount: editsByFile.size, files: [],
+                    error: `Blocked: Symbol "${edit.symbol}" is ${batchOldLines}L (>40L). Use mode:"patch" with search_text and replace_text.`,
+                };
+            }
+
             try {
                 const spliceRes = applySemanticSplice(
                     virtualCode,
@@ -719,6 +737,26 @@ export async function semanticEdit(
     const { chunk } = matches[0];
     const rawCode = chunk.rawCode;
     const oldLines = mode === "replace" ? chunk.rawCode.split("\n").length : 0;
+
+    // ─── LEY 4: GUILLOTINA DE OUTPUT (Doble Filo) ───
+    const payloadLines = (newCode ?? replaceText ?? "").split("\n").length;
+
+    // Filo 1: Bloquea payloads monstruosos
+    if (payloadLines > 80 && !dryRun) {
+        return {
+            success: false, filePath, symbolName, oldLines,
+            newLines: payloadLines, tokensAvoided: 0, syntaxValid: false,
+            error: `Blocked: Generated payload is ${payloadLines}L (limit: 80L). Decompose into smaller functions.`,
+        };
+    }
+    // Filo 2: Bloquea rewrite de símbolos grandes
+    if ((mode === "replace" || !mode) && oldLines > 40 && !dryRun) {
+        return {
+            success: false, filePath, symbolName, oldLines,
+            newLines: 0, tokensAvoided: 0, syntaxValid: false,
+            error: `Blocked: Symbol >40L. Use mode:"patch" with search_text and replace_text.`,
+        };
+    }
 
     // Apply splice via shared pure function
     let newContent: string;

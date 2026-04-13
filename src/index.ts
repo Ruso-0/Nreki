@@ -37,7 +37,7 @@ import {
     type GuardParams,
 } from "./router.js";
 import { wrapWithCircuitBreaker } from "./middleware/circuit-breaker.js";
-import { PreToolUseHook } from "./hooks/preToolUse.js";
+import { CognitiveEnforcer } from "./hooks/cognitive-enforcer.js";
 import { NrekiKernel } from "./kernel/nreki-kernel.js";
 import { ChronosMemory } from "./chronos-memory.js";
 import { logger } from "./utils/logger.js";
@@ -113,21 +113,50 @@ const enableEmbeddings = args.includes("--enable-embeddings");
 
 if (args[0] === "init") {
     const claudePath = path.join(process.cwd(), "CLAUDE.md");
-    const marker = "# NREKI Active";
+    const marker = "# NREKI ACTIVE";
 
     if (fs.existsSync(claudePath)) {
         const existing = fs.readFileSync(claudePath, "utf-8");
         if (existing.includes(marker)) {
-            logger.info("CLAUDE.md already contains NREKI instructions. Skipping.");
-            process.exit(0);
+            logger.info("CLAUDE.md already contains NREKI instructions. Skipping CLAUDE.md update.");
+        } else {
+            // Append to existing CLAUDE.md
+            fs.appendFileSync(claudePath, "\n\n" + getClaudeMdContent(), "utf-8");
+            logger.info("Appended NREKI instructions to existing CLAUDE.md");
         }
-        // Append to existing CLAUDE.md
-        fs.appendFileSync(claudePath, "\n\n" + getClaudeMdContent(), "utf-8");
-        logger.info("Appended NREKI instructions to existing CLAUDE.md");
     } else {
         fs.writeFileSync(claudePath, getClaudeMdContent(), "utf-8");
         logger.info("Created CLAUDE.md in " + process.cwd());
     }
+
+    // ─── INSTALADOR CLI HOOK (Capa 1: Perro Guardián) ───
+    const claudeHooksDir = path.join(process.cwd(), ".claude", "hooks");
+    if (!fs.existsSync(claudeHooksDir)) fs.mkdirSync(claudeHooksDir, { recursive: true });
+
+    const hookScriptPath = path.join(claudeHooksDir, "nreki-enforcer.mjs");
+    fs.writeFileSync(hookScriptPath, getEnforcerScriptContent(), "utf-8");
+
+    const settingsPath = path.join(process.cwd(), ".claude", "settings.json");
+    let settings: any = {};
+    if (fs.existsSync(settingsPath)) {
+        try { settings = JSON.parse(fs.readFileSync(settingsPath, "utf-8")); } catch {}
+    }
+    if (!settings.hooks) settings.hooks = {};
+    if (!settings.hooks.PreToolUse) settings.hooks.PreToolUse = [];
+
+    const toolsToBlock = ["Read", "ReadFile", "View", "ViewFile", "Write", "WriteFile", "Edit", "EditFile", "Replace"];
+    for (const tool of toolsToBlock) {
+        const exists = settings.hooks.PreToolUse.some((h: any) => h.matcher === tool);
+        if (!exists) {
+            settings.hooks.PreToolUse.push({
+                matcher: tool,
+                hooks: [{ type: "command", command: "node .claude/hooks/nreki-enforcer.mjs" }]
+            });
+        }
+    }
+    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), "utf-8");
+    logger.info("NREKI CLI Hook (Capa 1) installed.");
+
     process.exit(0);
 }
 
@@ -198,8 +227,8 @@ if (kernel) {
     }
 }
 
-const hook = new PreToolUseHook({ tokenThreshold: 1000 });
-const deps: RouterDependencies = { engine, monitor, sandbox, circuitBreaker, hook, kernel, chronos, nrekiMode };
+const enforcer = new CognitiveEnforcer(process.cwd());
+const deps: RouterDependencies = { engine, monitor, sandbox, circuitBreaker, kernel, chronos, nrekiMode, enforcer };
 
 const server = new McpServer({
     name: "NREKI",
@@ -484,6 +513,63 @@ async function main(): Promise<void> {
             }
         });
     }
+}
+
+function getEnforcerScriptContent(): string {
+    return `#!/usr/bin/env node
+import fs from "fs";
+import path from "path";
+let stdin = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", chunk => stdin += chunk);
+process.stdin.on("end", () => {
+    try {
+        const payload = JSON.parse(stdin);
+        const tool = payload.tool_name || payload.name || "";
+        const input = payload.tool_input || payload.input || {};
+        const targetPath = input.file_path || input.path || input.file || input.target_file || input.absolute_path;
+        if (!targetPath) process.exit(0);
+        let absPath;
+        let size = 0;
+        try {
+            absPath = path.resolve(process.cwd(), targetPath).replace(/\\\\/g, "/");
+            size = fs.statSync(absPath).size;
+        } catch {
+            process.exit(0);
+        }
+        if (size < 1024) process.exit(0);
+        if (size > 500000) {
+            if (/^(Write|Edit|Replace)(File)?$/i.test(tool)) {
+                console.error("Blocked: Native writes forbidden on >100L files. Use nreki_code edit or batch_edit.");
+                process.exit(2);
+            }
+            if (/^(Read|View)(File)?$/i.test(tool) || tool === "read_file") {
+                console.error("Blocked: >100L file. Use nreki_navigate outline then nreki_code compress focus.");
+                process.exit(2);
+            }
+            process.exit(0);
+        }
+        const buf = fs.readFileSync(absPath);
+        let lines = 1;
+        for (let i = 0; i < buf.length; i++) {
+            if (buf[i] === 10) lines++;
+            if (lines >= 100) break;
+        }
+        if (lines < 100) process.exit(0);
+        if (/^(Write|Edit|Replace)(File)?$/i.test(tool)) {
+            console.error("Blocked: Native writes forbidden on >100L files. Use nreki_code edit or batch_edit.");
+            process.exit(2);
+        }
+        if (/^(Read|View)(File)?$/i.test(tool) || tool === "read_file") {
+            console.error("Blocked: >100L file. Use nreki_navigate outline then nreki_code compress focus.");
+            process.exit(2);
+        }
+        process.exit(0);
+    } catch (e) {
+        process.exit(0);
+    }
+});
+`;
 }
 
 main().catch((err) => {

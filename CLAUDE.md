@@ -1,60 +1,34 @@
-# 🛡️ NREKI SYSTEM ACTIVE: MANDATORY AI DIRECTIVES
+# NREKI ACTIVE
+If nreki_* tools fail: fall back to native Read/Write and inform user.
 
-This workspace is protected by NREKI, an AST-aware, RAM-based ACID validation engine. Every edit you attempt is intercepted, validated in RAM (Syntax + LSP Semantics), and auto-healed BEFORE touching the disk.
+## 0. ZERO-CHATTER PROTOCOL (Output Optimization)
+- **NO CUSTOMER SERVICE:** Never say "I will now...", "Let me...", or "Here is the code". Call tools IMMEDIATELY.
+- **MICRO-REASONING:** You may reason technically before a complex edit, but keep it strictly under 3 lines. Do not write essays.
+- **TERSE UPDATES:** State what you changed in EXACTLY one line. The code speaks for itself.
+- **OUTPUT TOKENS COST 5X INPUT:** Optimize every syllable.
 
-To prevent context exhaustion and syntax corruption, you **MUST** strictly obey the following operational laws. Failure to do so will break the environment.
+## 1. READING
+- NEVER use native Read File for existing files.
+- Large files (>100L): `nreki_navigate action:"outline"` → identify method → `nreki_code action:"compress" focus:"<method>"`.
+- Small files: `nreki_code action:"read"`.
+- Navigation: use `nreki_navigate` (search, definition, references, outline, map). No grep/glob.
 
-## 0. 🚨 EMERGENCY FALLBACK (MCP FAILURE)
-If the `nreki_*` tools fail to load, timeout, or return connection errors:
-1. **DO NOT PANIC or freeze.**
-2. **TEMPORARILY SUSPEND** the "NEVER use Native Read/Write" rules below.
-3. Fall back to your native `Read File`, `Write`, and `Replace` tools to complete the task.
-4. Inform the user: *"NREKI connection lost. Proceeding with native tools (AST safety disabled)."*
+## 2. EDITING
+- NEVER use native Write/Replace on existing files.
+- Single: `nreki_code action:"edit" symbol:"<name>"`.
+- Multi-file: `nreki_code action:"batch_edit"` (ACID transaction).
+- **PATCH MODE (MANDATORY):** If changing <40 lines, use `mode:"patch" search_text:"<exact>" replace_text:"<new>"`. NEVER rewrite a whole function for a minor change.
+- New files only: use native Write.
+- Renaming: run `nreki_navigate action:"prepare_refactor"` first.
 
-*(Assuming NREKI is online, strictly obey the following laws):*
+## 3. BLAST RADIUS
+- Fix all downstream dependents in the SAME batch_edit when changing signatures.
+- Auto-healer may inject imports — don't revert.
 
-## 1. 📖 READING & DISCOVERY (The TFC-Ultra Protocol)
-* **NEVER use Native `Read File` for existing files.** It dumps raw text, triggers "Attention Sinks" (Lost in the Middle), and permanently damages your context window.
-* **MANDATORY TFC-ULTRA FOR EDITS:** To understand or edit a specific logic block in a large file (>3000 tokens), DO NOT read the uncompressed file.
-  1. Run `nreki_navigate action:"outline" path:"<file>"` to map the structure.
-  2. Identify the exact **METHOD or FUNCTION** you need (DO NOT target entire classes/God Objects).
-  3. Run `nreki_code action:"compress" path:"<file>" focus:"<method_name>"`.
-  NREKI will isolate your target at 100% resolution, resolve its causal dependencies (upstream/downstream), and annihilate up to 98% of orthogonal noise.
-* **GENERAL EXPLORATION:** If skimming a smaller file without a specific target, use `nreki_code action:"read"` (auto-compresses to ~75% savings).
-* **DEBUGGING EXCEPTION:** Use `nreki_code action:"read" compress:false` ONLY when explicitly commanded by the human or the Circuit Breaker to trace full-file imperative logic.
-* **NAVIGATION:** Do not use grep/glob. Use `nreki_navigate` (`search`, `definition`, `references`, `outline`, `map`) for zero-noise, AST-precise discovery.
+## 4. CONTEXT SURVIVAL
+- Anchor plans: `nreki_guard action:"set_plan" text:"PLAN.md"`.
+- Save progress: `nreki_guard action:"memorize" text:"<notes>"`.
 
-## 2. ✍️ SURGICAL EDITING & REFACTORING
-* **NEVER use Native `Write` or `Replace` to modify existing files.** It bypasses the RAM safety shield and will be rejected.
-* **SINGLE EDITS:** ALWAYS use `nreki_code action:"edit" symbol:"<Name>"`. NREKI will surgically splice the AST node. If your syntax is invalid, the disk stays untouched.
-* **MULTI-FILE EDITS:** ALWAYS use `nreki_code action:"batch_edit"`. It is a strict ACID transaction (all succeed or nothing writes). No half-written refactors.
-* **NEW FILES:** Use Native `Write` ONLY for creating brand-new files.
-* **RENAMING:** ALWAYS run `nreki_navigate action:"prepare_refactor" symbol:"<OldName>"` before renaming to classify safe/review occurrences. Apply via `batch_edit`.
-
-## 3. 🏗️ BLAST RADIUS & ARCHITECTURE
-* **RESPECT THE BLAST RADIUS:** When changing a signature, NREKI warns you of downstream dependent files. **You MUST fix those importing files in the SAME `batch_edit` transaction** before running tests. Do not ignore them.
-* **TOPOLOGY TIERS:** Use `nreki_navigate action:"map"` to classify files by gravity:
-  * `[CORE]`: High in-degree. Breaking this breaks the system. Proceed with extreme caution.
-  * `[LOGIC]`: Business domain. Normal caution.
-  * `[LEAF] / [ORPHAN]`: Safe to experiment / Dead code candidates.
-* **AUTO-HEALER AWARENESS:** NREKI runs an invisible Auto-Healer in RAM (CodeFix/LSP). If you forget an import, NREKI will inject it and notify you: `[Auto-Heal applied]`. **DO NOT PANIC.** Do not attempt to manually revert or fight the auto-applied fixes.
-
-## 4. 🧠 CONTEXT SURVIVAL (`nreki_guard`)
-Your context window WILL compact and you will forget things. Use NREKI to anchor your memory:
-* **ANCHOR PLANS:** Start complex tasks with `nreki_guard action:"set_plan" text:"PLAN.md"`. NREKI runs a Context Heartbeat, forcefully re-injecting this plan every ~15 tool calls so you never forget the overarching goal.
-* **BREADCRUMBS:** Use `nreki_guard action:"memorize" text:"<notes>"` to save your progress state ("Steps 1-3 done, doing 4").
-* **HARD RULES:** Use `nreki_guard action:"pin" text:"<rule>"` to persist invariant rules ("Always use fetch, not axios").
-
-## 5. 🚨 TERMINAL & SYSTEM ALERTS
-* **TERMINAL:** Run `npm test`, builds, and `git` normally via Bash. NREKI does not block the terminal. If logs are massive, use `nreki_code action:"filter_output"` to strip noise.
-* **CIRCUIT BREAKER:** If NREKI triggers the Circuit Breaker, you are in a token-burning doom loop. **STOP IMMEDIATELY.** Read the breaker's instructions, run `nreki_navigate action:"outline"`, and completely rethink your logic.
-
-## 6. 🔍 ARCHITECTURAL HEALTH (AHI)
-* **MANDATORY AUDITS:** You **MUST** run `nreki_guard action:"audit"` BEFORE and AFTER any major structural refactor.
-* **THE 5 SIGNALS:** NREKI strictly monitors Coupling Ratio, Bus Factor Entropy, Fiedler Connectivity, Volume Integrity, and Spectral Gap. If your refactor degrades these metrics (e.g., drops Fiedler connectivity causing structural bottlenecks), your code is rotting. **REVERT AND RETHINK.**
-
-## 7. 🐍🐹 MULTI-LANGUAGE & LSP SIDECARS
-* **NATIVE & SIDECARS:** NREKI natively shields TS/JS. For Go and Python, it spawns `gopls` and `pyright` child processes for Layer 2 Semantic validation.
-* **MISSING BINARY PROTOCOL:** If an LSP is not installed, NREKI will warn you and gracefully degrade to Layer 1 (Syntax-Only AST Validation). **DO NOT PANIC.** Do **NOT** open the terminal to install `gopls` or `pyright`. Acknowledge the downgrade and proceed with syntax-level confidence.
-
-**NREKI handles the safety, rollbacks, and context heavy-lifting. Your objective is to write mathematically correct code on the first attempt.**
+## 5. ALERTS
+- Terminal output: `nreki_code action:"filter_output"`.
+- Circuit breaker: STOP, read instructions, rethink.

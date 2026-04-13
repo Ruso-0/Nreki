@@ -19,7 +19,7 @@ import {
     type SymbolKind,
     type ReferenceResult,
 } from "../ast-navigator.js";
-import { getPinnedText, listPins } from "../pin-memory.js";
+import { getPinnedText } from "../pin-memory.js";
 import { repoMapToText } from "../repo-map.js";
 import { extractDependencies, cleanSignature, isSensitiveSignature, escapeRegExp } from "../utils/imports.js";
 import { logger } from "../utils/logger.js";
@@ -52,8 +52,7 @@ export async function handleSearch(
                 text:
                     `No results found for: "${query}"\n\n` +
                     `Indexed ${engine.getStats().filesIndexed} files with ${engine.getStats().totalChunks} chunks.\n` +
-                    `Try a broader query or index more directories.\n\n` +
-                    `[NREKI saved ~0 tokens on this query]`,
+                    `Try a broader query or index more directories.`,
             }],
         };
     }
@@ -103,14 +102,14 @@ export async function handleSearch(
         }
     }
 
-    const resultText = `## NREKI Search: "${query}"\n` +
-        `Found ${results.length} results across ${new Set(results.map(r => r.path)).size} files.\n\n` +
+    const fileCount = new Set(results.map(r => r.path)).size;
+    const resultText = `Search "${query}": ${results.length} results in ${fileCount} files\n\n` +
         formatted.join("\n\n");
 
     const searchTokens = Embedder.estimateTokens(resultText);
     const saved = Math.max(0, grepEstimate - searchTokens);
 
-    const finalText = resultText + `\n\n[NREKI saved ~${saved.toLocaleString()} tokens on this query (estimated)]`;
+    const finalText = resultText;
 
     engine.logUsage("nreki_search", searchTokens, searchTokens, saved);
 
@@ -143,8 +142,7 @@ export async function handleDefinition(
                 type: "text" as const,
                 text:
                     `No definition found for symbol: "${symbol}"` +
-                    (kind !== "any" ? ` (kind: ${kind})` : "") +
-                    `\n\n[NREKI saved ~0 tokens]`,
+                    (kind !== "any" ? ` (kind: ${kind})` : ""),
             }],
         };
     }
@@ -209,8 +207,7 @@ export async function handleDefinition(
                 `## Definition: ${symbol}\n` +
                 `Found ${results.length} definition(s).\n\n` +
                 formatted.join("\n\n") +
-                autoContextBlock +
-                `\n\n[NREKI: ${(bodyTokens + extraTokens).toLocaleString()} tokens - exact AST lookup, no search overhead]`,
+                autoContextBlock,
         }],
     };
 }
@@ -233,7 +230,7 @@ export async function handleReferences(
         return {
             content: [{
                 type: "text" as const,
-                text: `No references found for: "${symbol}"\n\n[NREKI saved ~0 tokens]`,
+                text: `No references found for: "${symbol}"`,
             }],
         };
     }
@@ -266,8 +263,7 @@ export async function handleReferences(
             text:
                 `## References: ${symbol}\n` +
                 `Found ${results.length} reference(s) across ${byFile.size} file(s).\n\n` +
-                formatted.join("\n") +
-                `\n\n[NREKI: ${refTokens.toLocaleString()} tokens]`,
+                formatted.join("\n"),
         }],
     };
 }
@@ -290,7 +286,7 @@ export async function handleOutline(
         return {
             content: [{
                 type: "text" as const,
-                text: `Security error: ${(err as Error).message}\n\n[NREKI saved ~0 tokens]`,
+                text: `Security error: ${(err as Error).message}`,
             }],
         };
     }
@@ -304,8 +300,7 @@ export async function handleOutline(
                 type: "text" as const,
                 text:
                     `No symbols found in: ${file}\n` +
-                    `(File may be empty, unsupported, or contain no declarations.)\n\n` +
-                    `[NREKI saved ~0 tokens]`,
+                    `(File may be empty, unsupported, or contain no declarations.)`,
             }],
         };
     }
@@ -330,12 +325,8 @@ export async function handleOutline(
 
         engine.logUsage("nreki_outline", outlineTokens, outlineTokens, saved);
 
-        lines.push("");
-        lines.push(`[NREKI saved ~${saved.toLocaleString()} tokens vs reading full file]`);
     } catch {
         engine.logUsage("nreki_outline", outlineTokens, outlineTokens, 0);
-        lines.push("");
-        lines.push(`[NREKI: ${outlineTokens.toLocaleString()} tokens]`);
     }
 
     return {
@@ -358,7 +349,7 @@ export async function handleMap(
     }
 
     const refresh = params.refresh === true;
-    const { text: cachedText, map, fromCache } = await engine.getRepoMap(refresh);
+    const { text: cachedText, map } = await engine.getRepoMap(refresh);
 
     // Depth selection: skeleton (default) or full. Pressure >0.7 forces skeleton unless explicitly full.
     const depth = (params.depth === "full") ? "full" : "skeleton";
@@ -377,13 +368,7 @@ export async function handleMap(
     return {
         content: [{
             type: "text" as const,
-            text:
-                fullText +
-                `\n[NREKI repo map: ${tokens.toLocaleString()} tokens | ` +
-                `${fromCache && effectiveDepth === "skeleton" ? "from cache (prompt-cacheable)" : "freshly generated"} | ` +
-                `depth: ${effectiveDepth} | ` +
-                `${pinnedText ? `${listPins(process.cwd()).length} pinned rules | ` : ""}` +
-                `This text is deterministic - place it early in context for Anthropic prompt caching]`,
+            text: fullText,
         }],
     };
 }
@@ -445,18 +430,15 @@ export async function handlePrepareRefactor(
 
             if (defs.length > 0) {
                 const targetFile = safePath(process.cwd(), defs[0].filePath);
-                const t0 = performance.now();
                 const br = deps.kernel.predictBlastRadius(targetFile, symbolName);
-                const latency = (performance.now() - t0).toFixed(2);
 
                 const jitWarning = deps.chronos ? deps.chronos.getContextWarnings(targetFile) : "";
 
                 const lines: string[] = [
-                    `## 🎯 Refactor Simulator: \`${symbolName}\``,
+                    `## Refactor Simulator: \`${symbolName}\``,
                     `**Source:** \`${defs[0].filePath}\` (L${defs[0].startLine})\n`,
                     jitWarning,
                     br.report,
-                    `\n[NREKI: Type-safe blast radius computed via LanguageService in ${latency}ms]`,
                 ];
 
                 return {
@@ -639,7 +621,7 @@ export async function handleOrphanOracle(
         return {
             content: [{
                 type: "text" as const,
-                text: `## 👻 Orphan Review\n\nTransitive reachability analysis complete. ` +
+                text: `Orphan Review\n\nTransitive reachability analysis complete. ` +
                     `Your architecture is lean. No statically isolated modules found.`,
             }],
         };
@@ -654,9 +636,8 @@ export async function handleOrphanOracle(
     return {
         content: [{
             type: "text" as const,
-            text: `## 👻 Orphan Candidates Oracle (Zero Static Reachability)\n\n` +
-                `NREKI performed a **Mark-and-Sweep Reachability Analysis** ` +
-                `starting from framework roots.\n` +
+            text: `Orphan Candidates Oracle (Zero Static Reachability)\n\n` +
+                `Mark-and-Sweep reachability analysis from framework roots.\n` +
                 `Found **${orphanFiles.length} files** that export logic but are ` +
                 `completely unreachable via static imports ` +
                 `(including transitive barrel sweeps).\n\n` +

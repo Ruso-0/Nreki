@@ -30,7 +30,7 @@ export async function handleRead(
         return {
             content: [{
                 type: "text" as const,
-                text: `Security error: ${(err as Error).message}\n\n[NREKI saved ~0 tokens]`,
+                text: `Security error: ${(err as Error).message}`,
             }],
         };
     }
@@ -43,7 +43,7 @@ export async function handleRead(
             return {
                 content: [{
                     type: "text" as const,
-                    text: `File skipped: ${filterResult.reason}\n\n[NREKI saved ~0 tokens]`,
+                    text: `File skipped: ${filterResult.reason}`,
                 }],
             };
         }
@@ -79,18 +79,18 @@ export async function handleRead(
             }
         }
 
-        if (stat.size < 1024) {
-            const jitWarning = deps.chronos ? deps.chronos.getContextWarnings(resolvedPath) : "";
-
+        const lineCount = rawContent.split("\n").length;
+        if (stat.size < 1024 || lineCount < 100) {
+            engine.markFileRead(resolvedPath);
+            if (deps.chronos) deps.chronos.markReadUncompressed(resolvedPath);
             return {
                 content: [{
                     type: "text" as const,
                     text:
-                        `## ${path.basename(resolvedPath)} (raw - ${stat.size} bytes, below 1KB threshold)\n\n` +
-                        jitWarning +
+                        `${path.basename(resolvedPath)} (raw, ${lineCount}L)\n\n` +
+                        (deps.chronos ? deps.chronos.getContextWarnings(resolvedPath) : "") +
                         `\`\`\`\n${rawContent}\n\`\`\`\n\n` +
-                        autoContextBlock +
-                        `[NREKI: file too small to compress]`,
+                        autoContextBlock,
                 }],
             };
         }
@@ -136,25 +136,16 @@ export async function handleRead(
 
             if (deps.chronos) deps.chronos.markReadUncompressed(resolvedPath);
 
-            let advice = "";
-            if (deps.hook) {
-                const intercept = deps.hook.evaluateFileRead(resolvedPath, rawContent, params.focus);
-                if (intercept.shouldIntercept) {
-                    advice = `\n\n${intercept.suggestion}`;
-                }
-            }
-
             const jitWarning = deps.chronos ? deps.chronos.getContextWarnings(resolvedPath) : "";
 
             return {
                 content: [{
                     type: "text" as const,
                     text:
-                        `## ${path.basename(resolvedPath)} (raw)\n\n` +
+                        `${path.basename(resolvedPath)} (raw)\n\n` +
                         jitWarning +
                         `\`\`\`\n${rawContent}\n\`\`\`\n\n` +
-                        autoContextBlock +
-                        `[NREKI: raw read, no compression applied]${advice}`,
+                        autoContextBlock,
                 }],
             };
         }
@@ -170,8 +161,6 @@ export async function handleRead(
             saved,
         );
 
-        const sessionReport = engine.getSessionReport();
-
         const mapHint = level === "aggressive"
             ? "See nreki_navigate action:\"map\" for full project structure. Showing only the requested code:\n\n"
             : "";
@@ -182,22 +171,20 @@ export async function handleRead(
             content: [{
                 type: "text" as const,
                 text:
-                    `## ${path.basename(resolvedPath)} (${level} compression)\n` +
+                    `${path.basename(resolvedPath)} (${level} compression)\n` +
                     `${result.originalSize.toLocaleString()} → ${result.compressedSize.toLocaleString()} chars ` +
                     `(${(result.ratio * 100).toFixed(1)}% reduction)\n\n` +
                     mapHint +
                     jitWarning +
                     `\`\`\`\n${result.compressed}\n\`\`\`\n\n` +
-                    autoContextBlock +
-                    `[NREKI saved ~${saved.toLocaleString()} tokens | ` +
-                    `Session: ~${sessionReport.totalTokensSaved.toLocaleString()} tokens saved]`,
+                    autoContextBlock,
             }],
         };
     } catch (err) {
         return {
             content: [{
                 type: "text" as const,
-                text: `Error reading ${file_path}: ${(err as Error).message}\n\n[NREKI saved ~0 tokens]`,
+                text: `Error reading ${file_path}: ${(err as Error).message}`,
             }],
         };
     }
@@ -220,7 +207,7 @@ export async function handleCompress(
         return {
             content: [{
                 type: "text" as const,
-                text: `Security error: ${(err as Error).message}\n\n[NREKI saved ~0 tokens on this query]`,
+                text: `Security error: ${(err as Error).message}`,
             }],
         };
     }
@@ -233,8 +220,23 @@ export async function handleCompress(
 
         const focus = typeof params.focus === "string" ? params.focus : undefined;
 
+        // Small file bypass for compress
+        if (!focus) {
+            const rawForBypass = readSource(resolvedPath);
+            const bypassLineCount = rawForBypass.split("\n").length;
+            if (bypassLineCount < 100) {
+                engine.markFileRead(resolvedPath);
+                return {
+                    content: [{
+                        type: "text" as const,
+                        text: `${path.basename(resolvedPath)} (raw, ${bypassLineCount}L — below threshold)\n\n\`\`\`\n${rawForBypass}\n\`\`\``,
+                    }],
+                };
+            }
+        }
+
         // TFC-PRO INJECTION
-        if (focus && !compression_level) {
+        if (focus) {
             const content = readSource(resolvedPath);
             const tfcResult = await tfcCompress(resolvedPath, content, focus, engine);
 
@@ -248,32 +250,31 @@ export async function handleCompress(
                     tfcResult.tokensSaved
                 );
 
-                const sessionReport = engine.getSessionReport();
                 return {
                     content: [{
                         type: "text" as const,
                         text:
-                            `## NREKI TFC-PRO: ${path.basename(resolvedPath)}\n` +
-                            `**Foci:** [${tfcResult.zones.foveas.join(", ")}]\n` +
-                            `${tfcResult.originalSize.toLocaleString()} → ${tfcResult.compressedSize.toLocaleString()} chars ` +
+                            `TFC-Pro: ${path.basename(resolvedPath)} [${tfcResult.zones.foveas.join(", ")}] ` +
+                            `${tfcResult.originalSize.toLocaleString()}→${tfcResult.compressedSize.toLocaleString()} chars ` +
                             `(${(tfcResult.ratio * 100).toFixed(1)}% reduction)\n` +
-                            `  Fovea: 100% Resolution (Zero-Loss)\n` +
-                            `  Upstream: ${tfcResult.zones.upstream} local callers (Blast Radius)\n` +
-                            `  Downstream: ${tfcResult.zones.localParafovea} local | ${tfcResult.zones.externalParafovea} external\n` +
-                            `  Dark Matter: ${tfcResult.zones.darkMatterLines}L omitted\n\n` +
-                            `\`\`\`\n${tfcResult.compressed}\n\`\`\`\n\n` +
-                            `[NREKI saved ~${tfcResult.tokensSaved.toLocaleString()} tokens | ` +
-                            `Session: ~${sessionReport.totalTokensSaved.toLocaleString()} tokens | Cache Layout: Optimized]`,
+                            `Fovea: 100% | Upstream: ${tfcResult.zones.upstream} | Downstream: ${tfcResult.zones.localParafovea}+${tfcResult.zones.externalParafovea} | Dark: ${tfcResult.zones.darkMatterLines}L\n\n` +
+                            `\`\`\`\n${tfcResult.compressed}\n\`\`\``,
                     }],
                 };
+            } else {
+                return {
+                    content: [{
+                        type: "text" as const,
+                        text: `TFC-Pro failed: "${focus}" was NOT FOUND or is TOO LARGE (Density Shield). Verify name via outline, or focus on a smaller inner method.`
+                    }],
+                    isError: true,
+                };
             }
-            // Focus not found — fall through to standard compression
         }
 
         if (compression_level) {
             const result = await engine.compressFileAdvanced(resolvedPath, compression_level);
             const saved = result.tokensSaved;
-            const sessionReport = engine.getSessionReport();
 
             engine.logUsage(
                 "nreki_compress",
@@ -286,17 +287,10 @@ export async function handleCompress(
                 content: [{
                     type: "text" as const,
                     text:
-                        `## NREKI Advanced Compress: ${path.basename(resolvedPath)}\n` +
-                        `Level: ${compression_level} | ` +
-                        `${result.originalSize.toLocaleString()} → ${result.compressedSize.toLocaleString()} chars ` +
-                        `(${(result.ratio * 100).toFixed(1)}% reduction)\n` +
-                        `  Preprocessing: -${result.breakdown.preprocessingReduction.toLocaleString()} chars\n` +
-                        `  Token filtering: -${result.breakdown.tokenFilterReduction.toLocaleString()} chars\n` +
-                        `  Structural: -${result.breakdown.structuralReduction.toLocaleString()} chars\n\n` +
-                        `\`\`\`\n${result.compressed}\n\`\`\`\n\n` +
-                        `[NREKI saved ~${saved.toLocaleString()} tokens | ` +
-                        `Session total: ~${sessionReport.totalTokensSaved.toLocaleString()} tokens ` +
-                        `($${sessionReport.savedUsdSonnet.toFixed(3)} Sonnet / $${sessionReport.savedUsdOpus.toFixed(3)} Opus)]`,
+                        `${path.basename(resolvedPath)} (${compression_level}) ` +
+                        `${result.originalSize.toLocaleString()}→${result.compressedSize.toLocaleString()} chars ` +
+                        `(${(result.ratio * 100).toFixed(1)}% reduction)\n\n` +
+                        `\`\`\`\n${result.compressed}\n\`\`\``,
                 }],
             };
         }
@@ -319,19 +313,17 @@ export async function handleCompress(
             content: [{
                 type: "text" as const,
                 text:
-                    `## NREKI Compressed: ${path.basename(resolvedPath)}\n` +
-                    `Tier ${tier} | ${result.chunksFound} chunks | ` +
-                    `${result.originalSize.toLocaleString()} → ${result.compressedSize.toLocaleString()} chars ` +
+                    `${path.basename(resolvedPath)} (tier ${tier}, ${result.chunksFound} chunks) ` +
+                    `${result.originalSize.toLocaleString()}→${result.compressedSize.toLocaleString()} chars ` +
                     `(${(result.ratio * 100).toFixed(1)}% reduction)\n\n` +
-                    `\`\`\`\n${result.compressed}\n\`\`\`\n\n` +
-                    `[NREKI saved ~${saved.toLocaleString()} tokens on this query]`,
+                    `\`\`\`\n${result.compressed}\n\`\`\``,
             }],
         };
     } catch (err) {
         return {
             content: [{
                 type: "text" as const,
-                text: `Error compressing ${file_path}: ${(err as Error).message}\n\n[NREKI saved ~0 tokens on this query]`,
+                text: `Error compressing ${file_path}: ${(err as Error).message}`,
             }],
         };
     }

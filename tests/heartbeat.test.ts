@@ -83,7 +83,7 @@ describe("Context Heartbeat: Prerequisites", () => {
 });
 
 describe("Context Heartbeat: applyContextHeartbeat (token drift)", () => {
-    it("does not inject heartbeat when drift < 15000 tokens (default threshold)", () => {
+    it("does not inject heartbeat when drift < 50000 tokens (default threshold)", () => {
         const deps = makeMockDeps({ tokenDrift: 5000 });
         const response = makeResponse("original result");
 

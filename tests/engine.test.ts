@@ -19,7 +19,7 @@ import os from "os";
 import { NrekiDB } from "../src/database.js";
 import { Embedder, MODEL_PRIORITY } from "../src/embedder.js";
 import { TokenMonitor } from "../src/monitor.js";
-import { PreToolUseHook } from "../src/hooks/preToolUse.js";
+import { CognitiveEnforcer } from "../src/hooks/cognitive-enforcer.js";
 import { Compressor } from "../src/compressor.js";
 
 // ─── Test Fixtures ───────────────────────────────────────────────────
@@ -297,52 +297,51 @@ describe("TokenMonitor", () => {
     });
 });
 
-// ─── PreToolUseHook Tests ───────────────────────────────────────────
+// ─── CognitiveEnforcer Tests ────────────────────────────────────────
 
-describe("PreToolUseHook", () => {
-    let hook: PreToolUseHook;
+describe("CognitiveEnforcer", () => {
+    let enforcer: CognitiveEnforcer;
+    const tmpDir = path.join(os.tmpdir(), `nreki-enforcer-test-${Date.now()}`);
+
+    beforeAll(() => {
+        fs.mkdirSync(tmpDir, { recursive: true });
+    });
 
     beforeEach(() => {
-        hook = new PreToolUseHook({
-            fileSizeThreshold: 100,
-            tokenThreshold: 50,
-        });
+        enforcer = new CognitiveEnforcer(tmpDir);
     });
 
-    it("should not intercept non-existent files", () => {
-        const result = hook.evaluateFileRead("/nonexistent/file.ts");
-        expect(result.shouldIntercept).toBe(false);
+    afterAll(() => {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
     });
 
-    it("should generate interception rules summary", () => {
-        const rules = hook.getRules();
-        expect(rules).toContain("File read threshold");
-        expect(rules).toContain("Token threshold");
-        expect(rules).toContain("Compression level");
-    });
-
-    it("should not intercept small files", () => {
-        const tempFile = path.join(os.tmpdir(), `tg-test-small-${Date.now()}.ts`);
+    it("should not block small files", () => {
+        const tempFile = path.join(tmpDir, "small.ts");
         fs.writeFileSync(tempFile, "const x = 1;");
-
-        const result = hook.evaluateFileRead(tempFile);
-        expect(result.shouldIntercept).toBe(false);
-
-        fs.unlinkSync(tempFile);
+        const result = enforcer.evaluate("nreki_code", "read", { path: tempFile });
+        expect(result.blocked).toBe(false);
     });
 
-    it("should intercept large files", () => {
-        const tempFile = path.join(os.tmpdir(), `tg-test-large-${Date.now()}.ts`);
-        const largeContent = SAMPLE_TS_CODE.repeat(10);
-        fs.writeFileSync(tempFile, largeContent);
+    it("should block raw read on large files", () => {
+        const tempFile = path.join(tmpDir, "large.ts");
+        fs.writeFileSync(tempFile, Array(150).fill("const x = 1;").join("\n"));
+        const result = enforcer.evaluate("nreki_code", "read", { path: tempFile });
+        expect(result.blocked).toBe(true);
+        expect(result.errorText).toContain("compress focus");
+    });
 
-        const result = hook.evaluateFileRead(tempFile);
-        expect(result.shouldIntercept).toBe(true);
-        expect(result.wastedTokens).toBeGreaterThan(0);
-        expect(result.savingsPercent).toBeGreaterThan(0);
-        expect(result.suggestion).toContain("NREKI Advice");
+    it("should allow compress with focus", () => {
+        const tempFile = path.join(tmpDir, "focused.ts");
+        fs.writeFileSync(tempFile, Array(150).fill("const x = 1;").join("\n"));
+        const result = enforcer.evaluate("nreki_code", "compress", { path: tempFile, focus: "myFunc" });
+        expect(result.blocked).toBe(false);
+    });
 
-        fs.unlinkSync(tempFile);
+    it("should block compress without focus on large files", () => {
+        const tempFile = path.join(tmpDir, "nofocus.ts");
+        fs.writeFileSync(tempFile, Array(150).fill("const x = 1;").join("\n"));
+        const result = enforcer.evaluate("nreki_code", "compress", { path: tempFile });
+        expect(result.blocked).toBe(true);
     });
 });
 

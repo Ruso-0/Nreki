@@ -27,7 +27,7 @@ import type { NrekiEngine } from "./engine.js";
 import type { TokenMonitor } from "./monitor.js";
 import type { AstSandbox } from "./ast-sandbox.js";
 import type { CircuitBreaker } from "./circuit-breaker.js";
-import type { PreToolUseHook } from "./hooks/preToolUse.js";
+import type { CognitiveEnforcer } from "./hooks/cognitive-enforcer.js";
 import type { NrekiKernel } from "./kernel/nreki-kernel.js";
 import type { ChronosMemory } from "./chronos-memory.js";
 
@@ -49,7 +49,7 @@ export interface RouterDependencies {
     monitor: TokenMonitor;
     sandbox: AstSandbox;
     circuitBreaker: CircuitBreaker;
-    hook?: PreToolUseHook;
+    enforcer?: CognitiveEnforcer;
     kernel?: NrekiKernel;
     chronos?: ChronosMemory;
     nrekiMode?: "syntax" | "file" | "project" | "hologram";
@@ -157,7 +157,7 @@ export function applyContextHeartbeat(
         const driftDelta = currentDrift - lastInjectDrift;
 
         // VÁLVULA DE ESCAPE: Opus 4.6 requiere anclajes más frecuentes (~15k).
-        // Override via ENV sin recompilar. Default seguro: 15,000.
+        // Override via ENV sin recompilar. Default seguro: 50,000.
         const envThreshold = parseInt(process.env.NREKI_DRIFT_THRESHOLD || "0", 10);
         const TOKEN_DRIFT_THRESHOLD = envThreshold > 0 ? envThreshold : 50000;
 
@@ -207,8 +207,7 @@ export function applyContextHeartbeat(
                 const scratchpad = deps.engine.getMetadata("nreki_scratchpad");
                 if (scratchpad) {
                     memoryPayload +=
-                        `=== SCRATCHPAD (Your Notes) ===\n` +
-                        `${scratchpad}\n\n`;
+                        `<nreki_scratchpad>\n${scratchpad}\n</nreki_scratchpad>\n\n`;
                 }
 
                 // LAYER 2b: Pinned Rules
@@ -236,8 +235,7 @@ export function applyContextHeartbeat(
                 }
                 if (recentEdits.size > 0) {
                     memoryPayload +=
-                        `=== RECENT EDITS ===\n` +
-                        `You recently modified: ${Array.from(recentEdits).join(", ")}.\n\n`;
+                        `Recent edits: ${Array.from(recentEdits).join(", ")}.\n\n`;
                 }
 
                 // LAYER 4: Circuit Breaker Alert
@@ -248,9 +246,7 @@ export function applyContextHeartbeat(
                         cbState.lastTrippedFile ||
                         "a critical component";
                     memoryPayload +=
-                        `=== CIRCUIT BREAKER ALERT (LEVEL ${cbState.escalationLevel}) ===\n` +
-                        `You are executing a "Break & Build" strategy on \`${target}\`.\n` +
-                        `Do not deviate until this is resolved.\n\n`;
+                        `Circuit breaker LEVEL ${cbState.escalationLevel}: "Break & Build" on \`${target}\`. Do not deviate.\n\n`;
                 }
 
                 // TOP-INJECTION: State ABOVE, tool result BELOW
@@ -323,10 +319,12 @@ export async function handleNavigate(
     params: NavigateParams,
     deps: RouterDependencies,
 ): Promise<McpToolResponse> {
-    // ─── PRESSURE VALVE (v9.0) ───────────────────────────────────
+    // ─── PRESSURE VALVE (v9.0) + Karma ────────────────────────────
     try {
         const usage = deps.engine.getUsageStats();
-        deps.pressure = usage.total_output / 150_000;
+        const basePressure = usage.total_output / 150_000;
+        const karmaPenalty = parseFloat(deps.engine.getMetadata("nreki_karma_penalty") || "0");
+        deps.pressure = Math.min(1.0, basePressure + karmaPenalty);
     } catch {
         deps.pressure = 0;
     }
@@ -349,6 +347,9 @@ export async function handleNavigate(
                 isError: true,
             };
     }
+    if (!response!.isError && deps.enforcer) {
+        deps.enforcer.registerSuccess("nreki_navigate", action, params);
+    }
     return applyContextHeartbeat(action, response, deps);
 }
 
@@ -359,12 +360,32 @@ export async function handleCode(
     params: CodeParams,
     deps: RouterDependencies,
 ): Promise<McpToolResponse> {
-    // ─── PRESSURE VALVE (v9.0) ───────────────────────────────────
+    // ─── PRESSURE VALVE (v9.0) + Karma ────────────────────────────
     try {
         const usage = deps.engine.getUsageStats();
-        deps.pressure = usage.total_output / 150_000;
+        const basePressure = usage.total_output / 150_000;
+        const karmaPenalty = parseFloat(deps.engine.getMetadata("nreki_karma_penalty") || "0");
+        deps.pressure = Math.min(1.0, basePressure + karmaPenalty);
     } catch {
         deps.pressure = 0;
+    }
+
+    // ─── COGNITIVE ENFORCER (1ms) ───
+    if (deps.enforcer) {
+        const enforceRes = deps.enforcer.evaluate("nreki_code", action, params);
+        if (enforceRes.penalty) {
+            const currentKarma = parseFloat(deps.engine.getMetadata("nreki_karma_penalty") || "0");
+            deps.engine.setMetadata("nreki_karma_penalty", (currentKarma + enforceRes.penalty).toString());
+            if (deps.pressure !== undefined) {
+                deps.pressure = Math.min(1.0, deps.pressure + enforceRes.penalty);
+            }
+        }
+        if (enforceRes.blocked) {
+            return {
+                content: [{ type: "text" as const, text: enforceRes.errorText! }],
+                isError: true,
+            };
+        }
     }
 
     // Rate limit mutating operations to prevent agent flooding
@@ -372,7 +393,7 @@ export async function handleCode(
         return {
             content: [{
                 type: "text" as const,
-                text: `[NREKI] Rate limit: too many edits per second. Wait briefly and retry.\n\n[NREKI saved ~0 tokens]`,
+                text: `Rate limit: too many edits per second. Wait briefly and retry.`,
             }],
             isError: true,
         };
@@ -398,6 +419,9 @@ export async function handleCode(
                 isError: true,
             };
         }
+    }
+    if (!response!.isError && deps.enforcer) {
+        deps.enforcer.registerSuccess("nreki_code", action, params);
     }
     return applyContextHeartbeat(action, response, deps);
 }

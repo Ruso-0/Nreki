@@ -26,7 +26,7 @@ import {
     scoreTokens,
     filterTokens,
 } from "../src/compressor.js";
-import { PreToolUseHook } from "../src/hooks/preToolUse.js";
+import { CognitiveEnforcer } from "../src/hooks/cognitive-enforcer.js";
 import { Embedder } from "../src/embedder.js";
 
 // ─── Shared Fixtures ────────────────────────────────────────────────
@@ -68,12 +68,11 @@ describe("Stress: Empty file", () => {
         expect(result).toBe("");
     });
 
-    it("PreToolUseHook handles empty file", () => {
+    it("CognitiveEnforcer handles empty file", () => {
         const fp = tmpFile("empty.ts", "");
-        const hook = new PreToolUseHook({ fileSizeThreshold: 0, tokenThreshold: 0 });
-        const result = hook.evaluateFileRead(fp);
-        // Empty file = 0 bytes, should not intercept
-        expect(result.shouldIntercept).toBe(false);
+        const enforcer = new CognitiveEnforcer(TMP_DIR);
+        const result = enforcer.evaluate("nreki_code", "read", { path: fp });
+        expect(result.blocked).toBe(false);
     });
 
     it("database handles empty content hash", () => {
@@ -126,11 +125,10 @@ describe("Stress: Huge 500KB TypeScript file", () => {
         expect(scored.length).toBeGreaterThan(100);
     });
 
-    it("PreToolUseHook intercepts 500KB file", () => {
-        const hook = new PreToolUseHook({ fileSizeThreshold: 1024, tokenThreshold: 50 });
-        const result = hook.evaluateFileRead(hugePath);
-        expect(result.shouldIntercept).toBe(true);
-        expect(result.wastedTokens).toBeGreaterThan(1000);
+    it("CognitiveEnforcer blocks 500KB file read", () => {
+        const enforcer = new CognitiveEnforcer(TMP_DIR);
+        const result = enforcer.evaluate("nreki_code", "read", { path: hugePath });
+        expect(result.blocked).toBe(true);
     });
 
     it("Embedder.estimateTokens handles large content", () => {
@@ -156,11 +154,11 @@ describe("Stress: Binary data", () => {
         expect(Array.isArray(scored)).toBe(true);
     });
 
-    it("PreToolUseHook skips unsupported extensions", () => {
-        const fp = tmpFile("data.bin", Buffer.alloc(5000));
-        const hook = new PreToolUseHook({ fileSizeThreshold: 100, tokenThreshold: 10 });
-        const result = hook.evaluateFileRead(fp);
-        expect(result.shouldIntercept).toBe(false); // .bin not supported
+    it("CognitiveEnforcer allows small binary files", () => {
+        const fp = tmpFile("data.bin", Buffer.alloc(500));
+        const enforcer = new CognitiveEnforcer(TMP_DIR);
+        const result = enforcer.evaluate("nreki_code", "read", { path: fp });
+        expect(result.blocked).toBe(false); // <1KB bypass
     });
 
     it("database handles binary-ish content hashing", () => {

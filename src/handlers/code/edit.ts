@@ -33,13 +33,13 @@ export async function handleEdit(
         : "replace";
 
     if (!symbol) {
-        return { content: [{ type: "text" as const, text: `Error: "symbol" is required.\n\n[NREKI saved ~0 tokens]` }], isError: true };
+        return { content: [{ type: "text" as const, text: `Error: "symbol" is required.` }], isError: true };
     }
     if (mode !== "patch" && !new_code) {
-        return { content: [{ type: "text" as const, text: `Error: "new_code" is required for mode "${mode}".\n\n[NREKI saved ~0 tokens]` }], isError: true };
+        return { content: [{ type: "text" as const, text: `Error: "new_code" is required for mode "${mode}".` }], isError: true };
     }
     if (mode === "patch" && (!search_text || search_text.length < 2)) {
-        return { content: [{ type: "text" as const, text: `Error: "search_text" (min 2 chars) is required for patch mode.\n\n[NREKI saved ~0 tokens]` }], isError: true };
+        return { content: [{ type: "text" as const, text: `Error: "search_text" (min 2 chars) is required for patch mode.` }], isError: true };
     }
 
     let resolvedPath: string;
@@ -49,7 +49,7 @@ export async function handleEdit(
         return {
             content: [{
                 type: "text" as const,
-                text: `Security error: ${(err as Error).message}\n\n[NREKI saved ~0 tokens]`,
+                text: `Security error: ${(err as Error).message}`,
             }],
             isError: true,
         };
@@ -63,8 +63,7 @@ export async function handleEdit(
                 text:
                     `## Semantic Edit: BLOCKED\n\n` +
                     `File is currently locked by a concurrent edit (${lockResult.heldBy}, ${lockResult.heldForMs}ms ago).\n` +
-                    `Wait for the current edit to complete and retry.\n\n` +
-                    `[NREKI saved ~0 tokens]`,
+                    `Wait for the current edit to complete and retry.`,
             }],
             isError: true,
         };
@@ -82,7 +81,7 @@ export async function handleEdit(
                         `You attempted a blind edit without mapping its full logic into your context.\n\n` +
                         `**ACTION REQUIRED**: Run \`nreki_code action:"read" compress:false path:"${file}"\` first.\n` +
                         `NREKI will unlock the edit once you have read the uncompressed code.\n\n` +
-                        `[NREKI: Chronos edit gating active]`,
+                        `Chronos edit gating active.`,
                 }],
                 isError: true,
             };
@@ -114,8 +113,7 @@ export async function handleEdit(
                         `## Semantic Edit: FAILED\n\n` +
                         `**Symbol:** ${symbol}\n` +
                         `**File:** ${file}\n\n` +
-                        `${result.error}\n\n` +
-                        `[NREKI saved ~0 tokens]`,
+                        `${result.error}`,
                 }],
                 isError: true,
             };
@@ -142,7 +140,7 @@ export async function handleEdit(
                             return {
                                 content: [{
                                     type: "text" as const,
-                                    text: `[NREKI] Edit blocked: signature change affects ${allDependents.length} files. ` +
+                                    text: `Edit blocked: signature change affects ${allDependents.length} files. ` +
                                         `Validating this cascade exceeds safe limits. ` +
                                         `Use batch_edit to migrate callers explicitly.`
                                 }],
@@ -186,8 +184,7 @@ export async function handleEdit(
                             `cross-file semantic verification (Layer 2).\n\n` +
                             `**Error:** ${kernelError}\n\n` +
                             `The file was NOT modified. The kernel has been reset.\n` +
-                            `Retry the edit, or apply manually if you trust the change.\n\n` +
-                            `[NREKI saved ~0 tokens]`,
+                            `Retry the edit, or apply manually if you trust the change.`,
                     }],
                     isError: true,
                 };
@@ -271,7 +268,7 @@ export async function handleBatchEdit(
         return {
             content: [{
                 type: "text" as const,
-                text: `Error: "edits" array is required for batch_edit.\n\n[NREKI saved ~0 tokens]`,
+                text: `Error: "edits" array is required for batch_edit.`,
             }],
             isError: true,
         };
@@ -283,7 +280,7 @@ export async function handleBatchEdit(
             return {
                 content: [{
                     type: "text" as const,
-                    text: `Error: edit[${i}] missing required fields (path, symbol).\n\n[NREKI saved ~0 tokens]`,
+                    text: `Error: edit[${i}] missing required fields (path, symbol).`,
                 }],
                 isError: true,
             };
@@ -292,7 +289,7 @@ export async function handleBatchEdit(
             return {
                 content: [{
                     type: "text" as const,
-                    text: `Error: edit[${i}] missing "new_code" (required for ${e.mode ?? "replace"} mode).\n\n[NREKI saved ~0 tokens]`,
+                    text: `Error: edit[${i}] missing "new_code" (required for ${e.mode ?? "replace"} mode).`,
                 }],
                 isError: true,
             };
@@ -323,7 +320,7 @@ export async function handleBatchEdit(
                 content: [{ type: "text" as const, text:
                     `## Batch Edit: BLOCKED\n\n` +
                     `File \`${path.relative(process.cwd(), p)}\` is locked by another edit (${lock.heldBy}, ${lock.heldForMs}ms).\n` +
-                    `Wait for it to finish, then resend the full batch.\n\n[NREKI saved ~0 tokens]`
+                    `Wait for it to finish, then resend the full batch.`
                 }],
                 isError: true,
             };
@@ -343,7 +340,7 @@ export async function handleBatchEdit(
                             `File \`${path.relative(process.cwd(), p)}\` has high historical error rate.\n` +
                             `You MUST read it uncompressed before including it in a batch edit.\n\n` +
                             `**ACTION REQUIRED**: Run \`nreki_code action:"read" compress:false path:"${path.relative(process.cwd(), p)}"\` first.\n\n` +
-                            `[NREKI: Chronos edit gating active]`,
+                            `Chronos edit gating active.`,
                     }],
                     isError: true,
                 };
@@ -377,8 +374,7 @@ export async function handleBatchEdit(
                         `**Edits requested:** ${result.editCount}\n` +
                         `**Files involved:** ${result.fileCount}\n\n` +
                         `${result.error}\n\n` +
-                        `No files were modified.\n\n` +
-                        `[NREKI saved ~0 tokens]`,
+                        `No files were modified.`,
                 }],
                 isError: true,
             };
@@ -454,8 +450,7 @@ export async function handleBatchEdit(
                             `crashed during cross-file semantic verification (Layer 2).\n\n` +
                             `**Error:** ${kernelError}\n\n` +
                             `No files were modified. The kernel has been reset.\n` +
-                            `Retry the batch edit, or apply edits individually.\n\n` +
-                            `[NREKI saved ~0 tokens]`,
+                            `Retry the batch edit, or apply edits individually.`,
                     }],
                     isError: true,
                 };
