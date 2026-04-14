@@ -287,7 +287,7 @@ server.tool(
         signatures: z
             .boolean()
             .optional()
-            .describe("For outline: include full signatures."),
+            .describe("For outline: if true, show full signatures for ALL symbols including [LOW]. Default false — LOW-risk symbols without engrams are collapsed into a name-only list."),
         refresh: z
             .boolean()
             .optional()

@@ -342,35 +342,76 @@ export async function handleOutline(
     const engrams = deps.engine.getEngramsForFile(resolvedPath);
     let invalidatedCount = 0;
 
+    const lowRiskSymbols: string[] = [];
+
     for (const sym of symbols) {
         const exported = sym.exportedAs ? ` [${sym.exportedAs}]` : "";
         const linesCount = sym.endLine - sym.startLine + 1;
         const riskTag = computeTriageRisk(sym.name, sym.body, linesCount);
+
+        const memory = engrams.get(sym.name);
+        let engramLine: string | null = null;
+        let hasValidEngram = false;
+        if (memory) {
+            const currentHash = crypto.createHash("sha256").update(sym.body).digest("hex");
+            if (currentHash === memory.astHash) {
+                engramLine = `  [Engram]: ${memory.insight}`;
+                hasValidEngram = true;
+            } else {
+                deps.engine.deleteEngram(resolvedPath, sym.name);
+                invalidatedCount++;
+                engramLine = `  [Engram invalidated: code mutated since memory was saved]`;
+            }
+        }
+
+        if (riskTag === "[LOW]" && !hasValidEngram && !params.signatures) {
+            lowRiskSymbols.push(sym.name);
+            continue;
+        }
+
         lines.push(
             `- **${sym.kind}** \`${sym.name}\`${exported} ${riskTag} - L${sym.startLine}-L${sym.endLine}`,
         );
         lines.push(`  \`${sym.signature}\``);
-
-        const memory = engrams.get(sym.name);
-        if (memory) {
-            const currentHash = crypto.createHash("sha256").update(sym.body).digest("hex");
-            if (currentHash === memory.astHash) {
-                lines.push(`  [Engram]: ${memory.insight}`);
-            } else {
-                deps.engine.deleteEngram(resolvedPath, sym.name);
-                invalidatedCount++;
-                lines.push(`  [Engram invalidated: code mutated since memory was saved]`);
-            }
-        }
+        if (engramLine) lines.push(engramLine);
     }
 
     if (invalidatedCount > 0) {
         lines.push(`\nNote: ${invalidatedCount} obsolete engram(s) automatically deleted because their underlying code changed.`);
     }
 
+    if (lowRiskSymbols.length > 0) {
+        lines.push("");
+        lines.push(`--- ${lowRiskSymbols.length} LOW-risk symbols (trivial, not shown — pass signatures:true to expand) ---`);
+        lines.push(lowRiskSymbols.join(", "));
+    }
+
     if (symbols.length > 3) {
         lines.push("");
         lines.push(`*Tip: Read multiple high-risk symbols in one call: nreki_code action:"compress" focus:"func1, func2, func3"*`);
+    }
+
+    const highRiskSymbols = symbols.filter((sym) => {
+        const linesCount = sym.endLine - sym.startLine + 1;
+        const tag = computeTriageRisk(sym.name, sym.body, linesCount);
+        return tag.startsWith("[HIGH");
+    });
+
+    const top3 = highRiskSymbols
+        .filter((sym) => (sym.endLine - sym.startLine + 1) <= 100)
+        .sort((a, b) => (b.endLine - b.startLine) - (a.endLine - a.startLine))
+        .slice(0, 3);
+
+    if (top3.length > 0) {
+        lines.push("");
+        lines.push("--- AUTO-EXPANDED HIGH-RISK CODE (read these, then batch_edit all fixes) ---");
+        for (const sym of top3) {
+            lines.push("");
+            lines.push(`### ${sym.name} (L${sym.startLine}-L${sym.endLine})`);
+            lines.push("```typescript");
+            lines.push(sym.body);
+            lines.push("```");
+        }
     }
 
     const outlineTokens = Embedder.estimateTokens(lines.join("\n"));

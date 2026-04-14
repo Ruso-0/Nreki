@@ -363,10 +363,10 @@ export async function batchSemanticEdit(
         if (edit.new_code) totalPayloadLines += edit.new_code.split("\n").length;
         if (edit.replace_text) totalPayloadLines += edit.replace_text.split("\n").length;
     }
-    if (totalPayloadLines > 150) {
+    if (totalPayloadLines > 500) {
         return {
             success: false, editCount: edits.length, fileCount: 0, files: [],
-            error: `Batch payload too large (${totalPayloadLines} lines, max 150). Use mode:"patch" to send smaller diffs.`,
+            error: `Batch payload too large (${totalPayloadLines} lines, max 500). Use mode:"patch" to send smaller diffs.`,
         };
     }
 
