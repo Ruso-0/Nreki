@@ -100,11 +100,17 @@ export class CognitiveEnforcer {
                     return { blocked: false };
                 }
                 if (single.mode === "insert_before" || single.mode === "insert_after") {
+                    // Small files: agent can see everything, skip enforcer for speed.
+                    // Large files: require outline/rawRead to prevent blind inserts.
                     if (!single.path) return { blocked: false };
+                    try {
+                        const insertSize = fs.statSync(path.resolve(this.projectRoot, single.path)).size;
+                        if (insertSize < 50000) return { blocked: false };
+                    } catch { return { blocked: false }; }
                     const ip = path.resolve(this.projectRoot, single.path).replace(/\\/g, "/");
                     const ipass = this.getPassport(ip);
                     if (!ipass.outlined && !ipass.rawRead) {
-                        return { blocked: true, errorText: `Blocked: Blind insert via batch_edit. Run outline or compress first.` };
+                        return { blocked: true, errorText: `Blocked: Blind insert on large file. Run outline or compress first.` };
                     }
                     return { blocked: false };
                 }
@@ -168,9 +174,9 @@ export class CognitiveEnforcer {
                 return { blocked: false };
             }
             if (params.mode === "insert_before" || params.mode === "insert_after") {
-                // Blind insert blocked. Require at least outline knowledge.
+                if (size < 50000) return { blocked: false };
                 if (!passport.outlined && !passport.rawRead) {
-                    return { blocked: true, errorText: `Blocked: Blind insert. Run outline or compress focus:"${params.symbol}" first.` };
+                    return { blocked: true, errorText: `Blocked: Blind insert on large file. Run outline or compress focus:"${params.symbol}" first.` };
                 }
                 return { blocked: false };
             }
