@@ -195,7 +195,7 @@ export async function tfcCompress(
     parts.push(`// [NREKI TFC-PRO] File: ${path.basename(filePath)}`);
     parts.push(`// TOPOLOGICAL LAYOUT: Imports -> Dark Matter -> Contracts -> Target\n`);
 
-    const earliestStart = Math.min(...parseResult.chunks.map(c => c.startIndex));
+    const earliestStart = parseResult.chunks.reduce((min, c) => c.startIndex < min ? c.startIndex : min, Infinity);
     const preamble = content.substring(0, earliestStart).split("\n")
         .filter(l => /^(import|export|from|require|type|interface)/.test(l.trim()) || l.trim() === "")
         .join("\n").replace(/\n{3,}/g, "\n\n").trim();
