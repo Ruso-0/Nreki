@@ -66,12 +66,11 @@ export class DtsHarvester {
         let filesMarkedUnprunable = 0;
         const BATCH_SIZE = 3;
 
-        const files = Array.from(this.queue);
-        this.queue.clear();
-
         try {
-            for (let i = 0; i < files.length; i += BATCH_SIZE) {
-                // Abort check: stop if abort() was called or a new edit has arrived
+            // v10.5.2 #70: while loop drains queue until empty. The old
+            // snapshot+clear pattern orphaned files enqueued during awaits.
+            while (this.queue.size > 0) {
+                // Abort check: stop if abort() was called or a new edit arrived
                 if (!this.isHarvesting || this.kernel.getLogicalTime() !== epochId) {
                     return {
                         filesHarvested,
@@ -81,7 +80,8 @@ export class DtsHarvester {
                     };
                 }
 
-                const batch = files.slice(i, i + BATCH_SIZE);
+                const batch = Array.from(this.queue).slice(0, BATCH_SIZE);
+                for (const f of batch) this.queue.delete(f);
 
                 for (const filePath of batch) {
                     const result = this.harvestSingleFile(filePath);
@@ -93,7 +93,7 @@ export class DtsHarvester {
                 }
 
                 // Yield event loop for cooperative scheduling
-                if (i + BATCH_SIZE < files.length) {
+                if (this.queue.size > 0) {
                     await new Promise<void>(resolve => {
                         if (typeof globalThis.setImmediate === "function") {
                             setImmediate(resolve);
