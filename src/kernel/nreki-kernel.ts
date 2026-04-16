@@ -36,6 +36,27 @@ export type {
 // @author Jherson Eddie Tintaya Holguin (Ruso-0)
 
 
+/**
+ * LineMap — precomputes newline offsets for O(1) line extraction.
+ * Used by predictBlastRadius to avoid O(N × refs) split operations.
+ * Cached per ts.SourceFile via WeakMap (auto-invalidated on rebuild).
+ */
+class LineMap {
+    private offsets: number[];
+    constructor(text: string) {
+        this.offsets = [0];
+        for (let i = 0; i < text.length; i++) {
+            if (text[i] === '\n') this.offsets.push(i + 1);
+        }
+    }
+    getLine(lineNum: number, text: string): string {
+        if (lineNum < 0 || lineNum >= this.offsets.length) return "";
+        const start = this.offsets[lineNum];
+        const end = this.offsets[lineNum + 1] ?? text.length;
+        return text.slice(start, end).replace(/\n$/, '');
+    }
+}
+
 export class NrekiKernel {
     private projectRoot!: string;
     private vfs = new Map<string, string | null>();
@@ -91,6 +112,8 @@ export class NrekiKernel {
     private jitTsLanguage?: Parser.Language; // web-tree-sitter Language for TypeScript
     private jitClassifiedCache = new Set<string>();  // tsPath → already classified
     private jitClassifyFn?: (filePath: string, content: string, parser: Parser, lang: Parser.Language) => { prunable: boolean; shadow: string | null };
+    /** v10.5.2: cache LineMaps per SourceFile to avoid O(N × refs) splits in predictBlastRadius. */
+    private lineMapCache = new WeakMap<ts.SourceFile, LineMap>();
 
     // P26: POSIX normalization — delegates to shared utility
     private toPosix(p: string): string { return toPosixUtil(p); }
@@ -1445,7 +1468,12 @@ export class NrekiKernel {
                 if (!refSourceFile) continue;
 
                 const { line } = ts.getLineAndCharacterOfPosition(refSourceFile, curr.textSpan.start);
-                const lineText = (refSourceFile.text.split("\n")[line] ?? "").trim();
+                let lineMap = this.lineMapCache.get(refSourceFile);
+                if (!lineMap) {
+                    lineMap = new LineMap(refSourceFile.text);
+                    this.lineMapCache.set(refSourceFile, lineMap);
+                }
+                const lineText = lineMap.getLine(line, refSourceFile.text).trim();
 
                 // Extract WHY this usage matters (Demand Inference)
                 let reason = "Structural usage";
