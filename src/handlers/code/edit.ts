@@ -2,7 +2,6 @@
  * code/edit.ts - handleEdit + handleBatchEdit handlers.
  */
 
-import fs from "fs";
 import path from "path";
 import type { McpToolResponse, CodeParams, RouterDependencies } from "../../router.js";
 import type { NrekiInterceptResult } from "../../kernel/nreki-kernel.js";
@@ -132,11 +131,24 @@ export async function handleEdit(
                     if (allDependents.length <= 50) {
                         dependentsToInject = allDependents;
                     } else {
-                        const oldContent = fs.readFileSync(resolvedPath, "utf-8");
-                        const newContent = result.newContent!;
-                        const oldExports = oldContent.split("\n").filter(l => l.trim().startsWith("export")).join("\n");
-                        const newExports = newContent.split("\n").filter(l => l.trim().startsWith("export")).join("\n");
-                        if (oldExports !== newExports) {
+                        // v10.5.2 #20: O(1) AST-based signature diff. The old split("\n")
+                        // approach missed multiline exports (Prettier formatting) entirely.
+                        // detectSignatureChange (already used at L206) + oldRawCode/newRawCode
+                        // (already in semanticEdit result) = zero extra I/O, zero parser.
+                        let sigChanged = false;
+                        if (mode === "replace" || mode === "patch") {
+                            if (result.oldRawCode && result.newRawCode) {
+                                const oldExported = result.oldRawCode.trim().startsWith("export");
+                                const newExported = result.newRawCode.trim().startsWith("export");
+                                if (oldExported !== newExported || (oldExported && detectSignatureChange(result.oldRawCode, result.newRawCode))) {
+                                    sigChanged = true;
+                                }
+                            }
+                        } else if (result.newRawCode && result.newRawCode.trim().startsWith("export")) {
+                            sigChanged = true;
+                        }
+
+                        if (sigChanged) {
                             releaseFileLock(resolvedPath);
                             return {
                                 content: [{
