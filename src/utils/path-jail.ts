@@ -131,7 +131,15 @@ export function safePath(workspaceRoot: string, inputPath: string): string {
     // Block access to sensitive files — check BOTH logical and physical paths.
     // Without this, a symlink like `temp -> .env` bypasses the blocklist.
     let realTarget = resolved;
-    try { realTarget = fs.realpathSync(resolved); } catch { /* ENOENT: new file, no symlink to resolve */ }
+    try {
+        realTarget = fs.realpathSync(resolved);
+    } catch (err: unknown) {
+        // v10.5.2 #40: Only tolerate ENOENT (new file, no symlink to resolve).
+        // Any other error (EACCES, EPERM, EIO) = fail-closed — block access.
+        if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+            throw new Error(`[NREKI] Path validation failed for "${resolved}": ${(err as NodeJS.ErrnoException).code}`);
+        }
+    }
 
     if (isSensitivePath(resolved) || isSensitivePath(realTarget)) {
         throw new Error(`Access to sensitive file blocked: ${inputPath}`);

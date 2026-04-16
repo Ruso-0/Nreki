@@ -8,6 +8,7 @@
 
 import fs from "fs";
 import path from "path";
+import crypto from "crypto";
 
 // ─── Types ───────────────────────────────────────────────────────────
 
@@ -54,7 +55,7 @@ function savePins(projectRoot: string, pins: PinnedRule[]): void {
         fs.mkdirSync(dir, { recursive: true });
     }
     const pinsPath = getPinsPath(projectRoot);
-    const tmp = `${pinsPath}.tmp`;
+    const tmp = `${pinsPath}.${crypto.randomBytes(4).toString("hex")}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(pins, null, 2));
     fs.renameSync(tmp, pinsPath);
 }

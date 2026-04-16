@@ -143,9 +143,10 @@ export function extractDependencies(code: string, ext: string): ImportDependency
                 while ((m = lineRe.exec(inner)) !== null) {
                     const alias = m[1];
                     const fullPath = m[2];
-                    // Skip Go stdlib (no slash, no dot) — single-word packages with
-                    // a dot (e.g. "go.uber.org") or slash are third-party, keep them
-                    if (!fullPath.includes("/") && !fullPath.includes(".") && fullPath.length < 15) continue;
+                    // v10.5.2 #73: Go stdlib uses slashes (encoding/json, crypto/sha256).
+                    // Third-party packages always have a dot in first segment (github.com).
+                    const firstSegment = fullPath.split('/')[0];
+                    if (!firstSegment.includes('.')) continue;
 
                     const pathHint = fullPath.split("/").pop() || fullPath;
                     const localName = alias || pathHint;

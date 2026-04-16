@@ -32,6 +32,7 @@ export async function handleRead(
                 type: "text" as const,
                 text: `Security error: ${(err as Error).message}`,
             }],
+            isError: true,
         };
     }
 
@@ -209,6 +210,7 @@ export async function handleCompress(
                 type: "text" as const,
                 text: `Security error: ${(err as Error).message}`,
             }],
+            isError: true,
         };
     }
 

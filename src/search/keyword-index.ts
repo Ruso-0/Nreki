@@ -183,7 +183,9 @@ export class KeywordIndex {
 
             // TF read directly from inverted index - O(1)
             for (const [rowid, tf] of docMap) {
-                const docLen = this.docTerms.get(rowid)!.length;
+                const terms = this.docTerms.get(rowid);
+                if (!terms) continue;
+                const docLen = terms.length;
 
                 // BM25 formula
                 const tfNorm =

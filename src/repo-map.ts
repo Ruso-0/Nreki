@@ -443,7 +443,9 @@ export function resolveImportFast(
         if (importStr.includes("/") && !importStr.startsWith(".")) {
             const segments = importStr.split("/");
             // Try progressively shorter suffixes: utils, project/utils, org/project/utils
-            for (let i = segments.length - 1; i >= 0; i--) {
+            // v10.5.2 #63: longest suffix first — "org/project/utils" before "utils".
+            // Prevents local folder collision with Go module paths.
+            for (let i = 0; i < segments.length; i++) {
                 const suffix = segments.slice(i).join("/");
                 const resolved = lookup.get(suffix);
                 if (resolved) return resolved;

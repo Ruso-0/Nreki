@@ -660,7 +660,6 @@ export class TsCompilerWrapper {
     private static readonly SAFE_FIXES = new Set([
         "import",
         "fixMissingImport",
-        "fixAwaitInSyncFunction",
         "fixPromiseResolve",
         "fixMissingProperties",
         "fixAddOverrideModifier",

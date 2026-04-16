@@ -216,7 +216,9 @@ export async function handleReport(
     }
 
     const modelName = burnRate.estimatedCostUsd > 0
-        ? (burnRate.estimatedCostUsd / Math.max(1, burnRate.totalConsumed) > 0.01
+        // v10.5.2 #79: Opus = $15/MTok = $0.000015/tok. Old threshold 0.01 never triggered.
+        // Midpoint between Sonnet (~$0.000003) and Opus (~$0.000015).
+        ? (burnRate.estimatedCostUsd / Math.max(1, burnRate.totalConsumed) > 0.000005
             ? "Opus" : "Sonnet")
         : "Unknown";
 

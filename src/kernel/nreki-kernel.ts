@@ -527,10 +527,22 @@ export class NrekiKernel {
             // On rollback, only these are removed — preserving prior valid mutations.
             const transactionMutated = new Set<string>();
 
-            // v10.5.2 #4: tracks paths added to rootNames for the FIRST time in this tx.
-            // On rollback, force-removed regardless of the wasInRoot snapshot (which is
-            // captured AFTER the add and therefore lies for brand-new files).
-            const hologramTxNewRoots = new Set<string>();
+            // v10.5.2 #4 (refactor): Pre-populate rollback state BEFORE
+            // the hologram block modifies rootNames. This captures the TRUE
+            // wasInRoot value (false for new files). phase1_injectVfs has a
+            // guard (!rollbackState.has) so it won't overwrite this snapshot.
+            for (const edit of edits) {
+                if (edit.proposedContent !== null) {
+                    const posixPath = this.toPosix(path.resolve(this.projectRoot, edit.targetFile));
+                    if (!rollbackState.has(posixPath)) {
+                        rollbackState.set(posixPath, {
+                            content: this.vfs.has(posixPath) ? this.vfs.get(posixPath) : undefined,
+                            time: this.vfsClock.get(posixPath),
+                            wasInRoot: this.rootNames.has(posixPath),
+                        });
+                    }
+                }
+            }
 
             // HOLOGRAM: set currentEditTargets so VFS hooks show them as real .ts
             if (this.mode === "hologram") {
@@ -541,7 +553,6 @@ export class NrekiKernel {
                         // Ensure edited file is in rootNames for hologram lazy subgraph
                         if (this.isTypeScriptFile(posixPath) && !this.rootNames.has(posixPath)) {
                             this.rootNames.add(posixPath);
-                            hologramTxNewRoots.add(posixPath); // <-- TRACKEAR AQUÍ
                         }
                     }
                 }
@@ -780,11 +791,6 @@ export class NrekiKernel {
                     if (state.wasInRoot) this.rootNames.add(posixPath);
                     else this.rootNames.delete(posixPath);
                 }
-                // FIX BUG #4: Revert newly injected roots for hologram mode
-                for (const newRoot of hologramTxNewRoots) {
-                    this.rootNames.delete(newRoot);
-                }
-
                 // BOMBA 1 FIX: Compensatory Rollback — heal sidecar VFS
                 // Without this, the LSP's internal VFS retains the rejected
                 // edit and future validations run against a phantom state.
@@ -856,10 +862,6 @@ export class NrekiKernel {
                     else this.vfsClock.delete(posixPath);
                     if (state.wasInRoot) this.rootNames.add(posixPath);
                     else this.rootNames.delete(posixPath);
-                }
-                // FIX BUG #4: Revert newly injected roots for hologram mode
-                for (const newRoot of hologramTxNewRoots) {
-                    this.rootNames.delete(newRoot);
                 }
                 // BOMBA 1 FIX: Compensatory Rollback on crash path
                 await this.rollbackSidecars(sidecarEdits, rollbackState);

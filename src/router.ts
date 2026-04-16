@@ -36,6 +36,11 @@ import * as nav from "./handlers/navigate.js";
 import * as code from "./handlers/code.js";
 import * as guard from "./handlers/guard.js";
 
+/** Escape XML-special characters to prevent prompt injection via filenames. */
+function escapeXml(s: string): string {
+    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
 // ─── Types (consumed by handlers via `import type`) ─────────────────
 
 export interface McpToolResponse {
@@ -197,10 +202,10 @@ export function applyContextHeartbeat(
                             const tail = planContent.slice(-200);
                             planContent = `${head}\n...[TRUNCATED — context pressure ${(pressure * 100).toFixed(0)}%]...\n${tail}`;
                         }
-                        memoryPayload += `<nreki_plan file="${path.basename(planPath)}">\n${planContent}\n</nreki_plan>\n\n`;
+                        memoryPayload += `<nreki_plan file="${escapeXml(path.basename(planPath))}">\n${planContent}\n</nreki_plan>\n\n`;
                     } else if (planContent) {
                         memoryPayload +=
-                            `<nreki_plan file="${path.basename(planPath)}" status="too_large">\n` +
+                            `<nreki_plan file="${escapeXml(path.basename(planPath))}" status="too_large">\n` +
                             `Plan exceeds 15,000 chars (${planContent.length.toLocaleString()}). ` +
                             `Summarize or split, then re-anchor with nreki_guard action:"set_plan".\n</nreki_plan>\n\n`;
                     }
@@ -326,7 +331,8 @@ export async function handleNavigate(
 
     // ─── PRESSURE VALVE (v9.0) + Karma ────────────────────────────
     try {
-        const usage = deps.engine.getUsageStats();
+        const sessionStart = deps.engine.getMetadata("nreki_session_start") || undefined;
+        const usage = deps.engine.getUsageStats(sessionStart);
         const basePressure = usage.total_output / 150_000;
         const karmaPenalty = parseFloat(deps.engine.getMetadata("nreki_karma_penalty") || "0");
         deps.pressure = Math.min(1.0, basePressure + karmaPenalty);
@@ -370,7 +376,8 @@ export async function handleCode(
 
     // ─── PRESSURE VALVE (v9.0) + Karma ────────────────────────────
     try {
-        const usage = deps.engine.getUsageStats();
+        const sessionStart = deps.engine.getMetadata("nreki_session_start") || undefined;
+        const usage = deps.engine.getUsageStats(sessionStart);
         const basePressure = usage.total_output / 150_000;
         const karmaPenalty = parseFloat(deps.engine.getMetadata("nreki_karma_penalty") || "0");
         deps.pressure = Math.min(1.0, basePressure + karmaPenalty);
@@ -445,7 +452,8 @@ export async function handleGuard(
 
     // ─── PRESSURE VALVE (v9.0) + Karma ───────────────────────────
     try {
-        const usage = deps.engine.getUsageStats();
+        const sessionStart = deps.engine.getMetadata("nreki_session_start") || undefined;
+        const usage = deps.engine.getUsageStats(sessionStart);
         const basePressure = usage.total_output / 150_000;
         const karmaPenalty = parseFloat(deps.engine.getMetadata("nreki_karma_penalty") || "0");
         deps.pressure = Math.min(1.0, basePressure + karmaPenalty);

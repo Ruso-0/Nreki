@@ -1,6 +1,5 @@
 import fs from "fs";
 import path from "path";
-import { NrekiKernel } from "./kernel/nreki-kernel.js";
 import crypto from "crypto";
 
 export interface TypeDebtRecord {
@@ -264,13 +263,13 @@ export class ChronosMemory {
                 return false;
             }
 
-            // FIX: Restoration to original type always clears the debt,
-            // even if the original type was itself "toxic" (e.g., unknown).
-            // Without this, unknown→any→unknown creates an eternal prison
-            // where the debt never clears because isToxicType("unknown") = true.
-            if (currentType.trim() === debt.strictType.trim() || !NrekiKernel.isToxicType(currentType)) {
+            // v10.5.2 #46: Only exact restoration clears debt. The previous
+            // `!isToxicType` branch allowed gaming: UserConfig → any → string
+            // cleared the debt because isToxicType("string") = false.
+            // The agent must restore the ORIGINAL type to clear the penalty.
+            if (currentType.trim() === debt.strictType.trim()) {
                 paidSymbols.push(debt.symbol);
-                return false; // Debt cleared: type restored or detoxified
+                return false; // Debt cleared: exact type restored
             }
 
             return true; // Still toxic, debt remains

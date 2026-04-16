@@ -175,6 +175,9 @@ const engine = new NrekiEngine({
     enableEmbeddings,
 });
 
+// v10.5.2 #43: Track session start so pressure is per-session, not historical.
+engine.setMetadata("nreki_session_start", new Date().toISOString());
+
 const monitor = new TokenMonitor();
 const sandbox = new AstSandbox();
 const circuitBreaker = new CircuitBreaker();

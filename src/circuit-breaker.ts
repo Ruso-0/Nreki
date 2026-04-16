@@ -99,7 +99,7 @@ export function containsError(text: string): boolean {
     const STRONG_PATTERNS = [
         /error\s+TS\d+/i,
         /npm\s+(?:ERR!|error)/im,
-        /(?:FAIL|✕|×|✗)\s+/,
+        /^\s*(?:FAIL|✕|×|✗)\s+/m,
         /ExitCode:\s*[1-9]/,
         /Process exited with code [1-9]/,
         /Command failed/i,

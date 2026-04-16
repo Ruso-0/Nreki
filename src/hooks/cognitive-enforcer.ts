@@ -96,7 +96,16 @@ export class CognitiveEnforcer {
         if (action === "batch_edit" && params.edits) {
             if (params.edits.length === 1) {
                 const single = params.edits[0];
-                if (single.mode === "patch" || single.mode === "insert_before" || single.mode === "insert_after") {
+                if (single.mode === "patch") {
+                    return { blocked: false };
+                }
+                if (single.mode === "insert_before" || single.mode === "insert_after") {
+                    if (!single.path) return { blocked: false };
+                    const ip = path.resolve(this.projectRoot, single.path).replace(/\\/g, "/");
+                    const ipass = this.getPassport(ip);
+                    if (!ipass.outlined && !ipass.rawRead) {
+                        return { blocked: true, errorText: `Blocked: Blind insert via batch_edit. Run outline or compress first.` };
+                    }
                     return { blocked: false };
                 }
                 if (single.symbol && single.path) {
@@ -155,7 +164,14 @@ export class CognitiveEnforcer {
 
         // LEY 3: Edit a ciegas BLOQUEADO. Visa Dorada (rawRead) da inmunidad.
         if (action === "edit" && params.symbol) {
-            if (params.mode === "patch" || params.mode === "insert_before" || params.mode === "insert_after") {
+            if (params.mode === "patch") {
+                return { blocked: false };
+            }
+            if (params.mode === "insert_before" || params.mode === "insert_after") {
+                // v10.5.2 #71: blind insert blocked. Require at least outline knowledge.
+                if (!passport.outlined && !passport.rawRead) {
+                    return { blocked: true, errorText: `Blocked: Blind insert. Run outline or compress focus:"${params.symbol}" first.` };
+                }
                 return { blocked: false };
             }
             if (!passport.focusedSymbols.has(params.symbol) && !passport.rawRead) {

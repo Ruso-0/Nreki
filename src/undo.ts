@@ -10,6 +10,7 @@
 
 import fs from "fs";
 import path from "path";
+import crypto from "crypto";
 
 // ─── Helpers ────────────────────────────────────────────────────────
 
@@ -56,7 +57,10 @@ export function saveBackup(projectRoot: string, filePath: string): void {
         fs.mkdirSync(dir, { recursive: true });
     }
 
-    fs.writeFileSync(getBackupPath(projectRoot, filePath), content, "utf-8");
+    const backupDest = getBackupPath(projectRoot, filePath);
+    const tmpPath = `${backupDest}.${crypto.randomBytes(4).toString("hex")}.tmp`;
+    fs.writeFileSync(tmpPath, content, "utf-8");
+    fs.renameSync(tmpPath, backupDest);
 }
 
 /**
