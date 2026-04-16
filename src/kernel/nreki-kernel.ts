@@ -582,7 +582,7 @@ export class NrekiKernel {
                 && explicitlyEditedFiles.size > 1
                 && this.rootNames.size <= 1000;
 
-            let preTopology: import("./spectral-topology.js").SpectralResult | undefined;
+            let preTopology: { fiedlerValue: number; volume: number; nodeCount: number; edgeCount: number; cyclomaticComplexity?: number; activeNodes?: number; v2?: Float64Array; lambda3?: number; v3?: Float64Array; nodeIndex?: Map<string, number> } | undefined;
             if (isStructuralBatch && this.mode === "project" && this.tsBackend.tsProgram) {
                 try {
                     const { SpectralTopologist } = await import("./spectral-topology.js");
