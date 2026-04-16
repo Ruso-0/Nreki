@@ -10,6 +10,7 @@
  */
 
 import type { NrekiKernel } from "../kernel/nreki-kernel.js";
+import { logger } from "../utils/logger.js";
 import type { ShadowCache } from "./shadow-cache.js";
 
 // ─── Types ───────────────────────────────────────────────────────────
@@ -41,7 +42,9 @@ export class DtsHarvester {
         }
 
         if (!this.isHarvesting && this.queue.size > 0) {
-            this.startHarvesting(this.kernel.getLogicalTime()).catch(() => {});
+            this.startHarvesting(this.kernel.getLogicalTime()).catch(err => {
+                logger.warn(`Harvester cycle failed: ${err}`);
+            });
         }
     }
 
