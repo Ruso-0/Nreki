@@ -392,6 +392,10 @@ server.tool(
             .boolean()
             .optional()
             .describe("Auto-inject signatures of imported dependencies. Set to false for pure output without context."),
+        compute_diff: z
+            .boolean()
+            .optional()
+            .describe("Compute spectral topology diff (Fiedler value, circuit rank). Adds ~50-200ms latency for structural batches."),
         search_text: z
             .string()
             .optional()
@@ -405,8 +409,8 @@ server.tool(
             .optional()
             .describe("INTERNAL SYSTEM STATE TOKEN. DO NOT USE. Triggers context penalties."),
     },
-    async ({ action, path: filePath, symbol, new_code, compress, level, focus, tier, output, max_lines, mode, edits, auto_context, search_text, replace_text, _nreki_bypass }) => {
-        const params: CodeParams = { action, path: filePath, symbol, new_code, compress, level, focus, tier, output, max_lines, mode, edits, auto_context, search_text, replace_text, _nreki_bypass };
+    async ({ action, path: filePath, symbol, new_code, compress, level, focus, tier, output, max_lines, mode, edits, auto_context, compute_diff, search_text, replace_text, _nreki_bypass }) => {
+        const params: CodeParams = { action, path: filePath, symbol, new_code, compress, level, focus, tier, output, max_lines, mode, edits, auto_context, compute_diff, search_text, replace_text, _nreki_bypass };
         return wrapWithCircuitBreaker(
             circuitBreaker,
             "nreki_code",

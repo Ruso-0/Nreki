@@ -158,7 +158,7 @@ export async function handleEdit(
             try {
                 kernelResult = await deps.kernel.interceptAtomicBatch([
                     { targetFile: resolvedPath, proposedContent: result.newContent! },
-                ], dependentsToInject);
+                ], dependentsToInject, params.compute_diff === true);
 
                 const verifyResult = await processKernelResult(
                     kernelResult,
@@ -424,7 +424,7 @@ export async function handleBatchEdit(
                 }
 
                 if (kernelEdits.length > 0) {
-                    const kernelResult = await deps.kernel.interceptAtomicBatch(kernelEdits, batchDependents, false);
+                    const kernelResult = await deps.kernel.interceptAtomicBatch(kernelEdits, batchDependents, params.compute_diff === true);
                     const committedFiles = Array.from(result.vfs!.keys());
 
                     const verifyResult = await processKernelResult(

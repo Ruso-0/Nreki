@@ -85,6 +85,7 @@ export interface CodeParams {
     max_lines?: number;
     mode?: string;
     auto_context?: boolean;
+    compute_diff?: boolean;
     search_text?: string;
     replace_text?: string;
     _nreki_bypass?: string;
