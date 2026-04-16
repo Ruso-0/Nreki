@@ -21,9 +21,9 @@ import { computeAudit, formatAuditReport } from "../audit.js";
 
 export async function handlePin(
     params: GuardParams,
-    _deps: RouterDependencies,
+    deps: RouterDependencies,
 ): Promise<McpToolResponse> {
-    const projectRoot = process.cwd();
+    const projectRoot = deps.engine.getProjectRoot();
     const text = typeof params.text === "string" ? params.text : "";
 
     if (!text) {
@@ -60,9 +60,9 @@ export async function handlePin(
 
 export async function handleUnpin(
     params: GuardParams,
-    _deps: RouterDependencies,
+    deps: RouterDependencies,
 ): Promise<McpToolResponse> {
-    const projectRoot = process.cwd();
+    const projectRoot = deps.engine.getProjectRoot();
     const index = typeof params.index === "number" ? params.index : undefined;
     const id = typeof params.id === "string" ? params.id : undefined;
 
@@ -138,7 +138,7 @@ export async function handleStatus(
             "DANGER ZONES (Heaviest unread files):",
             "Do NOT read these raw. Use nreki_code action:\"compress\".",
             ...heavyFiles.map(f =>
-                `  - ${path.relative(process.cwd(), f.path)} (~${f.estimated_tokens.toLocaleString()} tokens)`
+                `  - ${path.relative(deps.engine.getProjectRoot(), f.path)} (~${f.estimated_tokens.toLocaleString()} tokens)`
             ),
         ].join("\n");
     }
@@ -185,7 +185,7 @@ export async function handleReport(
     const prediction = monitor.predictExhaustion();
     const usageStats = engine.getUsageStats();
     const cbStats = circuitBreaker.getStats();
-    const pins = listPins(process.cwd());
+    const pins = listPins(deps.engine.getProjectRoot());
 
     const fileTypeRows = sessionReport.byFileType.length > 0
         ? sessionReport.byFileType.map(ft =>
@@ -308,7 +308,7 @@ export async function handleAudit(
 
     const stats = engine.getStats();
     if (stats.filesIndexed === 0) {
-        await engine.indexDirectory(process.cwd());
+        await engine.indexDirectory(engine.getProjectRoot());
     }
 
     const graph = await engine.getDependencyGraph();
@@ -344,7 +344,7 @@ export async function handleSetPlan(
 
     let resolvedPath: string;
     try {
-        resolvedPath = safePath(process.cwd(), params.text);
+        resolvedPath = safePath(deps.engine.getProjectRoot(), params.text);
         if (!fs.existsSync(resolvedPath)) throw new Error("File does not exist.");
     } catch (err) {
         return {
@@ -372,7 +372,7 @@ export async function handleSetPlan(
         };
     }
 
-    deps.engine.setMetadata("nreki_master_plan", path.relative(process.cwd(), resolvedPath).replace(/\\/g, "/"));
+    deps.engine.setMetadata("nreki_master_plan", path.relative(deps.engine.getProjectRoot(), resolvedPath).replace(/\\/g, "/"));
     const usage = deps.engine.getUsageStats();
     deps.engine.setMetadata(
         "nreki_plan_last_drift",

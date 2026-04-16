@@ -11,12 +11,12 @@ import { filterTerminalOutput } from "../../terminal-filter.js";
 
 export async function handleUndo(
     params: CodeParams,
-    _deps: RouterDependencies,
+    deps: RouterDependencies,
 ): Promise<McpToolResponse> {
     const file = params.path ?? "";
     let resolvedPath: string;
     try {
-        resolvedPath = safePath(process.cwd(), file);
+        resolvedPath = safePath(deps.engine.getProjectRoot(), file);
     } catch (err) {
         return {
             content: [{
@@ -27,7 +27,7 @@ export async function handleUndo(
     }
 
     try {
-        const message = restoreBackup(process.cwd(), resolvedPath);
+        const message = restoreBackup(deps.engine.getProjectRoot(), resolvedPath);
         return {
             content: [{
                 type: "text" as const,

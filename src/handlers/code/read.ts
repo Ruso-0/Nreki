@@ -25,7 +25,7 @@ export async function handleRead(
     const file_path = params.path ?? "";
     let resolvedPath: string;
     try {
-        resolvedPath = safePath(process.cwd(), file_path);
+        resolvedPath = safePath(engine.getProjectRoot(), file_path);
     } catch (err) {
         return {
             content: [{
@@ -202,7 +202,7 @@ export async function handleCompress(
     const file_path = params.path ?? "";
     let resolvedPath: string;
     try {
-        resolvedPath = safePath(process.cwd(), file_path);
+        resolvedPath = safePath(engine.getProjectRoot(), file_path);
     } catch (err) {
         return {
             content: [{

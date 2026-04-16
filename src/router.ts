@@ -214,7 +214,7 @@ export function applyContextHeartbeat(
 
                 // LAYER 2b: Pinned Rules
                 try {
-                    const pinnedText = getPinnedText(process.cwd());
+                    const pinnedText = getPinnedText(deps.engine.getProjectRoot());
                     if (pinnedText) {
                         memoryPayload += `${pinnedText}\n\n`;
                     }

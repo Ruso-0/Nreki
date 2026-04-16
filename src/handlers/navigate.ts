@@ -38,7 +38,7 @@ export async function handleSearch(
 
     const stats = engine.getStats();
     if (stats.filesIndexed === 0) {
-        await engine.indexDirectory(process.cwd());
+        await engine.indexDirectory(engine.getProjectRoot());
     }
 
     const limit = typeof params.limit === "number" ? Math.min(50, Math.max(1, params.limit)) : 10;
@@ -59,7 +59,7 @@ export async function handleSearch(
     }
 
     const formatted = results.map((r, i) => {
-        const cleanPath = path.relative(process.cwd(), r.path).replace(/\\/g, "/");
+        const cleanPath = path.relative(engine.getProjectRoot(), r.path).replace(/\\/g, "/");
         const header = `### ${i + 1}. ${cleanPath}:L${r.startLine}-L${r.endLine}`;
 
         let ext = path.extname(r.path).slice(1).toLowerCase();
@@ -482,7 +482,7 @@ export async function handleMap(
 
     const stats = engine.getStats();
     if (stats.filesIndexed === 0) {
-        await engine.indexDirectory(process.cwd());
+        await engine.indexDirectory(engine.getProjectRoot());
     }
 
     const refresh = params.refresh === true;
@@ -496,7 +496,7 @@ export async function handleMap(
     // If full depth requested, regenerate text from map (cached text is always skeleton)
     const text = effectiveDepth === "full" ? repoMapToText(map, "full", pressure) : cachedText;
 
-    const pinnedText = getPinnedText(process.cwd());
+    const pinnedText = getPinnedText(engine.getProjectRoot());
     const fullText = text + (pinnedText ? "\n" + pinnedText : "");
     const tokens = Embedder.estimateTokens(fullText);
 
@@ -566,7 +566,7 @@ export async function handlePrepareRefactor(
             const defs = await findDefinition(root, parser, symbolName, "any");
 
             if (defs.length > 0) {
-                const targetFile = safePath(process.cwd(), defs[0].filePath);
+                const targetFile = safePath(deps.engine.getProjectRoot(), defs[0].filePath);
                 const br = deps.kernel.predictBlastRadius(targetFile, symbolName);
 
                 const jitWarning = deps.chronos ? deps.chronos.getContextWarnings(targetFile) : "";
@@ -600,7 +600,7 @@ export async function handlePrepareRefactor(
     for (const filePath of candidateFiles) {
         let fullPath: string;
         try {
-            fullPath = safePath(process.cwd(), filePath);
+            fullPath = safePath(deps.engine.getProjectRoot(), filePath);
         } catch { continue; }
 
         let content: string;
@@ -684,7 +684,7 @@ export async function handleOrphanOracle(
     await engine.initialize();
 
     const stats = engine.getStats();
-    if (stats.filesIndexed === 0) await engine.indexDirectory(process.cwd());
+    if (stats.filesIndexed === 0) await engine.indexDirectory(engine.getProjectRoot());
 
     const { map } = await engine.getRepoMap();
     const graph = await engine.getDependencyGraph();

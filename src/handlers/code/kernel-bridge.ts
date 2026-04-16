@@ -50,7 +50,7 @@ export async function ensureKernelBooted(deps: RouterDependencies): Promise<bool
         try {
             await ensureHologramReady(deps.kernel, deps.nrekiMode ?? "");
             deps.kernel.boot(
-                process.cwd(),
+                deps.engine.getProjectRoot(),
                 deps.nrekiMode as "file" | "project" | "hologram",
             );
         } catch (err) {
@@ -102,7 +102,7 @@ export async function processKernelResult(
                 `${kernelResult.structured?.length} error(s) in node_modules ignored.`
             );
             for (const fp of committedFiles) {
-                try { saveBackup(process.cwd(), fp); } catch {}
+                try { saveBackup(deps.engine.getProjectRoot(), fp); } catch {}
             }
             await kernel.commitToDisk();
             return { committed: true, ttrdFeedback };
@@ -123,7 +123,7 @@ export async function processKernelResult(
 
         const structuredInfo = "\n\nSemantic errors:\n" +
             agentErrors.map(e =>
-                `  \u2192 ${path.relative(process.cwd(), e.file)} (${e.line},${e.column}): ${e.code} - ${e.message}`
+                `  \u2192 ${path.relative(deps.engine.getProjectRoot(), e.file)} (${e.line},${e.column}): ${e.code} - ${e.message}`
             ).join("\n");
 
         return {
@@ -146,12 +146,12 @@ export async function processKernelResult(
 
     // ─── Safe: backup → commit → TTRD ───
     for (const fp of committedFiles) {
-        try { saveBackup(process.cwd(), fp); } catch {}
+        try { saveBackup(deps.engine.getProjectRoot(), fp); } catch {}
     }
 
     if (kernelResult.healedFiles) {
         for (const hf of kernelResult.healedFiles) {
-            try { saveBackup(process.cwd(), path.resolve(process.cwd(), hf)); } catch {}
+            try { saveBackup(deps.engine.getProjectRoot(), path.resolve(deps.engine.getProjectRoot(), hf)); } catch {}
             if (deps.chronos) deps.chronos.recordHeal(hf);
         }
     }
@@ -170,7 +170,7 @@ export async function processKernelResult(
 
             const penaltyList: string[] = [];
             for (const [fPath, regs] of byFile.entries()) {
-                deps.chronos.recordRegressions(path.resolve(process.cwd(), fPath), regs);
+                deps.chronos.recordRegressions(path.resolve(deps.engine.getProjectRoot(), fPath), regs);
                 for (const r of regs) {
                     penaltyList.push(`  - \`${r.symbol}\` in \`${path.basename(fPath)}\`: \`${r.oldType}\` -> \`${r.newType}\``);
                 }

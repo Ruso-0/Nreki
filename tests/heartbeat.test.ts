@@ -41,7 +41,14 @@ function makeMockDeps(overrides: {
     return {
         engine: {
             initialize: vi.fn(),
-            getMetadata: (key: string) => metadata[key] ?? null,
+            getProjectRoot: () => "/mock/project/root",
+            getMetadata: (key: string) => {
+                // Provide a non-empty scratchpad so memoryPayload is non-empty
+                // when drift >= threshold, allowing heartbeat injection without
+                // depending on real filesystem pins (process.cwd() → getProjectRoot()).
+                if (key === "nreki_scratchpad") return metadata[key] ?? "test context";
+                return metadata[key] ?? null;
+            },
             setMetadata: (key: string, value: string) => { metadata[key] = value; },
             getStats: () => ({ filesIndexed: 0, totalChunks: 0, totalRawChars: 0, totalShorthandChars: 0, compressionRatio: 0, watchedPaths: [] }),
             getUsageStats: () => ({ total_input: Math.floor(drift / 2), total_output: Math.ceil(drift / 2), total_saved: 0, tool_calls: target }),

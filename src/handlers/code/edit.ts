@@ -44,7 +44,7 @@ export async function handleEdit(
 
     let resolvedPath: string;
     try {
-        resolvedPath = safePath(process.cwd(), file);
+        resolvedPath = safePath(engine.getProjectRoot(), file);
     } catch (err) {
         return {
             content: [{
@@ -126,7 +126,7 @@ export async function handleEdit(
             let dependentsToInject: string[] = [];
             if (deps.nrekiMode === "hologram") {
                 try {
-                    const relPath = path.relative(process.cwd(), resolvedPath).replace(/\\/g, "/");
+                    const relPath = path.relative(engine.getProjectRoot(), resolvedPath).replace(/\\/g, "/");
                     const allDependents = await engine.findDependents(relPath);
                     if (allDependents.length <= 50) {
                         dependentsToInject = allDependents;
@@ -204,7 +204,7 @@ export async function handleEdit(
             try {
                 const sigChanged = detectSignatureChange(result.oldRawCode, result.newRawCode);
                 if (sigChanged) {
-                    const relPath = path.relative(process.cwd(), resolvedPath).replace(/\\/g, "/");
+                    const relPath = path.relative(engine.getProjectRoot(), resolvedPath).replace(/\\/g, "/");
                     const dependents = await engine.findDependents(relPath);
                     if (dependents.length > 0) {
                         const depList = dependents.map(d => `  - ${d}`).join("\n");
@@ -221,7 +221,7 @@ export async function handleEdit(
         try {
             const graph = await engine.getDependencyGraph();
             if (graph.clusters) {
-                const relPath = path.relative(process.cwd(), resolvedPath).replace(/\\/g, "/");
+                const relPath = path.relative(engine.getProjectRoot(), resolvedPath).replace(/\\/g, "/");
                 const cluster = graph.clusters.get(relPath);
                 if (cluster === "bridge") {
                     const v2 = graph.v2Score?.get(relPath) || 0;
@@ -302,7 +302,7 @@ export async function handleBatchEdit(
     const uniquePaths: string[] = [];
     for (const e of edits) {
         try {
-            const resolved = safePath(process.cwd(), e.path);
+            const resolved = safePath(engine.getProjectRoot(), e.path);
             if (!uniquePathSet.has(resolved)) { uniquePathSet.add(resolved); uniquePaths.push(resolved); }
         } catch (err) {
             return {
@@ -321,7 +321,7 @@ export async function handleBatchEdit(
             return {
                 content: [{ type: "text" as const, text:
                     `## Batch Edit: BLOCKED\n\n` +
-                    `File \`${path.relative(process.cwd(), p)}\` is locked by another edit (${lock.heldBy}, ${lock.heldForMs}ms).\n` +
+                    `File \`${path.relative(engine.getProjectRoot(), p)}\` is locked by another edit (${lock.heldBy}, ${lock.heldForMs}ms).\n` +
                     `Wait for it to finish, then resend the full batch.`
                 }],
                 isError: true,
@@ -339,9 +339,9 @@ export async function handleBatchEdit(
                         type: "text" as const,
                         text:
                             `## Edit Blocked - High Friction File\n\n` +
-                            `File \`${path.relative(process.cwd(), p)}\` has high historical error rate.\n` +
+                            `File \`${path.relative(engine.getProjectRoot(), p)}\` has high historical error rate.\n` +
                             `You MUST read it uncompressed before including it in a batch edit.\n\n` +
-                            `**ACTION REQUIRED**: Run \`nreki_code action:"read" compress:false path:"${path.relative(process.cwd(), p)}"\` first.\n\n` +
+                            `**ACTION REQUIRED**: Run \`nreki_code action:"read" compress:false path:"${path.relative(engine.getProjectRoot(), p)}"\` first.\n\n` +
                             `Chronos edit gating active.`,
                     }],
                     isError: true,
@@ -365,7 +365,7 @@ export async function handleBatchEdit(
 
         const useKernel = await ensureKernelBooted(deps);
 
-        const result = await batchSemanticEdit(batchOps, parser, sandbox, process.cwd(), useKernel);
+        const result = await batchSemanticEdit(batchOps, parser, sandbox, engine.getProjectRoot(), useKernel);
 
         if (!result.success || (useKernel && !result.vfs)) {
             return {
@@ -402,7 +402,7 @@ export async function handleBatchEdit(
                             const newRaw = result.newRawCodes.get(key);
                             if (oldRaw && newRaw && detectSignatureChange(oldRaw, newRaw)) {
                                 changedFiles.add(
-                                    path.relative(process.cwd(), safePath(process.cwd(), edit.path)).replace(/\\/g, "/")
+                                    path.relative(engine.getProjectRoot(), safePath(engine.getProjectRoot(), edit.path)).replace(/\\/g, "/")
                                 );
                             }
                         }
