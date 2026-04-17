@@ -7,6 +7,8 @@
 import fs from "fs";
 import path from "path";
 
+import type { BatchEditOp } from "../semantic-edit.js";
+
 interface FilePassport {
     outlined: boolean;
     rawRead: boolean;
@@ -89,7 +91,10 @@ export class CognitiveEnforcer {
     }
 
 
-    private validateSingleBatchEdit(edit: any): { blocked: boolean; errorText?: string } {
+    // AUDIT FIX (v10.5.8): `any` retirado. Partial<BatchEditOp> refleja que el
+    // enforcer ve input posiblemente malformado pre-validación. Reusa el tipo
+    // canónico de semantic-edit.ts en vez de duplicar la shape.
+    private validateSingleBatchEdit(edit: Partial<BatchEditOp>): { blocked: boolean; errorText?: string } {
         // Patch mode has its own anti-ambiguity (occurrences === 1). Safe to pass through.
         if (edit.mode === "patch") return { blocked: false };
 
