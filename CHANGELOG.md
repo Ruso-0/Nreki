@@ -2,6 +2,27 @@
 
 All notable changes to NREKI will be documented in this file.
 
+## 10.5.9 (2026-04-17) — LSP Auto-Healer Atomic Multi-TextEdit (Wave 2, Patch 5)
+
+Single-patch release. Fixes the doom-loop that occurred whenever an LSP quickfix required coupled edits (e.g., gopls "organize imports" that inserts the import block AND updates a usage, or pyright `from X import Y` plus a reference fix). The healer previously applied only one TextEdit per CodeAction; the other error stayed live, validation rolled back, and the agent retried forever.
+
+### Correctness
+- **`requestCodeActions` returns `LspCodeAction[]`** instead of a flat TextEdit array. Each action carries its full `edits[]` so the kernel can treat one CodeAction as one logical fix.
+- **`attemptLspAutoHealing` applies every TextEdit of the chosen CodeAction atomically.** New helper `applyCodeActionEdits` groups edits by resolved file path, creates savepoints for ALL affected files before any apply, and applies each file's edits bottom-up (descending `startLine`/`character`) so earlier offsets remain valid. Atomic rollback on any failure.
+- **Ice Wall whitelist scope corrected** — applied per-CodeAction (on `title`) rather than per-TextEdit.
+
+### Typing
+- Canonical LSP shapes (`LspPosition`, `LspRange`, `LspDiagnostic`, `LspTextEdit`, `LspCodeAction`) moved to `src/kernel/types.ts`.
+- Local `LspProtocol*` interfaces added in `lsp-sidecar-base.ts` for the JSON-RPC wire contract. The one `as LspProtocolCodeAction[] | null` cast is the single documented assertion on the LSP protocol — no scattered `as any` anywhere in the new code.
+- `as any` cast on `requestCodeActions` in `nreki-kernel.ts` removed; types flow end-to-end.
+
+### Tests
+- 765/765 pass (51 files): prior 760 + 5 new in `tests/healer-atomic.test.ts` covering multi-edit CodeAction atomic apply, full rollback on validation failure, descending-offset same-file ordering, multi-file CodeAction, and destructive-action whitelist rejection.
+- `tests/lsp-sidecar.test.ts` assertion migrated from `fixes[0].newText` to `fixes[0].edits[0].newText` for the new shape.
+
+### Not in scope
+- Wave 3 (Patch 6, shadow-generator escape-loop + harvester drain) still targeted for v10.6.
+
 ## 10.5.8 (2026-04-16) — Round-5 Audit Retrofits + Tolerant Patch
 
 Follow-up to v10.5.7 that closes two gaps found during type review and adds the Tolerant Patch ergonomics improvement. Shipped as three bisectable commits.
