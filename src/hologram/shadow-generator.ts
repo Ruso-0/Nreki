@@ -502,7 +502,12 @@ function stripParameterDefaults(sig: string): string {
     for (let i = openParen; i < sig.length; i++) {
         const ch = sig[i];
         if (inString) {
-            if (ch === inString && sig[i - 1] !== "\\") inString = null;
+            // AUDIT FIX (Patch 6 / v10.6): skip-next on backslash. The old
+            // `sig[i-1] !== "\\"` heuristic broke on strings ending with an
+            // escaped backslash pair (e.g. "C:\\"), which read the final
+            // `\` as escaping the closing quote.
+            if (ch === "\\" && i + 1 < sig.length) { i++; continue; }
+            if (ch === inString) inString = null;
             continue;
         }
         if (ch === '"' || ch === "'" || ch === '`') { inString = ch; continue; }
@@ -531,7 +536,13 @@ function splitAndCleanParams(params: string): string {
     for (let i = 0; i < params.length; i++) {
         const ch = params[i];
         if (inString) {
-            if (ch === inString && params[i - 1] !== "\\") inString = null;
+            // AUDIT FIX (Patch 6 / v10.6): skip-next on backslash.
+            if (ch === "\\" && i + 1 < params.length) {
+                current += ch + params[i + 1];
+                i++;
+                continue;
+            }
+            if (ch === inString) inString = null;
             current += ch;
             continue;
         }
@@ -562,7 +573,9 @@ function cleanSingleParam(param: string): string {
     for (let i = 0; i < param.length; i++) {
         const ch = param[i];
         if (inString) {
-            if (ch === inString && param[i - 1] !== "\\") inString = null;
+            // AUDIT FIX (Patch 6 / v10.6): skip-next on backslash.
+            if (ch === "\\" && i + 1 < param.length) { i++; continue; }
+            if (ch === inString) inString = null;
             continue;
         }
         if (ch === '"' || ch === "'" || ch === '`') { inString = ch; continue; }

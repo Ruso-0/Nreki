@@ -83,7 +83,15 @@ export class DtsHarvester {
                     };
                 }
 
-                const batch = Array.from(this.queue).slice(0, BATCH_SIZE);
+                // AUDIT FIX (Patch 6 / v10.6): native iterator drain.
+                // Array.from(Set) allocates a full copy per drain cycle (O(N)
+                // per batch, O(N^2/BATCH_SIZE) total). Native iterator stops
+                // after BATCH_SIZE items without touching the rest.
+                const batch: string[] = [];
+                for (const f of this.queue) {
+                    batch.push(f);
+                    if (batch.length >= BATCH_SIZE) break;
+                }
                 for (const f of batch) this.queue.delete(f);
 
                 for (const filePath of batch) {
