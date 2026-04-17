@@ -121,7 +121,10 @@ describe("LspSidecarBase (mock LSP server)", () => {
 
         expect(fixes.length).toBe(1);
         expect(fixes[0].title).toContain("import");
-        expect(fixes[0].newText).toContain("import os");
+        // Patch 5 (v10.5.9): return shape is LspCodeAction[] — TextEdits live
+        // under .edits[] so the kernel can apply the full action atomically.
+        expect(fixes[0].edits.length).toBeGreaterThanOrEqual(1);
+        expect(fixes[0].edits[0].newText).toContain("import os");
     });
 
     // ─── Test 5: requestCodeActions returns destructive fix ─────────

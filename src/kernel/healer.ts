@@ -8,6 +8,74 @@ import type {
     LspHealingContext,
 } from "./types.js";
 
+import type { LspCodeAction, LspTextEdit } from "./types.js";
+
+// Patch 5 (v10.5.9) helper: group a CodeAction's TextEdits by file,
+// create savepoints for ALL affected files, then apply each file's edits
+// bottom-up (descending startLine) to prevent offset drift. Returns the
+// per-file micro-undo log and the files touched so the caller can
+// roll back atomically on validation failure.
+interface ApplyResult {
+    microUndoLog: Map<string, MicroUndoState>;
+    touchedFiles: string[];
+    applyFailed: boolean;
+}
+
+function applyCodeActionEdits(
+    bestAction: LspCodeAction,
+    errorFile: string,
+    ctx: LspHealingContext,
+    localEditedFiles: Set<string>,
+    parentEditedFiles: ReadonlySet<string>,
+    newlyTouchedFiles: Set<string>,
+    healUndoLog: Map<string, MicroUndoState>,
+): ApplyResult | null {
+    const editsByFile = new Map<string, LspTextEdit[]>();
+    for (const edit of bestAction.edits) {
+        const fp = ctx.resolvePath(edit.filePath || errorFile);
+        if (!fp) return null;
+        const arr = editsByFile.get(fp) || [];
+        arr.push(edit);
+        editsByFile.set(fp, arr);
+    }
+    if (editsByFile.size === 0) return null;
+
+    const microUndoLog = new Map<string, MicroUndoState>();
+    for (const [affectedPath] of editsByFile) {
+        const state = ctx.createSavepoint(affectedPath);
+        microUndoLog.set(affectedPath, state);
+        if (!healUndoLog.has(affectedPath)) healUndoLog.set(affectedPath, state);
+    }
+
+    const touchedFiles: string[] = [];
+    let applyFailed = false;
+    for (const [affectedPath, fileEdits] of editsByFile.entries()) {
+        let content: string;
+        try { content = ctx.readContent(affectedPath); }
+        catch { applyFailed = true; break; }
+
+        const sorted = [...fileEdits].sort((a, b) => {
+            if (a.range.start.line !== b.range.start.line) {
+                return b.range.start.line - a.range.start.line;
+            }
+            return b.range.start.character - a.range.start.character;
+        });
+
+        for (const edit of sorted) {
+            const startIdx = ctx.getLspOffset(content, edit.range.start.line, edit.range.start.character);
+            const endIdx = ctx.getLspOffset(content, edit.range.end.line, edit.range.end.character);
+            content = content.slice(0, startIdx) + edit.newText + content.slice(endIdx);
+        }
+
+        ctx.applyMicroPatch(affectedPath, content);
+        localEditedFiles.add(affectedPath);
+        if (!parentEditedFiles.has(affectedPath)) newlyTouchedFiles.add(affectedPath);
+        touchedFiles.push(affectedPath);
+    }
+
+    return { microUndoLog, touchedFiles, applyFailed };
+}
+
 export async function attemptAutoHealing(
     initialErrors: NrekiStructuredError[],
     parentEditedFiles: ReadonlySet<string>,
@@ -129,42 +197,43 @@ export async function attemptLspAutoHealing(
                 code: error.code.replace(`${ctx.languageId}-`, ""),
             };
 
-            let fixes: any[];
-            try { fixes = await ctx.requestCodeActions(error.file, diagnostic); }
+            // AUDIT FIX (Patch 5 / v10.5.9): ALL TextEdits of the chosen
+            // CodeAction apply atomically. Pre-fix applied only one TextEdit,
+            // triggering a doom-loop when the fix required coupled edits.
+            let actions: LspCodeAction[];
+            try { actions = await ctx.requestCodeActions(error.file, diagnostic); }
             catch { continue; }
-            if (!fixes || fixes.length === 0) continue;
+            if (!actions || actions.length === 0) continue;
 
-            const safeFixes = fixes.filter((f: any) => {
-                const title = (f.title || "").toLowerCase();
+            const safeActions = actions.filter((a) => {
+                const title = (a.title || "").toLowerCase();
                 if (title.includes("remove") || title.includes("delete")) return false;
                 return title.includes("import") || title.includes("add ");
             });
-            if (safeFixes.length === 0) continue;
+            if (safeActions.length === 0) continue;
 
-            const bestFix = safeFixes[0];
-            const fixDesc = bestFix.title || `Add import in ${path.basename(error.file)}`;
+            const bestAction = safeActions[0];
+            if (!bestAction) continue;
+            const fixDesc = bestAction.title || `Add import in ${path.basename(error.file)}`;
             const fixHash = `${error.file}:${error.line}:${fixDesc}`;
             if (failedFixHashes.has(fixHash)) continue;
 
-            const changePath = ctx.resolvePath(bestFix.filePath || error.file);
-            if (!changePath) { failedFixHashes.add(fixHash); continue; }
+            const applyRes = applyCodeActionEdits(
+                bestAction, error.file, ctx,
+                localEditedFiles, parentEditedFiles, newlyTouchedFiles, healUndoLog,
+            );
+            if (!applyRes) { failedFixHashes.add(fixHash); continue; }
+            const { microUndoLog, touchedFiles, applyFailed } = applyRes;
 
-            const microUndoLog = new Map<string, MicroUndoState>();
-            const state = ctx.createSavepoint(changePath);
-            microUndoLog.set(changePath, state);
-            if (!healUndoLog.has(changePath)) healUndoLog.set(changePath, state);
-
-            let content: string;
-            try { content = ctx.readContent(changePath); }
-            catch { failedFixHashes.add(fixHash); continue; }
-
-            const startIdx = ctx.getLspOffset(content, bestFix.range.start.line, bestFix.range.start.character);
-            const endIdx = ctx.getLspOffset(content, bestFix.range.end.line, bestFix.range.end.character);
-            content = content.slice(0, startIdx) + bestFix.newText + content.slice(endIdx);
-
-            ctx.applyMicroPatch(changePath, content);
-            localEditedFiles.add(changePath);
-            if (!parentEditedFiles.has(changePath)) newlyTouchedFiles.add(changePath);
+            if (applyFailed) {
+                await ctx.executeRollback(microUndoLog, false);
+                for (const p of touchedFiles) {
+                    if (!parentEditedFiles.has(p)) localEditedFiles.delete(p);
+                    newlyTouchedFiles.delete(p);
+                }
+                failedFixHashes.add(fixHash);
+                continue;
+            }
 
             let newErrors: NrekiStructuredError[];
             try { newErrors = await ctx.validateLspEdits(localEditedFiles); }
@@ -172,8 +241,10 @@ export async function attemptLspAutoHealing(
 
             if (newErrors.length >= currentErrors.length) {
                 await ctx.executeRollback(microUndoLog, false);
-                if (!parentEditedFiles.has(changePath)) localEditedFiles.delete(changePath);
-                newlyTouchedFiles.delete(changePath);
+                for (const p of touchedFiles) {
+                    if (!parentEditedFiles.has(p)) localEditedFiles.delete(p);
+                    newlyTouchedFiles.delete(p);
+                }
                 failedFixHashes.add(fixHash);
             } else {
                 fixDescriptions.add(`- LSP Auto-Heal (${ctx.languageId}): ${fixDesc}`);

@@ -21,6 +21,39 @@ import { logger } from "../../utils/logger.js";
 
 // ─── JSON-RPC 2.0 Types (strict, zero any) ─────────────────────────
 
+// Patch 5 (v10.5.9): public output shape imports.
+import type { LspCodeAction, LspTextEdit } from "../types.js";
+
+// ─── LSP JSON-RPC Protocol Shapes (internal) ──────────────────
+// What the wire carries. Explicit instead of `any` so the cast on the
+// JSON-RPC response is a single documented assertion about the LSP
+// protocol contract, not a scattered permissive type.
+interface LspProtocolRange {
+    start: { line: number; character: number };
+    end: { line: number; character: number };
+}
+
+interface LspProtocolTextEdit {
+    range: LspProtocolRange;
+    newText: string;
+}
+
+interface LspProtocolTextDocumentEdit {
+    textDocument?: { uri: string };
+    edits?: LspProtocolTextEdit[];
+}
+
+interface LspProtocolWorkspaceEdit {
+    changes?: { [uri: string]: LspProtocolTextEdit[] };
+    documentChanges?: LspProtocolTextDocumentEdit[];
+}
+
+interface LspProtocolCodeAction {
+    title?: string;
+    kind?: string;
+    edit?: LspProtocolWorkspaceEdit;
+}
+
 interface RpcRequest {
     jsonrpc: "2.0";
     id: number;
@@ -438,13 +471,15 @@ export abstract class LspSidecarBase {
     async requestCodeActions(
         filePath: string,
         diagnostic: { range: LspRange; message: string; code?: number | string; source?: string }
-    ): Promise<Array<{ filePath: string; range: LspRange; newText: string; title: string }>> {
+    ): Promise<LspCodeAction[]> {
         if (!this.proc || this.isDead) return [];
 
         const relPath = this.toPosix(path.relative(this.realProjectRoot, filePath));
         const uri = `${this.workspaceUri}/${relPath}`;
 
         try {
+            // AUDIT FIX (Patch 5 / v10.5.9): JSON-RPC response is unknown at
+            // the type layer; cast to explicit LspProtocolCodeAction[] shape.
             const result = await this.request("textDocument/codeAction", {
                 textDocument: { uri },
                 range: diagnostic.range,
@@ -457,54 +492,44 @@ export abstract class LspSidecarBase {
                     }],
                     only: ["quickfix"],
                 },
-            }, 5_000) as any[];
+            }, 5_000) as LspProtocolCodeAction[] | null;
 
             if (!result || !Array.isArray(result)) return [];
 
-            const edits: Array<{ filePath: string; range: LspRange; newText: string; title: string }> = [];
+            const actions: LspCodeAction[] = [];
+            const wsPrefix = this.workspaceUri + "/";
+            const cleanPathFromUri = (rawUri: string): string =>
+                rawUri.toLowerCase().startsWith(wsPrefix.toLowerCase())
+                    ? rawUri.substring(wsPrefix.length)
+                    : rawUri.replace(wsPrefix, "");
 
             for (const action of result) {
                 if (!action.edit?.documentChanges && !action.edit?.changes) continue;
+                const edits: LspTextEdit[] = [];
 
-                // WorkspaceEdit.changes format
                 const changes = action.edit?.changes || {};
                 for (const [changeUri, textEdits] of Object.entries(changes)) {
-                    // FIX: Case-insensitive URI prefix removal for Windows.
-                    // gopls sends file:///c:/ but Node resolves to file:///C:/
-                    const wsPrefix = this.workspaceUri + "/";
-                    const cleanPath = changeUri.toLowerCase().startsWith(wsPrefix.toLowerCase())
-                        ? changeUri.substring(wsPrefix.length)
-                        : changeUri.replace(wsPrefix, "");
-                    for (const te of textEdits as any[]) {
-                        edits.push({
-                            filePath: cleanPath,
-                            range: te.range,
-                            newText: te.newText,
-                            title: action.title || "",
-                        });
+                    const cleanPath = cleanPathFromUri(changeUri);
+                    for (const te of textEdits) {
+                        edits.push({ filePath: cleanPath, range: te.range, newText: te.newText });
                     }
                 }
 
-                // WorkspaceEdit.documentChanges format
                 for (const dc of action.edit?.documentChanges || []) {
                     if (!dc.edits) continue;
                     const dcUri = dc.textDocument?.uri || "";
-                    const dcWsPrefix = this.workspaceUri + "/";
-                    const dcCleanPath = dcUri.toLowerCase().startsWith(dcWsPrefix.toLowerCase())
-                        ? dcUri.substring(dcWsPrefix.length)
-                        : dcUri.replace(dcWsPrefix, "");
+                    const dcCleanPath = cleanPathFromUri(dcUri);
                     for (const te of dc.edits) {
-                        edits.push({
-                            filePath: dcCleanPath,
-                            range: te.range,
-                            newText: te.newText,
-                            title: action.title || "",
-                        });
+                        edits.push({ filePath: dcCleanPath, range: te.range, newText: te.newText });
                     }
+                }
+
+                if (edits.length > 0) {
+                    actions.push({ title: action.title || "LSP Auto-Fix", edits });
                 }
             }
 
-            return edits;
+            return actions;
         } catch {
             return [];
         }

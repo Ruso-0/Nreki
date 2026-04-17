@@ -1103,8 +1103,10 @@ export class NrekiKernel {
                     },
                     getLspOffset: (content, line, character) =>
                         this.getLspOffset(content, line, character),
+                    // AUDIT FIX (Patch 5 / v10.5.9): `as any` removed — the
+                    // sidecar now returns the canonical LspCodeAction[] shape.
                     requestCodeActions: (file, diagnostic) =>
-                        (sidecar as any).requestCodeActions(file, diagnostic),
+                        sidecar.requestCodeActions(file, diagnostic),
                     validateLspEdits: async (editedFiles) => {
                         this.logicalTime += 1000;
                         const scEdits = Array.from(editedFiles).map(f => ({
