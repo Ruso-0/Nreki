@@ -365,6 +365,33 @@ export async function handleNavigate(
     return applyContextHeartbeat(action, response, deps);
 }
 
+/**
+ * Patch 2 (v10.5.8): Normaliza modos implícitos antes del Cognitive Enforcer.
+ * Agent a veces envía {search_text, replace_text} sin mode — inferimos "patch".
+ * {new_code} sin mode — inferimos "replace". Muta params in-place; handler
+ * downstream es idempotente al re-chequeo.
+ */
+function normalizeEditModes(action: string, params: CodeParams): void {
+    if (action === "edit" && !params.mode) {
+        if (params.search_text !== undefined && params.replace_text !== undefined) {
+            params.mode = "patch";
+        } else if (params.new_code !== undefined) {
+            params.mode = "replace";
+        }
+    }
+    if (action === "batch_edit" && Array.isArray(params.edits)) {
+        for (const e of params.edits) {
+            if (!e.mode) {
+                if (e.search_text !== undefined && e.replace_text !== undefined) {
+                    e.mode = "patch";
+                } else if (e.new_code !== undefined) {
+                    e.mode = "replace";
+                }
+            }
+        }
+    }
+}
+
 // ─── Facade: nreki_code ─────────────────────────────────────────────
 
 export async function handleCode(
@@ -373,6 +400,9 @@ export async function handleCode(
     deps: RouterDependencies,
 ): Promise<McpToolResponse> {
     await deps.engine.initialize();
+
+    // AUDIT FIX (Patch 2 / v10.5.8): Normaliza mode implícito ANTES del enforcer.
+    normalizeEditModes(action, params);
 
     // ─── PRESSURE VALVE (v9.0) + Karma ────────────────────────────
     try {
