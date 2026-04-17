@@ -2,6 +2,31 @@
 
 All notable changes to NREKI will be documented in this file.
 
+## 10.7.0 (2026-04-17) — The NREKI Way
+
+NREKI stops acting like a passive guard and starts acting like an immune system. The LLM is now surrounded by parasitic signals that cost nothing per call but continuously shape its behavior toward discipline. Four features ship in one minor bump.
+
+### Added
+- **Parasitic Defect Radar.** Four regex-based inline detectors run during `outline` on `sym.body`, tagging symbols with `⚠️ [label,...]` when LLM rush signals are detected: `swallowed-error` (empty catch), `type-escape-any` (any escape — anchored to avoid JSX false positives), `ts-suppress` (`@ts-ignore` / `@ts-expect-error` / `@ts-nocheck`), `non-null-assert` (`value!.method()` — anchored to skip `!==`). Zero additional tokens consumed — tags ride the outline header that's already emitted. Microsecond latency per symbol. Escape hatch: a `// nreki-hunt: disable` comment anywhere in the body zeros out all detections for that symbol.
+- **Symbol-level Ghost Oracle.** Exported symbols with 0 external references are tagged `👻 [0 ext refs]` in outline. Entry files (`index.*`, `main.*`, `app.*`, `setup.*`, `server.*`, `cli.*`, `vite-env.*`, `*.config.*`, `*.test.*`, `*.spec.*`) are excluded — they're referenced by runtimes and test-runners, not by the import graph. Pre-fetched via `Promise.all` over unique names so the LSP-backed lookup can parallelize when it becomes truly async (currently `engine.searchFilesBySymbol` is an async wrapper over sync `NrekiDB.searchRawCode` — future-proof shape).
+- **Executable Engrams (immortal ASSERT).** Engrams whose `insight` starts with `ASSERT` (case-insensitive) survive AST-hash mutation — they remain pinned to the symbol across edits. Regular engrams still invalidate on mutation as before. No DSL, just English — the LLM reads and respects. Use it to pin invariants about a symbol's role or contract that transcend the body's implementation.
+- **TTRD Bounties (quantified).** Successful restoration of strict types now reports the exact CFI discount to the LLM via `[TTRD BOUNTY] TYPE DEBT PAID 🏆` feedback: `File friction score (CFI) reduced by N.N points. Excellent engineering.` Pavlovian reinforcement loop closed — the LLM learns that narrowing types produces a measurable reward, not a token of praise.
+
+### Changed
+- [handleOutline](src/handlers/navigate.ts) now renders defect tags, ghost tags, and immortal ASSERT engrams inline alongside the existing risk tags. The LOW-risk skip is extended so any symbol flagged with defects or a ghost tag stays visible.
+- [kernel-bridge.ts](src/handlers/code/kernel-bridge.ts) TTRD feedback now quantifies CFI reduction (via `getFileCFI` before/after) instead of emitting a generic "debt paid" message.
+
+### Tests
+- +7 unit tests for [defect-radar.ts](tests/defect-radar.test.ts) (detector coverage + false-positive guards + escape-hatch).
+- +5 integration tests for [handleOutline](tests/navigate.test.ts) (ghost oracle + entry-file exemption + immortal ASSERT survival + regular engram invalidation + case-insensitivity). Real `NrekiEngine`, temp projects, no mocks.
+- Total: 783/783 across 54 files. Zero regressions.
+
+### Internal
+- Zero new `any` introduced. Residue grep shows only the 6 known cosmetic hits from v10.6.1 (JSDoc in shadow-generator, one codegen string literal, and three descriptive comments).
+
+### Philosophy
+> NREKI now acts less like a passive guard and more like an immune system. The LLM is surrounded by parasitic signals that cost nothing per call but continuously shape its behavior toward discipline.
+
 ## 10.6.1 (2026-04-17) — Zero-any Discipline Milestone
 
 Five bisectable commits eliminating every semantic `any` usage from first-party TypeScript code. Pure refactor — no behavior change, no new tests, no regressions.
