@@ -243,7 +243,9 @@ export function applySemanticSplice(
             );
         }
 
-        const patchedRawCode = symbolContent.replace(normSearchText, normReplaceText);
+        // AUDIT FIX (Patch 2): split/join avoids V8 substitution patterns.
+        // Safe because the occurrences === 1 guard above prevents global replace.
+        const patchedRawCode = symbolContent.split(normSearchText).join(normReplaceText);
 
         return {
             newContent: content.slice(0, startIdx) + patchedRawCode + content.slice(endIdx),
