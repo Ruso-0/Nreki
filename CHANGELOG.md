@@ -2,6 +2,26 @@
 
 All notable changes to NREKI will be documented in this file.
 
+## 10.6.1 (2026-04-17) — Zero-any Discipline Milestone
+
+Five bisectable commits eliminating every semantic `any` usage from first-party TypeScript code. Pure refactor — no behavior change, no new tests, no regressions.
+
+### Refactor
+- **`sql.js.d.ts`** — 7 `any` usages replaced with the canonical SQLite type union `SqlValue = string | number | boolean | Uint8Array | null`. All call sites in `src/database.ts` already pass only `string` / `number` / `number[]` / `string[]`, all within the union — zero adjustments needed downstream.
+- **`lsp-sidecar-base.ts`** — two `as any` casts on JSON-RPC responses replaced with minimal protocol interfaces: `LspProtocolInitializeResult` (reads only `capabilities.diagnosticProvider` + `serverInfo`) and `LspProtocolDiagnosticResult` (reuses existing `LspDiagnostic` via `items?: LspDiagnostic[]`).
+- **`cognitive-enforcer.ts`** — `evaluate` and `registerSuccess` both take `EnforcerInput` instead of `any`. Per-edit shape declared inline on `EnforcerInput.edits[]` and reused via `NonNullable<EnforcerInput["edits"]>[number]` in `validateSingleBatchEdit` (replaces the earlier `Partial<BatchEditOp>` typing, which was strict-narrow and clashed with the wider `CodeParams.edits[].mode: string` that the router passes down). Unused `BatchEditOp` import removed.
+- **`ts-compiler-wrapper.ts`** — `(this.host as any).getModifiedTime = ...` replaced with a local `CompilerHostWithMtime = ts.CompilerHost & { getModifiedTime?: (fileName: string) => Date }` type alias. `getModifiedTime` is defined on `ts.ModuleResolutionHost` (which `ts.CompilerHost` structurally extends) but isn't a required member — the alias makes the monkey-patch type-visible.
+- **`index.ts`** — CLI init settings block now typed via `ClaudeSettings` interface. `JSON.parse` cast to `unknown` first, narrowed via `typeof parsed === "object"` guard, then asserted to `ClaudeSettings`. `(h: any) => h.matcher` callback's parameter now inferred from array element type.
+
+### Residual
+Six `any` mentions remain in `src/`, all non-semantic:
+- Three in `shadow-generator.ts` — JSDoc prose + one codegen string literal (emits `": any"` into generated `.d.ts` when no type can be inferred).
+- Two in `nreki-kernel.ts` comments describing test-access patterns and an earlier v10.5.9 removal.
+- One in `ts-compiler-wrapper.ts` comment describing the v10.6.1 replacement above.
+
+### Tests
+- 771/771 pass (52 files). Zero new tests required (pure refactor). Zero regressions.
+
 ## 10.6.0 (2026-04-17) — Wave 3 Polish (Patch 6)
 
 Two bundled fixes in the hologram subsystem. Low-severity but long-overdue.
