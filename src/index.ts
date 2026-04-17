@@ -42,6 +42,19 @@ import { NrekiKernel } from "./kernel/nreki-kernel.js";
 import { ChronosMemory } from "./chronos-memory.js";
 import { logger } from "./utils/logger.js";
 
+// Patch 7 (v10.6.1): shape of .claude/settings.json. Kept loose on unknown
+// keys because Anthropic may add fields; the init command only reads/writes
+// the `hooks.PreToolUse` matcher list.
+interface ClaudeSettings {
+    hooks?: {
+        PreToolUse?: Array<{
+            matcher: string;
+            hooks: Array<{ type: string; command: string }>;
+        }>;
+    };
+    [key: string]: unknown;
+}
+
 // ─── Performance Mode Auto-Detection ────────────────────────────────
 
 // Bounded DFS. Uses stack.pop() which is O(1) in V8.
@@ -137,16 +150,21 @@ if (args[0] === "init") {
     fs.writeFileSync(hookScriptPath, getEnforcerScriptContent(), "utf-8");
 
     const settingsPath = path.join(process.cwd(), ".claude", "settings.json");
-    let settings: any = {};
+    let settings: ClaudeSettings = {};
     if (fs.existsSync(settingsPath)) {
-        try { settings = JSON.parse(fs.readFileSync(settingsPath, "utf-8")); } catch {}
+        try {
+            const parsed = JSON.parse(fs.readFileSync(settingsPath, "utf-8")) as unknown;
+            if (parsed && typeof parsed === "object") {
+                settings = parsed as ClaudeSettings;
+            }
+        } catch { /* malformed JSON — fall through with empty default */ }
     }
     if (!settings.hooks) settings.hooks = {};
     if (!settings.hooks.PreToolUse) settings.hooks.PreToolUse = [];
 
     const toolsToBlock = ["Read", "ReadFile", "View", "ViewFile", "Write", "WriteFile", "Edit", "EditFile", "Replace"];
     for (const tool of toolsToBlock) {
-        const exists = settings.hooks.PreToolUse.some((h: any) => h.matcher === tool);
+        const exists = settings.hooks.PreToolUse.some(h => h.matcher === tool);
         if (!exists) {
             settings.hooks.PreToolUse.push({
                 matcher: tool,
