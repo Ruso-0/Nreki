@@ -28,6 +28,24 @@ import type { LspCodeAction, LspTextEdit } from "../types.js";
 // What the wire carries. Explicit instead of `any` so the cast on the
 // JSON-RPC response is a single documented assertion about the LSP
 // protocol contract, not a scattered permissive type.
+// Patch 7 (v10.6.1): typed JSON-RPC responses for initialize & pull diagnostics.
+interface LspProtocolInitializeResult {
+    capabilities?: {
+        diagnosticProvider?: boolean | {
+            interFileDependencies?: boolean;
+            workspaceDiagnostics?: boolean;
+        };
+    };
+    serverInfo?: {
+        name?: string;
+        version?: string;
+    };
+}
+
+interface LspProtocolDiagnosticResult {
+    items?: LspDiagnostic[];
+}
+
 interface LspProtocolRange {
     start: { line: number; character: number };
     end: { line: number; character: number };
@@ -247,7 +265,7 @@ export abstract class LspSidecarBase {
                 }, 10_000)
                     .then((initResult) => {
                         // Detect pull diagnostics support from server capabilities
-                        const serverCaps = initResult as any;
+                        const serverCaps = initResult as LspProtocolInitializeResult;
                         if (serverCaps?.capabilities?.diagnosticProvider) {
                             this.supportsPullDiagnostics = true;
                             logger.info(`${this.command[0]} supports pull diagnostics (deterministic mode).`);
@@ -452,7 +470,7 @@ export abstract class LspSidecarBase {
         try {
             const result = await this.request("textDocument/diagnostic", {
                 textDocument: { uri },
-            }, 10_000) as any;
+            }, 10_000) as LspProtocolDiagnosticResult;
 
             // Pull response contains items directly (not via notification)
             if (result?.items && Array.isArray(result.items)) {
