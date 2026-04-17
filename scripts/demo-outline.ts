@@ -1,15 +1,19 @@
 /**
  * scripts/demo-outline.ts — live demo of NREKI parasitic signals in outline.
  *
- * Creates a throwaway project in $TMP with a file that has three smells
- * (swallowed catch, `as any`, an unused exported function), boots a real
- * NrekiEngine, calls handleOutline, and prints the result. Exactly the
- * output a Claude Code / Cursor agent sees when it asks for an outline.
+ * Clones colinhacks/zod (shallow, cached under ~/.nreki-demo-cache/zod) and
+ * runs NREKI's handleOutline against real zod v4 source. Output is exactly
+ * what a Claude Code / Cursor agent sees when it asks for an outline on a
+ * known-public codebase.
  *
  * Used by scripts/demo.tape to record the landing-page GIF.
  *   1. npm install
  *   2. vhs scripts/demo.tape        # produces docs/demo.gif
+ *
+ * Pre-warm the cache once (speeds up the recording):
+ *   npx tsx scripts/demo-outline.ts
  */
+import * as childProcess from "child_process";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -21,70 +25,106 @@ const DIM = "\x1b[2m";
 const BOLD = "\x1b[1m";
 const CYAN = "\x1b[36m";
 const YELLOW = "\x1b[33m";
+const MAGENTA = "\x1b[35m";
 const RESET = "\x1b[0m";
 
+const CACHE_ROOT = path.join(os.homedir(), ".nreki-demo-cache");
+const ZOD_REPO = path.join(CACHE_ROOT, "zod");
+
+const TARGETS: Array<{ label: string; relInWork: string }> = [
+    { label: "packages/zod/src/v4/core/parse.ts",  relInWork: "v4/core/parse.ts" },
+    { label: "packages/zod/src/v4/core/errors.ts", relInWork: "v4/core/errors.ts" },
+];
+
+function ensureZodClone(): void {
+    if (fs.existsSync(path.join(ZOD_REPO, ".git"))) return;
+    fs.mkdirSync(CACHE_ROOT, { recursive: true });
+    process.stdout.write(`${DIM}# First run: cloning colinhacks/zod (shallow, one-time)...${RESET}\n`);
+    childProcess.execFileSync(
+        "git",
+        ["clone", "--depth=1", "--quiet", "https://github.com/colinhacks/zod.git", ZOD_REPO],
+        { stdio: ["ignore", "inherit", "inherit"] },
+    );
+}
+
+function copyDirRecursive(src: string, dest: string): void {
+    fs.mkdirSync(dest, { recursive: true });
+    for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+        const s = path.join(src, entry.name);
+        const d = path.join(dest, entry.name);
+        if (entry.isDirectory()) copyDirRecursive(s, d);
+        else if (entry.isFile() && /\.ts$/.test(entry.name) && !/\.test\.ts$/.test(entry.name)) {
+            fs.copyFileSync(s, d);
+        }
+    }
+}
+
+function prepareWorkDir(): string {
+    // Copy zod's v4/core directory into a throwaway work dir so the ghost
+    // oracle sees real cross-file references (public API symbols get tagged
+    // correctly: internal-only = ghost, consumed elsewhere = not ghost).
+    // A minimal tsconfig sidesteps zod's monorepo pnpm workspace complexity.
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), "nreki-demo-zod-"));
+    fs.writeFileSync(path.join(work, "tsconfig.json"), JSON.stringify({
+        compilerOptions: {
+            target: "ES2022", module: "Node16", moduleResolution: "Node16",
+            strict: true, esModuleInterop: true, rootDir: ".", skipLibCheck: true,
+            allowJs: false, noEmit: true,
+        },
+        include: ["./**/*.ts"], exclude: ["node_modules", "dist"],
+    }));
+
+    // Copy ALL of packages/zod/src (~2.8MB, ~116 files) so the ghost
+    // oracle sees the full zod internal ref graph. Exports consumed by
+    // v4/classic/mini layers will NOT get ghost-tagged; only truly
+    // leaf-exported symbols will.
+    const zodSrc = path.join(ZOD_REPO, "packages/zod/src");
+    if (!fs.existsSync(zodSrc)) {
+        throw new Error(`Expected zod src dir not found: packages/zod/src (did the repo layout change?)`);
+    }
+    copyDirRecursive(zodSrc, work);
+    return work;
+}
+
+function colorize(text: string): string {
+    return text
+        .replace(/⚠️ \[[^\]]+\]/g, (m) => `${YELLOW}${m}${RESET}`)
+        .replace(/👻 \[0 ext refs\]/g, (m) => `${CYAN}${m}${RESET}`)
+        .replace(/\[HIGH[^\]]*\]/g, (m) => `${MAGENTA}${m}${RESET}`);
+}
+
 async function main(): Promise<void> {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "nreki-demo-"));
+    ensureZodClone();
+    const work = prepareWorkDir();
+
     try {
-        fs.writeFileSync(path.join(dir, "tsconfig.json"), JSON.stringify({
-            compilerOptions: {
-                target: "ES2022", module: "Node16", moduleResolution: "Node16",
-                strict: true, esModuleInterop: true, rootDir: ".", skipLibCheck: true,
-            },
-            include: ["./**/*.ts"], exclude: ["node_modules", "dist"],
-        }));
-
-        // A file with three LLM-rush smells — real things NREKI flags.
-        fs.writeFileSync(path.join(dir, "auth.ts"), [
-            "export function parseToken(raw: string): unknown {",
-            "    try {",
-            "        return JSON.parse(raw);",
-            "    } catch (e) { }",            // swallowed-error
-            "    return raw as any;",          // type-escape-any
-            "}",
-            "",
-            "// No file imports this function anywhere.",
-            "export function unusedHelper(): number {",
-            "    return 42;",
-            "}",
-            "",
-        ].join("\n"));
-
-        // A second file that imports nothing from auth.ts — guarantees
-        // unusedHelper stays un-referenced and gets the ghost tag.
-        fs.writeFileSync(path.join(dir, "billing.ts"), [
-            "export function charge(amount: number): number {",
-            "    return amount * 1.2;",
-            "}",
-            "",
-        ].join("\n"));
-
-        process.stdout.write(`${DIM}# Demo project in ${dir}${RESET}\n\n`);
-        process.stdout.write(`${BOLD}$ nreki_navigate action:"outline" path:"auth.ts"${RESET}\n\n`);
-
         const engine = new NrekiEngine({
-            dbPath: path.join(dir, ".nreki-demo.db"),
-            watchPaths: [dir],
+            dbPath: path.join(work, ".nreki-demo.db"),
+            watchPaths: [work],
         });
         await engine.initialize();
-        await engine.indexDirectory(dir);
-
+        await engine.indexDirectory(work);
         const deps = { engine } as unknown as RouterDependencies;
-        const t0 = Date.now();
-        const response = await handleOutline({ action: "outline", path: "auth.ts" }, deps);
-        const ms = Date.now() - t0;
 
-        const text = (response.content[0] as { text?: string }).text ?? "";
-        // Tint the tags so they pop on the recording.
-        const colored = text
-            .replace(/⚠️ \[[^\]]+\]/g, (m) => `${YELLOW}${m}${RESET}`)
-            .replace(/👻 \[0 ext refs\]/g, (m) => `${CYAN}${m}${RESET}`);
-        process.stdout.write(colored);
-        process.stdout.write(`\n${DIM}# Outline built in ${ms}ms — all signals are in the header the agent already reads.${RESET}\n`);
+        for (const t of TARGETS) {
+            process.stdout.write(
+                `\n${DIM}# Target:${RESET} ${BOLD}colinhacks/zod${RESET} ${DIM}:${RESET} ${t.label}\n` +
+                `${BOLD}$ nreki_navigate action:"outline" path:"${t.relInWork}"${RESET}\n\n`,
+            );
+            const t0 = Date.now();
+            const response = await handleOutline({ action: "outline", path: t.relInWork }, deps);
+            const ms = Date.now() - t0;
+            const text = (response.content[0] as { text?: string }).text ?? "";
+            // Trim to first ~14 meaningful symbol lines so the GIF stays readable.
+            const lines = text.split("\n");
+            const trimmed = lines.length > 18 ? [...lines.slice(0, 18), `${DIM}... (truncated)${RESET}`] : lines;
+            process.stdout.write(colorize(trimmed.join("\n")));
+            process.stdout.write(`\n${DIM}# Built in ${ms}ms.${RESET}\n`);
+        }
 
         await engine.shutdown();
     } finally {
-        try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
+        try { fs.rmSync(work, { recursive: true, force: true }); } catch { /* best effort */ }
     }
 }
 
