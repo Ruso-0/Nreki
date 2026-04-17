@@ -11,9 +11,9 @@
 Output docs/demo.gif
 
 Set Shell      "bash"
-Set FontSize   16
-Set Width      1100
-Set Height     500
+Set FontSize   15
+Set Width      1200
+Set Height     720
 Set Theme      "Dracula"
 Set Padding    20
 Set TypingSpeed 40ms
@@ -31,6 +31,7 @@ Type "npx tsx scripts/demo-outline.ts"
 Sleep 400ms
 Enter
 
-# First-time tsx transform takes ~2s on cold cache; the engine boot +
-# outline itself is < 100ms. Leave room for the viewer to read the tags.
-Sleep 6s
+# Three scenes in ~5-7s of actual work (engine boot ~1s; two outlines
+# ~40ms each; spectral topology on 116 zod files ~400ms + ~60ms Fiedler).
+# tsx cold-transform adds ~2s. Total sleep lets viewers read all three.
+Sleep 12s
