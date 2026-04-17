@@ -171,7 +171,13 @@ export class TsCompilerWrapper {
             return vfsAdapter.fileExists(fileName);
         };
 
-        (this.host as any).getModifiedTime = (fileName: string): Date => {
+        // Patch 7 (v10.6.1): ts.CompilerHost doesn't declare getModifiedTime
+        // (it's on ts.ModuleResolutionHost). Type-explicit cast via local alias
+        // replaces `as any`.
+        type CompilerHostWithMtime = ts.CompilerHost & {
+            getModifiedTime?: (fileName: string) => Date;
+        };
+        (this.host as CompilerHostWithMtime).getModifiedTime = (fileName: string): Date => {
             return vfsAdapter.getModifiedTime(fileName);
         };
 
