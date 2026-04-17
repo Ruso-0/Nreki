@@ -217,12 +217,43 @@ export function applySemanticSplice(
         const normSearchText = isCRLF ? searchText.replace(/(?<!\r)\n/g, '\r\n') : searchText.replace(/\r\n/g, '\n');
         const normReplaceText = replaceText ? (isCRLF ? replaceText.replace(/(?<!\r)\n/g, '\r\n') : replaceText.replace(/\r\n/g, '\n')) : "";
 
-        // Strict occurrence counting (no regex, no injection risk)
-        let pos = symbolContent.indexOf(normSearchText);
-        let occurrences = 0;
-        while (pos !== -1) {
-            occurrences++;
-            pos = symbolContent.indexOf(normSearchText, pos + normSearchText.length);
+        // AUDIT FIX (Patch 3 / v10.5.8): Tolerant Patch — two-tier matching.
+        // Tier 1: exact match (fast path). Tier 2: indent-tolerant fuzzy match
+        // when the agent's search_text has stale indent but unique content.
+        let occurrences = symbolContent.split(normSearchText).length - 1;
+        let finalSearchText = normSearchText;
+        let finalReplaceText = normReplaceText;
+
+        if (occurrences === 0) {
+            // Callback form avoids V8 substitution patterns in the replacement.
+            const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, m => "\\" + m);
+            const lines = normSearchText.split(isCRLF ? "\r\n" : "\n");
+            const flexiblePattern = lines.map(line => {
+                const trimmed = line.trimStart();
+                return trimmed ? `[ \\t]*${escapeRegExp(trimmed)}` : `[ \\t]*`;
+            }).join(isCRLF ? "\\r\\n" : "\\n");
+
+            const fuzzyRegex = new RegExp(flexiblePattern, "g");
+            const matches = symbolContent.match(fuzzyRegex) || [];
+            occurrences = matches.length;
+            const firstMatch = matches[0];
+            if (occurrences === 1 && firstMatch !== undefined) {
+                finalSearchText = firstMatch;
+                const origIndentMatch = finalSearchText.match(/^[ \t]*/);
+                const origIndent = origIndentMatch ? origIndentMatch[0] : "";
+                const searchIndentMatch = normSearchText.match(/^[ \t]*/);
+                const searchIndent = searchIndentMatch ? searchIndentMatch[0] : "";
+
+                if (normReplaceText) {
+                    const replaceLines = normReplaceText.split(isCRLF ? "\r\n" : "\n");
+                    finalReplaceText = replaceLines.map(line => {
+                        if (line.startsWith(searchIndent)) {
+                            return origIndent + line.slice(searchIndent.length);
+                        }
+                        return line;
+                    }).join(isCRLF ? "\r\n" : "\n");
+                }
+            }
         }
 
         if (occurrences === 0) {
@@ -230,22 +261,19 @@ export function applySemanticSplice(
                 ? symbolContent.substring(0, 300) + "..."
                 : symbolContent;
             throw new Error(
-                `[NREKI] Patch failed: Exact string not found inside symbol "${target.symbolName}".\n` +
-                `Whitespace and indentation must match EXACTLY. ` +
+                `[NREKI] Patch failed: Exact or indentation-tolerant match not found inside symbol "${target.symbolName}".\n` +
                 `Target AST content starts with:\n\`\`\`\n${preview}\n\`\`\``
             );
         }
         if (occurrences > 1) {
             throw new Error(
                 `[NREKI] Patch ambiguous: "${searchText}" found ${occurrences} times ` +
-                `inside "${target.symbolName}". Provide more surrounding context ` +
-                `in 'search_text' to disambiguate.`
+                `inside "${target.symbolName}". Provide more surrounding context to disambiguate.`
             );
         }
 
-        // AUDIT FIX (Patch 2): split/join avoids V8 substitution patterns.
-        // Safe because the occurrences === 1 guard above prevents global replace.
-        const patchedRawCode = symbolContent.split(normSearchText).join(normReplaceText);
+        // split/join bypasses V8 substitution patterns (safe: occurrences === 1).
+        const patchedRawCode = symbolContent.split(finalSearchText).join(finalReplaceText);
 
         return {
             newContent: content.slice(0, startIdx) + patchedRawCode + content.slice(endIdx),
