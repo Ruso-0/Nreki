@@ -2,6 +2,14 @@
 
 All notable changes to NREKI will be documented in this file.
 
+## [10.7.4] - 2026-04-18
+
+### Changed
+- Landing GIF rebuilt with cinematic pacing: line-by-line reveal, dramatic pauses before timing reveals (the `48ms` outline, the `67ms` Fiedler on 116 files). Total runtime 14.6s, 98 keyframes. Previous 10.7.3 GIF dumped all output in a single frame and looked static; this version reads like a live session an agent would actually experience.
+
+### Notes
+Docs-only release. Library behavior identical to 10.7.1.
+
 ## [10.7.3] - 2026-04-18
 
 ### Fixed
