@@ -13,7 +13,7 @@
 
 **v10.7 - The NREKI Way.** Parasitic signals now ride inside `outline`: a defect radar flags LLM-rush patterns (`⚠️ [empty catch, any escape]`), a ghost oracle tags unreferenced exports (`👻 [0 ext refs]`), and engrams prefixed `ASSERT` survive code mutation. Zero added tokens per call - the signals live in surfaces the agent already reads.
 
-<p align="center"><img src="docs/demo.svg" alt="NREKI outline with defect + ghost tags"></p>
+<p align="center"><img src="docs/demo.gif" alt="NREKI outline with defect + ghost tags"></p>
 
 ## Install
 
