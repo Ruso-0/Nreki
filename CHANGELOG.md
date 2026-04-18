@@ -2,6 +2,15 @@
 
 All notable changes to NREKI will be documented in this file.
 
+## [10.7.2] - 2026-04-18
+
+### Fixed
+- README landing image now resolves. Previous `docs/demo.gif` was never generated; replaced with `docs/demo.svg` (animated SVG, 42 KB, renders on both GitHub and npmjs.com).
+- Normalized em-dashes (`—`) to plain hyphens (`-`) in the README for consistent rendering across terminals and fonts that lack the Unicode glyph.
+
+### Notes
+Docs-only release. No code changes. Library behavior identical to 10.7.1.
+
 ## [10.7.1] - 2026-04-18
 
 ### Fixed
