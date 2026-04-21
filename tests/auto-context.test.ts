@@ -87,6 +87,46 @@ describe("Auto-Context: extractDependencies", () => {
         expect(deps).toHaveLength(1);
         expect(deps[0].symbol).toBe("UserType");
     });
+
+    it("handles modern TS/JS module extensions (.mjs, .cjs, .mts, .cts)", () => {
+        const code = `import { foo } from "./utils";`;
+        expect(extractDependencies(code, ".mjs")).toHaveLength(1);
+        expect(extractDependencies(code, ".cjs")).toHaveLength(1);
+        expect(extractDependencies(code, ".mts")).toHaveLength(1);
+        expect(extractDependencies(code, ".cts")).toHaveLength(1);
+    });
+
+    it("infers symbols from Python flat imports with aliases, comma-separated and dotted modules", () => {
+        const code = `
+import os, sys
+import django.db.models as db_models
+import helpers
+
+class User(db_models.Model):
+    pass
+
+def run():
+    helpers.process_data()
+    os.path.join("a", "b")
+`;
+        const deps = extractDependencies(code, ".py");
+
+        // stdlib (os, sys) filtered by token-budget shield
+        const osDep = deps.find(d => d.localName.startsWith("os.") || d.localName === "os");
+        expect(osDep).toBeUndefined();
+
+        // db_models.Model → symbol=Model, pathHint=models
+        const modelDep = deps.find(d => d.symbol === "Model");
+        expect(modelDep).toBeDefined();
+        expect(modelDep?.pathHint).toBe("models");
+        expect(modelDep?.localName).toBe("db_models.Model");
+
+        // helpers.process_data → symbol=process_data, pathHint=helpers
+        const helperDep = deps.find(d => d.symbol === "process_data");
+        expect(helperDep).toBeDefined();
+        expect(helperDep?.pathHint).toBe("helpers");
+        expect(helperDep?.localName).toBe("helpers.process_data");
+    });
 });
 
 describe("Auto-Context: Security Filters", () => {

@@ -2,6 +2,32 @@
 
 All notable changes to NREKI will be documented in this file.
 
+## v10.10.0 — Multi-language parser extensions + Python namespace inference
+
+### Added
+- **Modern JS/TS extensions (.mjs, .cjs, .mts, .cts)** now fully 
+  supported across parser, repo-map (PageRank graph), ast-navigator, 
+  and imports extractor. Previously invisible to dependency graph.
+- **Python flat imports** (`import X`, `import X.Y as Z`, 
+  comma-separated `import A, B, C`) now extracted with alias 
+  resolution.
+- **Python namespace inference engine**: `import django.db.models as 
+  db_models` followed by `db_models.Model` in body now correctly 
+  extracts `Model` as symbol with `models` as pathHint, mirroring 
+  the existing Go namespace-to-symbol pattern.
+- **Token-budget shield for Python stdlib**: imports from os, sys, 
+  re, json, time, math, datetime, typing, collections, itertools, 
+  pathlib, functools, abc, asyncio, logging, copy, enum, hashlib, 
+  random, string, threading, warnings, io are skipped from 
+  auto-context injection. LLMs already know stdlib — injecting 
+  signatures wastes tokens.
+
+### Notes
+- v10.9.0 reserved for Python auto-healing (pyright codeAction 
+  diagnostic + implementation). This release is a prerequisite: 
+  auto-context now correctly feeds Python symbols to the model.
+- Zero regression in existing TS/JS/Go tests.
+
 ## v10.8.0 — Polyglot Kernel Fix
 
 ### Fixed

@@ -61,7 +61,7 @@ export function extractDependencies(code: string, ext: string): ImportDependency
     const isLocalPath = (p: string) =>
         ext === ".go" ? p.includes("/") : /^[./~@]/.test(p);
 
-    if ([".ts", ".tsx", ".js", ".jsx"].includes(ext)) {
+    if ([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"].includes(ext)) {
         // ── Named ESM: import { foo, bar as baz } from "./utils/math" ──
         const namedRe =
             /import\s+(?:type\s+)?\{([^}]+)\}\s+from\s+['"]([^'"]+)['"]/g;
@@ -109,9 +109,7 @@ export function extractDependencies(code: string, ext: string): ImportDependency
             }
         }
     } else if (ext === ".py") {
-        // ── Python: from app.core.auth import validate as check_auth ──
-        // Support single-line and parenthesized multi-line imports:
-        // from foo import (bar, baz)
+        // ── Python 1: from X.Y import Z as W (single or parenthesized) ──
         const pyFromRe = /^from\s+([a-zA-Z0-9_.]+)\s+import\s+(?:\(([^)]*)\)|([^#\n]+))/gm;
         let match;
         while ((match = pyFromRe.exec(code)) !== null) {
@@ -123,6 +121,55 @@ export function extractDependencies(code: string, ext: string): ImportDependency
                 const symbol = parts[0].trim();
                 const localName = (parts[1] || parts[0]).trim();
                 if (symbol.length > 2) deps.push({ symbol, localName, pathHint });
+            }
+        }
+
+        // ── Python 2: Namespace Inference (import json, django.db as db_models) ──
+        // Flat imports don't map directly to indexable symbols (the DB
+        // stores functions/classes, not modules). Register namespace
+        // aliases, then scan body for `alias.Symbol` usage — same
+        // pattern as the Go branch below.
+        const pyImportRe = /^import\s+([^#\n]+)/gm;
+        const pyPkgMap = new Map<string, string>(); // localName -> pathHint
+
+        // Token-budget shield: skip Python stdlib — LLMs already know it
+        // and auto-context injection wastes tokens.
+        const pyStdlib = new Set([
+            "os", "sys", "re", "json", "time", "math", "datetime",
+            "typing", "collections", "itertools", "pathlib", "functools",
+            "abc", "asyncio", "logging", "copy", "enum", "hashlib",
+            "random", "string", "threading", "warnings", "io",
+        ]);
+
+        while ((match = pyImportRe.exec(code)) !== null) {
+            const importList = match[1].replace(/\\\n/g, " ");
+            for (const s of importList.split(",")) {
+                if (!s.trim()) continue;
+                const parts = s.trim().split(/\s+as\s+/);
+                const fullModule = parts[0].trim();
+                const localName = (parts[1] || fullModule).trim();
+                const pathHint = fullModule.split(".").pop() || fullModule;
+                if (pyStdlib.has(pathHint)) continue;
+                pyPkgMap.set(localName, pathHint);
+            }
+        }
+
+        // Scan body for Package.Symbol usage
+        for (const [localName, pathHint] of pyPkgMap.entries()) {
+            const usageRe = new RegExp(
+                `\\b${escapeRegExp(localName)}\\.([a-zA-Z_]\\w*)`,
+                "g",
+            );
+            let uMatch;
+            while ((uMatch = usageRe.exec(code)) !== null) {
+                const symbol = uMatch[1];
+                if (symbol.length > 2) {
+                    deps.push({
+                        symbol,
+                        localName: `${localName}.${symbol}`,
+                        pathHint,
+                    });
+                }
             }
         }
     } else if (ext === ".go") {

@@ -67,7 +67,7 @@ interface DependencyGraphData {
 
 // ─── Constants ──────────────────────────────────────────────────────
 
-const SUPPORTED_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".py", ".go"]);
+const SUPPORTED_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".py", ".go"]);
 
 const IGNORE_DIRS = new Set([
     "node_modules", "dist", "build", ".git", "coverage",
@@ -169,7 +169,7 @@ export function cleanSignature(rawSig: string): string {
 export function extractExports(content: string, ext: string): string[] {
     const exports = new Set<string>();
 
-    if ([".ts", ".tsx", ".js", ".jsx"].includes(ext)) {
+    if ([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"].includes(ext)) {
         // export function/class/interface/type/enum/const name
         const declRe = /export\s+(?:default\s+)?(?:declare\s+)?(?:abstract\s+)?(?:async\s+)?(?:function|class|interface|type|enum|const|let|var)\s+(\w+)/g;
         let m;
@@ -207,7 +207,7 @@ export function extractExports(content: string, ext: string): string[] {
 export function extractImports(content: string, ext: string): string[] {
     const imports = new Set<string>();
 
-    if ([".ts", ".tsx", ".js", ".jsx"].includes(ext)) {
+    if ([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"].includes(ext)) {
         const fromRe = /from\s+["']([^"']+)["']/g;
         let m;
         while ((m = fromRe.exec(content)) !== null) {
