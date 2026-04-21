@@ -44,6 +44,9 @@ const LANGUAGE_MAP: Record<string, string> = {
     javascript: "tree-sitter-javascript.wasm",
     python: "tree-sitter-python.wasm",
     go: "tree-sitter-go.wasm",
+    css: "tree-sitter-css.wasm",
+    json: "tree-sitter-json.wasm",
+    html: "tree-sitter-html.wasm",
 };
 
 /** Map file extensions to language names. */
@@ -54,6 +57,9 @@ const EXT_TO_LANGUAGE: Record<string, string> = {
     ".jsx": "javascript",
     ".py": "python",
     ".go": "go",
+    ".css": "css",
+    ".json": "json",
+    ".html": "html",
 };
 
 // ─── AstSandbox ──────────────────────────────────────────────────────

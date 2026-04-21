@@ -107,6 +107,9 @@ function detectLanguage(filePath: string): string | null {
         ".cjs": "javascript",
         ".py": "python",
         ".go": "go",
+        ".css": "css",
+        ".json": "json",
+        ".html": "html",
     };
     return map[ext] ?? null;
 }

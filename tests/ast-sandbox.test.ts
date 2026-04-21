@@ -258,7 +258,7 @@ describe("Edge cases", () => {
         expect(sandbox.detectLanguage("main.py")).toBe("python");
         expect(sandbox.detectLanguage("utils.js")).toBe("javascript");
         expect(sandbox.detectLanguage("server.go")).toBe("go");
-        expect(sandbox.detectLanguage("styles.css")).toBeNull();
+        expect(sandbox.detectLanguage("styles.css")).toBe("css"); // FIX v10.11.1
     });
 });
 

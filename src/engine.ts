@@ -37,7 +37,7 @@ import type { EngineConfig, IndexStats, SessionReport } from "./engine-types.js"
 
 // ─── Default config ──────────────────────────────────────────────────
 
-const DEFAULT_EXTENSIONS = [".ts", ".tsx", ".js", ".jsx", ".py", ".go"];
+const DEFAULT_EXTENSIONS = [".ts", ".tsx", ".js", ".jsx", ".py", ".go", ".css", ".json", ".html"];
 
 const DEFAULT_IGNORE = [
     "**/node_modules/**",
