@@ -2,6 +2,69 @@
 
 All notable changes to NREKI will be documented in this file.
 
+## v10.11.1 — Web Rescue Hotfix (CSS/HTML/JSON)
+
+### Fixed
+- **Deadlock de edición cerrado para archivos web >100L.** Un usuario
+  con `style.css` >100L quedaba atrapado: `nreki_code read` bloqueado
+  por LEY 1, `nreki_code compress focus:"..."` respondía con el error
+  mentiroso `TFC-Pro failed: NOT FOUND or TOO LARGE (Density Shield)`
+  porque el parser ni soportaba `.css`, `WriteFile` nativo bloqueado
+  por Capa 1, y `nreki_code edit` rechazado porque
+  `semantic-edit.detectLanguage(".css") === null`. Ahora los 4 flancos
+  se abren: parser nativo CSS/HTML/JSON, sandbox valida los 3,
+  watcher indexa, semantic-edit los acepta, enforcer exime prosa sin
+  AST (LEY 0.5), y el mensaje TFC-Pro distingue "lenguaje no soportado"
+  de "símbolo no encontrado".
+
+### Added
+- **Parsers tree-sitter WASM nativos para CSS/HTML/JSON.** Grammars
+  bundleados desde `tree-sitter-wasms@0.1.13` vía
+  `scripts/download-wasm.js`. Queries calibradas empíricamente contra
+  fixtures reales (ver `scripts/diag-web-parsers.ts`):
+  - CSS: captura `rule_set` con `selectors` normalizados (puntos,
+    comas, hashes colapsados a espacios).
+  - JSON: solo pairs top-level (doble anclaje `document > object >
+    pair` en query + filtro AST en el loop) para evitar el blowup
+    30→3 visto en lockfiles anidados.
+  - HTML: elementos con atributo `id` o `class`, alternación
+    `quoted_attribute_value | attribute_value` para soportar atributos
+    sin comillas.
+- **LEY 0.5 — Exención quirúrgica de prosa.** `cognitive-enforcer.ts`
+  ahora deja pasar `read` en archivos sin AST (`.md`, `.yaml`,
+  `.toml`, `.sql`, `Dockerfile`, etc.) en lugar de crear un deadlock
+  ineludible. TokenMonitor sigue como guillotina secundaria.
+- **OOM Parachute en `parser.ts`.** Si un archivo patológico genera
+  >2000 chunks, el loop corta y loguea `warn`. Previene OOM en
+  lockfiles o HTMLs masivos con patrones degenerados.
+- **Dedup por byte absoluto + symbolName** para JSON minificado y
+  HTML multi-atributo. El `nodeKey` antiguo
+  (`startPosition.row:endPosition.row`) colapsaba 4 pairs top-level a
+  1 en JSON de una línea. El nuevo (`startIndex:endIndex:symbolName`
+  en extensiones web) preserva cada captura distinguible.
+
+### Changed
+- `scripts/download-wasm.js` ahora incluye `tree-sitter-css.wasm`,
+  `tree-sitter-html.wasm`, `tree-sitter-json.wasm` en `NEEDED`.
+- `src/engine.ts` `DEFAULT_EXTENSIONS`, `src/ast-navigator.ts` y
+  `src/repo-map.ts` `SUPPORTED_EXTENSIONS`, `src/ast-sandbox.ts`
+  `LANGUAGE_MAP` + `EXT_TO_LANGUAGE`, `src/semantic-edit.ts`
+  `detectLanguage` — todos extendidos con `.css`/`.json`/`.html`.
+- `src/handlers/code/read.ts` — cuando `tfcCompress` devuelve null,
+  ahora consulta `engine.getParser().isSupported(ext)` antes de
+  retornar el mensaje de Density Shield. Si el lenguaje no está
+  soportado, retorna mensaje honesto que habilita `action:"read"`.
+
+### Tests
+- Nuevo archivo `tests/parser-web.test.ts` con 5 tests de regresión
+  (selectores CSS, atributos HTML unquoted + multi-attr, JSON
+  minificado multi-pair, JSON top-only, sandbox valida los 3). Todos
+  verdes.
+- `tests/ast-sandbox.test.ts` línea 261: assertion
+  `sandbox.detectLanguage("styles.css")` migra de `toBeNull()` a
+  `toBe("css")`.
+- Total suite: 802/802 pass (797 previos + 5 nuevos).
+
 ## v10.11.0 — Python Auto-Healing via basedpyright
 
 ### Added
