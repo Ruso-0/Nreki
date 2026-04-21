@@ -2,6 +2,58 @@
 
 All notable changes to NREKI will be documented in this file.
 
+## v10.12.0 — React/JSX Semantic Shield (Layer 1.5)
+
+Community-funded release (1,114 backers via PayPal). Thank you for making this possible.
+
+### Added
+- **React ESLint Sidecar**: automated detection of 4 critical React/JSX bug patterns during semantic-edit operations. The sidecar blocks the edit in RAM before disk commit when it detects:
+  - `react-hooks/rules-of-hooks` — hooks called conditionally
+  - `react-hooks/exhaustive-deps` — useEffect with incomplete dependency array
+  - `react/jsx-key` — missing `key` prop in iterated elements
+  - `jsx-a11y/alt-text` — `<img>` without `alt` attribute
+
+  The agent receives a pedagogical message with line/column/rule code and retries. No auto-healing — empirically confirmed that ESLint 9.39.4 does not provide auto-fix for these rules.
+
+- **Anti-Sweep Shield for React rules**: rejects `eslint-disable` comments (both line `//` and JSX block `{/* */}`) targeting the 4 critical rules. Operates on the injected payload (not legacy file content), so existing files with pre-NREKI suppressions are not blocked from further edits. Tolerates comma-separated rule lists to prevent bypasses.
+
+- **TypeScript parser integration**: `@typescript-eslint/parser` bundled for TSX files with `interface`, generics, and modern type annotations. Without it, the default parser would fatal-error on modern TypeScript React code.
+
+- **`.mjs/.cjs/.mts/.cts` support in AST sandbox** (preexisting bug fix): these extensions were recognized by the tree-sitter parser since v10.10.0 but not by the AST sandbox, causing semantic-edit operations on those files to bypass syntax validation silently. Now fully aligned.
+
+### Technical Details
+- Sidecar is lazy-initialized on first JSX/TSX mutation; zero cost for Python/Go/plain-TS users.
+- Hard cap of 150 KB per file as event loop starvation guard (ESLint is CPU-bound synchronous).
+- Timer cleanup via `finally { clearTimeout() }` prevents zombie timers in batch edits of 50+ files.
+- `lintTask.catch(() => {})` prevents `UnhandledPromiseRejection` if ESLint fails after timeout, which would kill the MCP server process.
+- Windows path normalization (backslash → forward slash) for picomatch glob matching in ESLint 9 Flat Config.
+- `settings: { react: { version: "18.3.1" } }` hardcoded to prevent `eslint-plugin-react` from writing warnings to stdout, which would corrupt the JSON-RPC stream.
+- In-process singleton with warm cache; subsequent edits on same file complete in ~12ms (5.9x speedup vs cold 75ms).
+
+### Extension Support (per TC39 / TypeScript spec)
+- JSX (UI domain): `.js`, `.jsx`, `.ts`, `.tsx`, `.mjs`, `.cjs`. Empirically validated that `@typescript-eslint/parser` accepts JSX in these extensions.
+- Logic domain (Custom Hooks, rules-of-hooks, exhaustive-deps): applies to all 8 supported extensions including `.mts` and `.cts`.
+- Note: JSX is not spec-valid in `.mts`/`.cts` (TypeScript + CommonJS contexts). Parser will fatal-error on JSX in these files; the sidecar gracefully filters fatal errors via `msg.fatal` check and returns empty array. Validation of hooks in these files works correctly.
+
+### Validated Empirically (pre-integration)
+- ESLint 9.39.4 `useEslintrc` API deprecation — confirmed breaks, removed from config.
+- Espree parser blindspot on TSX with types — fatal parse error on `interface`; `@typescript-eslint/parser` required.
+- `@typescript-eslint/parser` module shape — exposes named exports (no `.default`), loaded via namespace.
+- Latency baseline: 75ms cold / 12ms warm / 5.37ms clean. Sub-linear scaling (2.35x per 20x file size).
+- Plugin initialization: ~3.5s one-time cost when first JSX/TSX edit triggers the singleton; cached for subsequent edits in the same process lifetime.
+- Package tarball size confirms dependencies referenced (not bundled): ~870 kB vs 865 kB baseline.
+
+### Triangle Audit Log (internal)
+This release was developed via three-way technical cross-audit:
+- Claude (Anthropic Opus 4.7): initial design + empirical diagnostic scripts + final architecture.
+- Pipipi (trained by maintainer): identified 5 critical architectural blind spots (Event Loop starvation, timer leaks, Anti-Sweep bypass on JSX block comments, stdout JSON-RPC contamination, fragment regex gap + modern extension coverage).
+- Maintainer (Jherson Tintaya): empirical verification of every hypothesis before code injection.
+
+10 cross-audited fixes applied. Zero crimes shipped.
+
+### Community
+Sprint funded by 1,114 backers via PayPal (April 20-22, 2026). Gracias enormes.
+
 ## v10.11.1 — Web Rescue Hotfix (CSS/HTML/JSON)
 
 ### Fixed
