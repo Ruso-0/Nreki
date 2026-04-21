@@ -20,6 +20,7 @@ import { Embedder } from "./embedder.js";
 import { readSource } from "./utils/read-source.js";
 import { saveBackup, getBackupPath } from "./undo.js";
 import { extractSignature, cleanSignature, extractImports, extractExports } from "./repo-map.js";
+import { logger } from "./utils/logger.js";
 import crypto from "crypto";
 
 // ─── Types ───────────────────────────────────────────────────────────
@@ -563,6 +564,49 @@ export async function batchSemanticEdit(
                     `No files were modified.\n${validation.suggestion}\nFix the code and resend the full batch.`,
             };
         }
+
+        // ─── NREKI L1.5: REACT/JSX SEMANTIC SHIELD (BATCH) ───
+        if (language === "typescript" || language === "javascript") {
+            try {
+                const { reactEslintSidecar } = await import("./eslint-sidecar.js");
+
+                // Anti-Sweep sobre cada payload de las ops de este archivo
+                const fileOps = editsByFile.get(filePath) || [];
+                for (const op of fileOps) {
+                    const payloads = [op.new_code, op.replace_text].filter(Boolean) as string[];
+                    for (const payload of payloads) {
+                        if (reactEslintSidecar.checkAntiSweep(payload)) {
+                            return {
+                                success: false,
+                                editCount: edits.length,
+                                fileCount: editsByFile.size,
+                                files: [],
+                                error: `TRANSACTION ABORTED - Blocked by Anti-Sweep Shield in ${path.relative(projectRoot, filePath)}: ESLint suppression comments for React critical rules are forbidden. Fix the underlying architectural flaw.`
+                            };
+                        }
+                    }
+                }
+
+                const lintErrors = await reactEslintSidecar.validate(virtualContent, filePath);
+
+                if (lintErrors.length > 0) {
+                    const errDetail = lintErrors.slice(0, 3).map(e =>
+                        `  L${e.line}:${e.column} [${e.code}] - ${e.message}`
+                    ).join("\n");
+
+                    return {
+                        success: false,
+                        editCount: edits.length,
+                        fileCount: editsByFile.size,
+                        files: [],
+                        error: `TRANSACTION ABORTED - React/JSX Rule Violation in ${path.relative(projectRoot, filePath)}:\n${errDetail}\n\nNo files were modified.\nFix the violation and resend the full batch. Do not use suppressions.`
+                    };
+                }
+            } catch (e) {
+                logger.warn(`React shield bypassed in batch: ${(e as Error).message}`);
+            }
+        }
+        // ─── END REACT SHIELD (BATCH) ───
     }
 
     // 5. COMMIT: Two-Phase Atomic Write with Unbreakable Rollback
@@ -921,6 +965,50 @@ export async function semanticEdit(
                 `Syntax error in edited code - file NOT modified:\n${errDetails}\n\n${validation.suggestion}`,
         };
     }
+
+    // ─── NREKI L1.5: REACT/JSX SEMANTIC SHIELD ───
+    if (language === "typescript" || language === "javascript") {
+        try {
+            const { reactEslintSidecar } = await import("./eslint-sidecar.js");
+
+            // Anti-Sweep check SOLO sobre el payload nuevo (no archivo legacy completo)
+            const payload = newCode ?? spliceRes.newRawCode ?? "";
+            if (reactEslintSidecar.checkAntiSweep(payload)) {
+                return {
+                    success: false,
+                    filePath,
+                    symbolName,
+                    oldLines: rawCode.split("\n").length,
+                    newLines: payload.split("\n").length,
+                    tokensAvoided: 0,
+                    syntaxValid: true,
+                    error: `Blocked by Anti-Sweep Shield: ESLint suppression comments (eslint-disable) for React critical rules are forbidden. Fix the underlying architectural flaw.`
+                };
+            }
+
+            const lintErrors = await reactEslintSidecar.validate(newContent, filePath);
+
+            if (lintErrors.length > 0) {
+                const errDetails = lintErrors.slice(0, 3).map(e =>
+                    `  L${e.line}:${e.column} [${e.code}] - ${e.message}`
+                ).join("\n");
+
+                return {
+                    success: false,
+                    filePath,
+                    symbolName,
+                    oldLines: rawCode.split("\n").length,
+                    newLines: payload.split("\n").length,
+                    tokensAvoided: 0,
+                    syntaxValid: true,
+                    error: `React/JSX Rule Violation detected - file NOT modified:\n${errDetails}\n\nFix the violation and retry. Do not use suppressions.`
+                };
+            }
+        } catch (e) {
+            logger.warn(`React shield bypassed: ${(e as Error).message}`);
+        }
+    }
+    // ─── END REACT SHIELD ───
 
     // Save backup and write to disk ONLY if not dry run
     if (!dryRun) {
