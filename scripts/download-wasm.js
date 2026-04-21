@@ -16,6 +16,9 @@ const NEEDED = [
     "tree-sitter-javascript.wasm",
     "tree-sitter-python.wasm",
     "tree-sitter-go.wasm",
+    "tree-sitter-css.wasm",   // v10.11.1
+    "tree-sitter-html.wasm",  // v10.11.1
+    "tree-sitter-json.wasm",  // v10.11.1
 ];
 
 if (!existsSync(WASM_DIR)) {
