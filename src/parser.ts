@@ -58,7 +58,10 @@ export type SupportedExtension =
     | ".mts"
     | ".cts"
     | ".py"
-    | ".go";
+    | ".go"
+    | ".css"
+    | ".json"
+    | ".html";
 
 // ─── Language Configuration ──────────────────────────────────────────
 
@@ -185,6 +188,28 @@ const LANGUAGE_CONFIGS: Record<string, LanguageConfig> = {
       (lexical_declaration (variable_declarator name: (identifier) @var_name value: [(arrow_function) (function_expression)])) @arrow_func
       (export_statement declaration: (lexical_declaration (variable_declarator name: (identifier) @exp_var_name value: [(arrow_function) (function_expression)]))) @export_arrow_func
     `,
+    },
+    ".css": {
+        wasmFile: "tree-sitter-css.wasm",
+        query: `(rule_set (selectors) @symbol_name) @class`,
+    },
+    ".json": {
+        wasmFile: "tree-sitter-json.wasm",
+        query: `(document (object (pair key: (string) @symbol_name) @class))`,
+    },
+    ".html": {
+        wasmFile: "tree-sitter-html.wasm",
+        query: `
+          (element
+            (start_tag
+              (attribute
+                (attribute_name) @attr_name
+                [(quoted_attribute_value (attribute_value) @symbol_name)
+                 (attribute_value) @symbol_name]
+              )
+            )
+          ) @class
+        `,
     },
 };
 
@@ -322,24 +347,60 @@ export class ASTParser {
             const seen = new Set<string>(); // Deduplicate overlapping captures
 
             for (const match of matches) {
-                // Get the main capture (the one without _name suffix)
+                // Get the main capture (exclude _name suffix AND html attr_name)
                 const mainCapture = match.captures.find(
-                    (c) => !c.name.endsWith("_name")
+                    (c) => !c.name.endsWith("_name") && c.name !== "attr_name"
                 );
                 if (!mainCapture) continue;
 
-                // Extract the symbol name directly from the AST name capture
+                // Extract symbol name (FIX CRIMEN 2: exclude attr_name which ends in _name)
                 const nameCapture = match.captures.find(
-                    (c) => c.name.endsWith("_name")
+                    (c) => c.name.endsWith("_name") && c.name !== "attr_name"
                 );
-                const symbolName = nameCapture ? nameCapture.node.text : "";
+                let symbolName = nameCapture ? nameCapture.node.text : "";
+
+                // HTML filter: skip match if attr is not id/class
+                if (ext === ".html") {
+                    const attrCapture = match.captures.find(c => c.name === "attr_name");
+                    if (!attrCapture) continue;
+                    const attrText = attrCapture.node.text;
+                    if (attrText !== "id" && attrText !== "class") continue;
+                }
+
+                // JSON filter: ONLY top-level pairs (prevents nested blowup)
+                if (ext === ".json") {
+                    if (mainCapture.node.parent?.type !== "object" ||
+                        mainCapture.node.parent?.parent?.type !== "document") {
+                        continue;
+                    }
+                }
+
+                // Web symbol name normalization (D1)
+                if (symbolName) {
+                    if (ext === ".css") {
+                        symbolName = symbolName.replace(/[.#,]/g, " ").replace(/\s+/g, " ").trim();
+                    } else if (ext === ".json" || ext === ".html") {
+                        symbolName = symbolName.replace(/^["']|["']$/g, "").trim();
+                    }
+                }
 
                 const node = mainCapture.node;
-                const nodeKey = `${node.startPosition.row}:${node.endPosition.row}`;
+
+                // Fix Punto 1: minified JSON / multi-attr HTML dedup by absolute bytes + symbolName
+                const isWebExt = ext === ".json" || ext === ".html" || ext === ".css";
+                const nodeKey = isWebExt
+                    ? `${node.startIndex}:${node.endIndex}:${symbolName}`
+                    : `${node.startPosition.row}:${node.endPosition.row}`;
 
                 // Skip duplicates from overlapping query patterns
                 if (seen.has(nodeKey)) continue;
                 seen.add(nodeKey);
+
+                // OOM Parachute (D2): truncate on files with pathological symbol counts
+                if (result.length >= 2000) {
+                    logger.warn(`Max chunks (2000) reached for ${filePath}. Truncating to prevent OOM.`);
+                    break;
+                }
 
                 const rawCode = node.text;
                 const nodeType = this.normalizeNodeType(mainCapture.name);
