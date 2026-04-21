@@ -146,6 +146,41 @@ describe("detectMode", () => {
         // Only 10 real files -> syntax
         expect(detectMode(dir)).toBe("syntax");
     });
+
+    it("forces 'file' mode when pyproject.toml exists (Python-only)", () => {
+        dir = fs.mkdtempSync(path.join(os.tmpdir(), "nreki-mode-"));
+        fs.writeFileSync(path.join(dir, "pyproject.toml"), '[project]\nname = "test"\n');
+        fs.writeFileSync(path.join(dir, "main.py"), "print('hi')\n");
+        expect(detectMode(dir)).toBe("file");
+    });
+
+    it("forces 'file' mode when requirements.txt exists", () => {
+        dir = fs.mkdtempSync(path.join(os.tmpdir(), "nreki-mode-"));
+        fs.writeFileSync(path.join(dir, "requirements.txt"), "requests==2.0\n");
+        expect(detectMode(dir)).toBe("file");
+    });
+
+    it("forces 'file' mode when go.mod exists (Go-only)", () => {
+        dir = fs.mkdtempSync(path.join(os.tmpdir(), "nreki-mode-"));
+        fs.writeFileSync(path.join(dir, "go.mod"), "module example.com/test\ngo 1.21\n");
+        expect(detectMode(dir)).toBe("file");
+    });
+
+    it("mixed TS + Python project: count still scales normally", () => {
+        dir = fs.mkdtempSync(path.join(os.tmpdir(), "nreki-mode-"));
+        generateFiles(dir, 100, ".ts");
+        fs.writeFileSync(path.join(dir, "pyproject.toml"), '[project]\nname = "test"\n');
+        expect(detectMode(dir)).toBe("file");
+    });
+
+    it("large Python-only project stays in 'file' mode (no TS count)", () => {
+        dir = fs.mkdtempSync(path.join(os.tmpdir(), "nreki-mode-"));
+        fs.writeFileSync(path.join(dir, "pyproject.toml"), '[project]\nname = "test"\n');
+        for (let i = 0; i < 250; i++) {
+            fs.writeFileSync(path.join(dir, `mod${i}.py`), `x = ${i}\n`);
+        }
+        expect(detectMode(dir)).toBe("file");
+    });
 });
 
 // ─── 2. Mode-aware Kernel Tests ──────────────────────────────────────

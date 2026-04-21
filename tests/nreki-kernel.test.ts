@@ -74,11 +74,17 @@ describe("NREKI Kernel - Boot", () => {
         expect(kernel.getTrackedFiles()).toBeGreaterThan(0);
     });
 
-    it("should throw if tsconfig.json is missing", () => {
+    it("should boot gracefully without tsconfig.json (polyglot fallback)", () => {
+        // v10.8.0: initConfig no longer throws when tsconfig.json is absent.
+        // Instead it initializes minimal compilerOptions so the VFS + LSP
+        // sidecars can boot for Python/Go-only projects. TS backend stays
+        // idle. This test pins the new polyglot contract.
         dir = fs.mkdtempSync(path.join(os.tmpdir(), "nreki-test-"));
-
         const kernel = new NrekiKernel();
-        expect(() => kernel.boot(dir)).toThrow("tsconfig.json not found");
+        expect(() => kernel.boot(dir)).not.toThrow();
+        expect(kernel.isBooted()).toBe(true);
+        // No TS files tracked when no tsconfig is present
+        expect(kernel.getTrackedFiles()).toBe(0);
     });
 
     it("should track pre-existing errors in baseline", () => {

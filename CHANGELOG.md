@@ -2,6 +2,57 @@
 
 All notable changes to NREKI will be documented in this file.
 
+## v10.8.0 — Polyglot Kernel Fix
+
+### Fixed
+- **Kernel and LSP sidecars now activate for Python-only and 
+  Go-only projects.** Previously, `detectMode()` counted only 
+  TS/JS files and returned "syntax" for Python/Go-only projects, 
+  preventing kernel boot and sidecar (pyright/gopls) registration. 
+  Users reported that Python and Go "didn't feel like TS" because 
+  the kernel never ran.
+- `TsCompilerWrapper.initConfig()` now degrades gracefully when no 
+  `tsconfig.json`/`jsconfig.json` is found, initializing minimal 
+  `compilerOptions` so the VFS and LSP sidecars can boot without 
+  the TypeScript compiler crashing. The TS backend stays idle 
+  while language-specific validation flows through sidecars.
+- Kernel activation no longer requires `tsconfig.json`. Project 
+  markers `pyproject.toml`, `requirements.txt`, `setup.py`, 
+  `Pipfile`, `go.mod`, and `jsconfig.json` also trigger kernel 
+  boot.
+
+### Changed
+- Test `"should throw if tsconfig.json is missing"` 
+  (tests/nreki-kernel.test.ts) updated to assert the new 
+  polyglot fallback contract. Obsolete contract (throw on missing 
+  tsconfig) replaced with graceful boot assertion.
+
+### Notes
+- Pure TS/JS projects retain exact previous behavior. Zero 
+  regression in existing test suite (794/794 pass).
+- This fix is a prerequisite for v10.9.0 (Python auto-healing): 
+  with the kernel now active for Python/Go projects, the next 
+  step is diagnosing pyright's LSP codeAction behavior to enable 
+  cross-language auto-heal.
+
+## v10.7.5 — Safe Uninstall Hotfix (P0 security fix)
+
+### Fixed
+- **CRITICAL**: Added `npx @ruso-0/nreki deinit` command. Users who 
+  previously ran `init` and then tried to `npm uninstall` would have 
+  their Claude Code environment broken because the PreToolUse hooks in 
+  `.claude/settings.json` would reference a deleted 
+  `nreki-enforcer.mjs` script, blocking all native Read/Write/Edit 
+  operations. Running `npx @ruso-0/nreki deinit` BEFORE `npm uninstall` 
+  cleanly removes all NREKI hooks, restoring native tools.
+
+### Changed
+- `--help` output updated to document the new `deinit` subcommand.
+
+### Notes
+- This is a hotfix. Multi-client `init` support (Cursor, Windsurf, 
+  Copilot, Cline, Codex) is planned for v10.8.0.
+
 ## [10.7.4] - 2026-04-18
 
 ### Changed

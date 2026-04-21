@@ -61,6 +61,16 @@ interface ClaudeSettings {
 // Array.shift() is O(N) in V8 because it reindexes the contiguous memory block.
 // Do not change pop() to shift().
 export function detectMode(dir: string): "syntax" | "file" | "project" | "hologram" {
+    // Multi-lang project markers: presence forces kernel ON even when
+    // TS/JS file count is 0 (Python-only, Go-only projects).
+    const multiLangMarkers = [
+        "pyproject.toml", "requirements.txt", "setup.py", "Pipfile",
+        "go.mod",
+    ];
+    const hasMultiLangMarker = multiLangMarkers.some(m =>
+        fs.existsSync(path.join(dir, m))
+    );
+
     let count = 0;
     const stack = [dir];
     const ignore = new Set(["node_modules", "dist", "build", ".git", ".next", "coverage"]);
@@ -86,10 +96,18 @@ export function detectMode(dir: string): "syntax" | "file" | "project" | "hologr
             }
         }
     }
-    // Escala por costo computacional: syntax < file < project < hologram
-    if (count < 50) return "syntax";       // O(0) - AST parsing only, kernel off
-    if (count <= 200) return "file";       // O(K) - Semantic checks on touched files only
-    return "project";                       // O(N) - Full cascade evaluation
+
+    // With multi-lang marker: never return "syntax" — force kernel ON
+    // in "file" mode so LSP sidecars register and validate per-file.
+    if (hasMultiLangMarker) {
+        if (count <= 200) return "file";
+        return "project";
+    }
+
+    // Original behavior for pure TS/JS projects
+    if (count < 50) return "syntax";
+    if (count <= 200) return "file";
+    return "project";
 }
 
 // ─── CLI Flag Parsing ───────────────────────────────────────────────
@@ -111,6 +129,7 @@ NREKI v${VERSION} - Semantic validation for Claude Code
 Usage:
   npx @ruso-0/nreki [options]
   npx @ruso-0/nreki init      # Creates optimal CLAUDE.md instructions
+  npx @ruso-0/nreki deinit    # Safely removes NREKI hooks before npm uninstall
 
 Options:
   --enable-embeddings   Enable local ONNX semantic search (Pro mode)
@@ -121,6 +140,88 @@ Options:
 }
 
 const enableEmbeddings = args.includes("--enable-embeddings");
+
+// ─── Uninstall Subcommand (deinit) ───────────────────────────────
+// Safely removes NREKI hooks before npm uninstall to prevent
+// orphaned PreToolUse references from bricking Claude Code tools.
+// Idempotent — safe to run multiple times or when nothing is installed.
+if (args[0] === "deinit") {
+    logger.info("Uninstalling NREKI hooks and configuration...");
+    const cwd = process.cwd();
+    let modified = false;
+
+    // 1. Clean settings.json — remove PreToolUse entries referencing nreki-enforcer
+    const claudeSettingsPath = path.join(cwd, ".claude", "settings.json");
+    if (fs.existsSync(claudeSettingsPath)) {
+        try {
+            const raw = fs.readFileSync(claudeSettingsPath, "utf-8").replace(/^\uFEFF/, "");
+            const settings = JSON.parse(raw) as ClaudeSettings;
+
+            if (settings?.hooks?.PreToolUse && Array.isArray(settings.hooks.PreToolUse)) {
+                const originalLen = settings.hooks.PreToolUse.length;
+                settings.hooks.PreToolUse = settings.hooks.PreToolUse.filter((h) => {
+                    if (!h.hooks || !Array.isArray(h.hooks)) return true;
+                    return !h.hooks.some((cmd) =>
+                        typeof cmd.command === "string" && cmd.command.includes("nreki-enforcer.mjs")
+                    );
+                });
+
+                if (settings.hooks.PreToolUse.length !== originalLen) {
+                    if (settings.hooks.PreToolUse.length === 0) delete settings.hooks.PreToolUse;
+                    if (settings.hooks && Object.keys(settings.hooks).length === 0) delete settings.hooks;
+
+                    fs.writeFileSync(claudeSettingsPath, JSON.stringify(settings, null, 2), "utf-8");
+                    logger.info("Removed NREKI hooks from .claude/settings.json");
+                    modified = true;
+                }
+            }
+        } catch (err) {
+            logger.error(`Failed to clean settings.json: ${(err as Error).message}`);
+        }
+    }
+
+    // 2. Delete enforcer hook script
+    const hookPath = path.join(cwd, ".claude", "hooks", "nreki-enforcer.mjs");
+    if (fs.existsSync(hookPath)) {
+        try {
+            fs.unlinkSync(hookPath);
+            logger.info("Deleted .claude/hooks/nreki-enforcer.mjs");
+            modified = true;
+        } catch (err) {
+            logger.error(`Failed to delete hook script: ${(err as Error).message}`);
+        }
+    }
+
+    // 3. Clean CLAUDE.md — strip only NREKI block, preserve user's own rules
+    const claudeMdPath = path.join(cwd, "CLAUDE.md");
+    if (fs.existsSync(claudeMdPath)) {
+        try {
+            const content = fs.readFileSync(claudeMdPath, "utf-8").replace(/^\uFEFF/, "");
+            const markerIndex = content.indexOf("# NREKI ACTIVE");
+            if (markerIndex !== -1) {
+                const cleanedContent = content.substring(0, markerIndex).trim();
+                if (cleanedContent === "") {
+                    fs.unlinkSync(claudeMdPath);
+                    logger.info("Deleted empty CLAUDE.md");
+                } else {
+                    fs.writeFileSync(claudeMdPath, cleanedContent + "\n", "utf-8");
+                    logger.info("Removed NREKI instructions from CLAUDE.md");
+                }
+                modified = true;
+            }
+        } catch (err) {
+            logger.error(`Failed to clean CLAUDE.md: ${(err as Error).message}`);
+        }
+    }
+
+    if (modified) {
+        logger.info("NREKI deinit complete. Your environment is clean.");
+    } else {
+        logger.info("No active NREKI configuration found. Nothing to clean.");
+    }
+
+    process.exit(0);
+}
 
 // ─── Init Subcommand ────────────────────────────────────────────────
 
@@ -201,46 +302,56 @@ const sandbox = new AstSandbox();
 const circuitBreaker = new CircuitBreaker();
 const chronos = new ChronosMemory(process.cwd());
 
-// ─── NREKI Kernel (opt-in: only activates if tsconfig.json exists) ───
+// ─── NREKI Kernel & Sidecars (Multi-Language Auto-Detect) ──────────
 let kernel: NrekiKernel | undefined;
 let nrekiMode: "syntax" | "file" | "project" | "hologram" = "syntax";
 
-const tsconfigPath = path.join(process.cwd(), "tsconfig.json");
-if (fs.existsSync(tsconfigPath)) {
-    nrekiMode = detectMode(process.cwd());
+const cwd = process.cwd();
+const hasTsConfig = fs.existsSync(path.join(cwd, "tsconfig.json")) ||
+                    fs.existsSync(path.join(cwd, "jsconfig.json"));
+const hasGoProject = fs.existsSync(path.join(cwd, "go.mod"));
+const pyMarkers = ["pyproject.toml", "requirements.txt", "setup.py", "Pipfile"];
+const hasPyProject = pyMarkers.some(f => fs.existsSync(path.join(cwd, f)));
+
+if (hasTsConfig || hasPyProject || hasGoProject) {
+    nrekiMode = detectMode(cwd);
 
     if (nrekiMode === "syntax") {
         logger.info("SYNTAX mode. Kernel disabled. Layer 1 AST only.");
     } else {
-        logger.info(`${nrekiMode.toUpperCase()} mode detected. Kernel boots on first edit.`);
-        kernel = new NrekiKernel(); // Instantiated but NOT booted
+        const envs = [
+            hasTsConfig ? "TS/JS" : "",
+            hasPyProject ? "Python" : "",
+            hasGoProject ? "Go" : "",
+        ].filter(Boolean).join(", ");
+        logger.info(`${nrekiMode.toUpperCase()} mode detected (${envs}). Kernel boots on first edit.`);
+        kernel = new NrekiKernel();
     }
 } else {
     logger.info(
-        "No tsconfig.json found. Semantic verification disabled. " +
-        "Operating in Tree-sitter-only mode (Layer 1).",
+        "No project markers found (tsconfig.json / pyproject.toml / go.mod). " +
+        "Semantic verification disabled. Operating in Tree-sitter-only mode (Layer 1)."
     );
 }
 
 // ─── LSP Sidecars (auto-detect Go and Python projects) ──────────
+// Keep awaited sequential imports — prevents race condition where
+// first edit arrives before sidecar is registered.
 if (kernel) {
-    // Go: detect go.mod → register gopls sidecar
-    if (fs.existsSync(path.join(process.cwd(), "go.mod"))) {
+    if (hasGoProject) {
         try {
             const { GoLspSidecar } = await import("./kernel/backends/go-sidecar.js");
-            kernel.registerSidecar(".go", new GoLspSidecar(process.cwd()));
+            kernel.registerSidecar(".go", new GoLspSidecar(cwd));
             logger.info("Go project detected (go.mod). gopls sidecar registered.");
         } catch (err) {
             logger.error(`Failed to load Go sidecar: ${(err as Error).message}`);
         }
     }
 
-    // Python: detect pyproject.toml, requirements.txt, setup.py, Pipfile → register pyright sidecar
-    const pyMarkers = ["pyproject.toml", "requirements.txt", "setup.py", "Pipfile"];
-    if (pyMarkers.some(f => fs.existsSync(path.join(process.cwd(), f)))) {
+    if (hasPyProject) {
         try {
             const { PythonLspSidecar } = await import("./kernel/backends/python-sidecar.js");
-            kernel.registerSidecar(".py", new PythonLspSidecar(process.cwd()));
+            kernel.registerSidecar(".py", new PythonLspSidecar(cwd));
             logger.info("Python project detected. pyright sidecar registered.");
         } catch (err) {
             logger.error(`Failed to load Python sidecar: ${(err as Error).message}`);

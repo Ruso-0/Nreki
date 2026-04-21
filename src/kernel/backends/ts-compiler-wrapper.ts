@@ -117,8 +117,30 @@ export class TsCompilerWrapper {
      * The kernel copies references after this call.
      */
     public initConfig(projectRoot: string): void {
-        const configPath = ts.findConfigFile(projectRoot, ts.sys.fileExists, "tsconfig.json");
-        if (!configPath) throw new Error("[NREKI] Config error: tsconfig.json not found.");
+        const configPath = ts.findConfigFile(projectRoot, ts.sys.fileExists, "tsconfig.json") ||
+                           ts.findConfigFile(projectRoot, ts.sys.fileExists, "jsconfig.json");
+
+        const nrekiDir = path.join(projectRoot, ".nreki");
+        this.tsBuildInfoPath = this.toPosix(path.join(nrekiDir, "cache.tsbuildinfo"));
+
+        if (!configPath) {
+            // Polyglot fallback: Python/Go-only projects have no tsconfig.
+            // Initialize minimal compilerOptions so the VFS + LSP sidecars
+            // can boot without TS Compiler crashing. The TS backend stays
+            // idle; language-specific validation flows through sidecars.
+            this.compilerOptions = {
+                noEmit: true,
+                allowJs: true,
+                target: ts.ScriptTarget.ES2022,
+                module: ts.ModuleKind.ESNext,
+                skipLibCheck: true,
+                tsBuildInfoFile: this.tsBuildInfoPath,
+                incremental: true,
+            };
+            this.rootNames = new Set<string>();
+            return;
+        }
+
         const parsed = ts.parseJsonConfigFileContent(
             ts.readConfigFile(configPath, ts.sys.readFile).config, ts.sys, projectRoot
         );
@@ -126,10 +148,6 @@ export class TsCompilerWrapper {
         this.rootNames = new Set(
             parsed.fileNames.map((f) => this.toPosix(path.resolve(projectRoot, f)))
         );
-
-        // Incremental cache: set tsBuildInfoFile so TS knows where to read/write
-        const nrekiDir = path.join(projectRoot, ".nreki");
-        this.tsBuildInfoPath = this.toPosix(path.join(nrekiDir, "cache.tsbuildinfo"));
         this.compilerOptions.tsBuildInfoFile = this.tsBuildInfoPath;
         this.compilerOptions.incremental = true;
     }
