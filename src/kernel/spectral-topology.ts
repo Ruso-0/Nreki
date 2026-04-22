@@ -15,7 +15,7 @@ export interface SparseEdge {
 }
 
 export interface SpectralResult {
-    fiedlerValue: number;
+    fiedler?: number;
     volume: number;
     nodeCount: number;
     edgeCount: number;
@@ -24,6 +24,7 @@ export interface SpectralResult {
     v2?: Float64Array;
     lambda3?: number;
     v3?: Float64Array;
+    eigenvalues?: number[];
     nodeIndex?: Map<string, number>;
 }
 
@@ -170,20 +171,19 @@ export class SpectralTopologist {
         // Φ: Topological Entropy Index
         // When N stays constant (ghost/expansion): Φ = λ₂ * density, density = 2V/(N*(N-1))
         // When N decreases (decoupling): Φ = λ₂ / N_AST (original formula)
+        const preFiedler = pre.fiedler ?? 0;
+        const postFiedler = post.fiedler ?? 0;
+
         let phiPre: number, phiPost: number;
 
         if (pre.nodeCount <= post.nodeCount) {
-            // Ghost / Expansion case: nodes stay or grow but lose edges.
-            // Density formula Φ = λ₂ * (2V / (N*(N-1))) detects dilution.
             const denPre = pre.nodeCount > 1 ? pre.nodeCount * (pre.nodeCount - 1) : 1;
-            phiPre = pre.nodeCount > 0 ? (pre.fiedlerValue * 2 * pre.volume) / denPre : 0;
+            phiPre = pre.nodeCount > 0 ? (preFiedler * 2 * pre.volume) / denPre : 0;
             const denPost = post.nodeCount > 1 ? post.nodeCount * (post.nodeCount - 1) : 1;
-            phiPost = post.nodeCount > 0 ? (post.fiedlerValue * 2 * post.volume) / denPost : 0;
+            phiPost = post.nodeCount > 0 ? (postFiedler * 2 * post.volume) / denPost : 0;
         } else {
-            // Decoupling case: nodes were deleted from AST.
-            // Original formula respects N_AST reduction.
-            phiPre = pre.nodeCount > 0 ? pre.fiedlerValue / pre.nodeCount : 0;
-            phiPost = post.nodeCount > 0 ? post.fiedlerValue / post.nodeCount : 0;
+            phiPre = pre.nodeCount > 0 ? preFiedler / pre.nodeCount : 0;
+            phiPost = post.nodeCount > 0 ? postFiedler / post.nodeCount : 0;
         }
         const normalizedFiedlerDrop = phiPre - phiPost;
         const dropRatio = phiPre > 0 ? normalizedFiedlerDrop / phiPre : 0;
@@ -208,8 +208,8 @@ export class SpectralTopologist {
         }
 
         return {
-            fiedlerPre: pre.fiedlerValue,
-            fiedlerPost: post.fiedlerValue,
+            fiedlerPre: preFiedler,
+            fiedlerPost: postFiedler,
             volumePre: pre.volume,
             volumePost: post.volume,
             normalizedFiedlerDrop,
@@ -218,6 +218,13 @@ export class SpectralTopologist {
         };
     }
 
+    /**
+     * Extracts Ego-Graph 1-hop around target file (parents + direct children).
+     *
+     * NOTE: In NREKI, "Markov Blanket" is implemented as Ego-Graph 1-hop
+     * (no spouses/co-parents). Pragmatic for localizing blast radius,
+     * not theoretically pure Pearl causal inference.
+     */
     public static getMarkovBlanket(
         targetFile: string,
         edges: TopologicalEdge[]
@@ -294,7 +301,7 @@ export class SpectralTopologist {
 
         if (analysisNodes.size <= 1) {
             return {
-                fiedlerValue: 0, volume: 0,
+                fiedler: 0, volume: 0,
                 nodeCount: analysisNodes.size, edgeCount: analysisEdges.length,
                 cyclomaticComplexity: 0,
             };
@@ -379,7 +386,7 @@ export class SpectralTopologist {
         }
 
         return {
-            fiedlerValue: state.fiedler,
+            fiedler: state.fiedler,
             volume: state.volume,
             nodeCount: analysisNodes.size,
             edgeCount: analysisEdges.length,
@@ -387,10 +394,17 @@ export class SpectralTopologist {
             v2: state.v2,
             lambda3: state.lambda3,
             v3: state.v3,
+            eigenvalues: state.eigenvalues,
             nodeIndex: N > 1 ? nodeIndex : undefined,
         };
     }
 }
+
+export type SpectralResultPayload =
+    | { fiedler: undefined; volume: number; v2?: never; lambda3?: never; v3?: never; eigenvalues?: never }
+    | { fiedler: number; volume: number; v2?: never; lambda3?: never; v3?: never; eigenvalues?: never }
+    | { fiedler: number; volume: number; v2: Float64Array; lambda3?: never; v3?: never; eigenvalues: number[] }
+    | { fiedler: number; volume: number; v2: Float64Array; lambda3: number; v3: Float64Array; eigenvalues: number[] };
 
 export class SpectralMath {
     // Discriminated union: spectral vectors are born together or not at all.
@@ -399,43 +413,30 @@ export class SpectralMath {
     // This enforces the runtime invariant at the type level: a consumer that
     // narrows on `if (result.v2)` gets `lambda3: number` and `v3: Float64Array`
     // for free — no more `lambda3 !== undefined` paranoia checks downstream.
-    public static analyzeTopology(N: number, edges: SparseEdge[], normalized: boolean = false):
-        | { fiedler: number; volume: number; v2?: never; lambda3?: never; v3?: never }
-        | { fiedler: number; volume: number; v2: Float64Array; lambda3: number; v3: Float64Array }
-    {
-        if (N <= 1) return { fiedler: 0, volume: 0 };
-
-        // Size guard: power iteration is O(N² × 150 iterations).
-        // For N>5000 this could block the event loop for hundreds of ms.
-        // Return a structural estimate instead.
+    public static analyzeTopology(N: number, edges: SparseEdge[], normalized: boolean = false): SpectralResultPayload {
+        // FIX B.2: mega-repos opt-out. Undefined signals "unavailable".
         if (N > 25000) {
             let volume = 0;
-            for (const e of edges) volume += e.weight;
-            const avgDegree = (2 * edges.length) / N;
-            return { fiedler: avgDegree * 0.5, volume };
+            for (let i = 0; i < edges.length; i++) volume += edges[i].weight;
+            return { fiedler: undefined, volume };
         }
 
-        // --- Edge deduplication (IDÉNTICO AL ORIGINAL - NO TOCAR) ---
-        const edgeMap = new Map<number, Map<number, number>>();
+        if (N <= 1) return { fiedler: 0, volume: 0 };
 
+        // --- 1. Edge deduplication ---
+        const edgeMap = new Map<number, Map<number, number>>();
         for (let i = 0; i < edges.length; i++) {
             const e = edges[i];
             if (e.u === e.v) continue;
-
             const min = Math.min(e.u, e.v);
             const max = Math.max(e.u, e.v);
-
             let row = edgeMap.get(min);
-            if (!row) {
-                row = new Map<number, number>();
-                edgeMap.set(min, row);
-            }
-
+            if (!row) { row = new Map<number, number>(); edgeMap.set(min, row); }
             const currentW = row.get(max) || 0;
             if (e.weight > currentW) row.set(max, e.weight);
         }
 
-        // --- CSR construction pass 1 (IDÉNTICO AL ORIGINAL - NO TOCAR) ---
+        // --- 2. Degree + volume ---
         const degree = new Float64Array(N);
         const neighborCount = new Int32Array(N);
         let maxDegree = 0;
@@ -453,271 +454,280 @@ export class SpectralMath {
             }
         }
 
-        // Prefix sum → rowPtr (IDÉNTICO AL ORIGINAL - NO TOCAR)
+        // --- 3. CSR (dual: csrValues combinatorial + csrNormW normalized) ---
         const rowPtr = new Int32Array(N + 1);
         for (let i = 0; i < N; i++) rowPtr[i + 1] = rowPtr[i] + neighborCount[i];
         const nnz = rowPtr[N];
-
-        // --- CSR construction pass 2 (IDÉNTICO AL ORIGINAL - NO TOCAR) ---
         const colIdx = new Int32Array(nnz);
         const csrValues = new Float64Array(nnz);
+        const csrNormW = new Float64Array(nnz);
+
         for (let i = 0; i < N; i++) neighborCount[i] = rowPtr[i];
+
+        const invSqrtDeg = new Float64Array(N);
+        if (normalized) {
+            for (let i = 0; i < N; i++) {
+                invSqrtDeg[i] = degree[i] > 1e-12 ? 1.0 / Math.sqrt(degree[i]) : 0;
+            }
+        }
 
         for (const [u, row] of edgeMap.entries()) {
             for (const [v, w] of row.entries()) {
-                colIdx[neighborCount[u]] = v; csrValues[neighborCount[u]++] = w;
-                colIdx[neighborCount[v]] = u; csrValues[neighborCount[v]++] = w;
+                colIdx[neighborCount[u]] = v;
+                colIdx[neighborCount[v]] = u;
+                if (normalized) {
+                    const normW = w * invSqrtDeg[u] * invSqrtDeg[v];
+                    csrNormW[neighborCount[u]++] = normW;
+                    csrNormW[neighborCount[v]++] = normW;
+                } else {
+                    csrValues[neighborCount[u]++] = w;
+                    csrValues[neighborCount[v]++] = w;
+                }
             }
         }
 
-        // ─── NUEVO: Capturar seed post-mutación + Power Iteration con Deflación ───
+        // --- 4. Trivial eigenvector + dual shift ---
+        const c = normalized ? 2.5 : maxDegree * 2.0 + 1.0;
+        const trivial = new Float64Array(N);
+        let trivNormSq = 0;
 
-        const dataSeed = seed; // Semilla POST-mutación exacta del original
-
-        // ─── DUAL LAPLACIAN: Combinatorio vs Normalizado ───────────────
-        // Combinatorio (L = D - A): eigenvalues grow with N. Default for production.
-        // Normalizado (L_sym = I - D^{-1/2}AD^{-1/2}): eigenvalues in [0, 2]. For ML pipeline.
-        //
-        // TRAMPA MORTAL 2: c shift changes with the Laplacian type.
-        // Combinatorio: max eigenvalue ≈ 2×maxDegree → c = maxDegree×2+1
-        // Normalizado: max eigenvalue = 2 → c = 2.0
-        const c = normalized ? 2.0 : maxDegree * 2.0 + 1.0;
-
-        // TRAMPA MORTAL 1: v₁ of L_sym is NOT constant — it's proportional to √D.
-        // Pre-compute the normalized v₁ and D^{-1/2} for the normalized case.
-        const v1_norm = new Float64Array(N);
-        const invSqrtD = new Float64Array(N);
-
-        if (normalized) {
-            let vol = 0;
-            for (let i = 0; i < N; i++) vol += degree[i];
-            const rVol = vol > 0 ? 1.0 / Math.sqrt(vol) : 0;
-            for (let i = 0; i < N; i++) {
-                // DENORMAL GUARD: subnormal floats (e.g. degree=1e-320 from
-                // catastrophic cancellation in weighted graphs) force the CPU
-                // FPU into microcode emulation, causing massive pipeline stalls
-                // (~100x slowdown), and `1.0 / Math.sqrt(1e-320) ≈ 1e+160`
-                // overflows quickly to Infinity in subsequent SpMV products.
-                // Threshold 1e-12 is safely above the denormal range (~2.2e-308)
-                // and below any realistic graph weight in practice.
+        for (let i = 0; i < N; i++) {
+            if (normalized) {
                 if (degree[i] > 1e-12) {
-                    v1_norm[i] = Math.sqrt(degree[i]) * rVol;
-                    invSqrtD[i] = 1.0 / Math.sqrt(degree[i]);
+                    trivial[i] = Math.sqrt(degree[i]);
+                    trivNormSq += degree[i];
                 }
-                // else: treated as isolated node (v1_norm[i]=0, invSqrtD[i]=0)
+            } else {
+                if (degree[i] > 0) {
+                    trivial[i] = 1.0;
+                    trivNormSq += 1.0;
+                }
+            }
+        }
+        if (trivNormSq > 0) {
+            const rn = 1.0 / Math.sqrt(trivNormSq);
+            for (let i = 0; i < N; i++) trivial[i] *= rn;
+        }
+
+        // --- 5. Lanczos Krylov m=20 ---
+        const m = Math.min(N, 20);
+        let k_krylov = m;
+        const V = Array.from({ length: m }, () => new Float64Array(N));
+        const alpha = new Float64Array(m);
+        const beta = new Float64Array(m);
+
+        let currentSeed = seed | 0;
+        let norm = 0;
+        for (let i = 0; i < N; i++) {
+            if (!normalized || degree[i] > 1e-12) {
+                currentSeed = (Math.imul ? Math.imul(currentSeed, 1103515245) : (currentSeed * 1103515245)) + 12345 | 0;
+                V[0][i] = ((currentSeed >>> 16) & 0x7fff) / 32768.0 - 0.5;
+                norm += V[0][i] * V[0][i];
             }
         }
 
-        const powerIteration = (
-            deflateVectors: Float64Array[],
-            seedModifier: number
-        ): { val: number; vec: Float64Array } => {
+        if (norm > 0) {
+            norm = Math.sqrt(norm);
+            for (let i = 0; i < N; i++) V[0][i] /= norm;
+        }
+
+        let dotTriv = 0;
+        for (let i = 0; i < N; i++) dotTriv += V[0][i] * trivial[i];
+        norm = 0;
+        for (let i = 0; i < N; i++) {
+            V[0][i] -= dotTriv * trivial[i];
+            norm += V[0][i] * V[0][i];
+        }
+        if (norm > 0) {
+            norm = Math.sqrt(norm);
+            for (let i = 0; i < N; i++) V[0][i] /= norm;
+        } else {
+            return { fiedler: 0, volume };
+        }
+
+        for (let j = 0; j < m; j++) {
+            const w = new Float64Array(N);
+            let wIsSane = true;
+
+            for (let i = 0; i < N; i++) {
+                if (normalized && degree[i] <= 1e-12) continue;
+
+                let L_vi: number;
+                if (normalized) {
+                    L_vi = V[j][i];
+                    const end = rowPtr[i + 1];
+                    for (let k = rowPtr[i]; k < end; k++) {
+                        L_vi -= csrNormW[k] * V[j][colIdx[k]];
+                    }
+                } else {
+                    L_vi = degree[i] * V[j][i];
+                    const end = rowPtr[i + 1];
+                    for (let k = rowPtr[i]; k < end; k++) {
+                        L_vi -= csrValues[k] * V[j][colIdx[k]];
+                    }
+                }
+
+                w[i] = c * V[j][i] - L_vi;
+                // Thermal firewall + L2 overflow guard (Pipipi Furia calibration 1e150).
+                if (!Number.isFinite(w[i]) || Math.abs(w[i]) > 1e150) {
+                    wIsSane = false;
+                }
+            }
+
+            if (!wIsSane) return { fiedler: 0, volume };
+
+            let a = 0;
+            for (let i = 0; i < N; i++) a += V[j][i] * w[i];
+            alpha[j] = a;
+
+            for (let i = 0; i < N; i++) {
+                w[i] -= a * V[j][i];
+                if (j > 0) w[i] -= beta[j - 1] * V[j - 1][i];
+            }
+
+            // Full reorthogonalization double-pass
+            for (let pass = 0; pass < 2; pass++) {
+                for (let k = 0; k <= j; k++) {
+                    let proj = 0;
+                    for (let i = 0; i < N; i++) proj += w[i] * V[k][i];
+                    for (let i = 0; i < N; i++) w[i] -= proj * V[k][i];
+                }
+                dotTriv = 0;
+                for (let i = 0; i < N; i++) dotTriv += w[i] * trivial[i];
+                for (let i = 0; i < N; i++) w[i] -= dotTriv * trivial[i];
+            }
+
+            if (j < m - 1) {
+                let b = 0;
+                for (let i = 0; i < N; i++) b += w[i] * w[i];
+                b = Math.sqrt(b);
+                beta[j] = b;
+                if (b < 1e-9) { k_krylov = j + 1; break; }
+                const invB = 1.0 / b;
+                for (let i = 0; i < N; i++) V[j + 1][i] = w[i] * invB;
+            }
+        }
+
+        // Pipipi Crime 4 fix: Krylov collapse fallback
+        if (k_krylov === 0) {
+            return { fiedler: 0, volume };
+        }
+
+        // --- 6. Jacobi eigensolver over tridiagonal ---
+        const T_mat = Array.from({ length: k_krylov }, () => new Float64Array(k_krylov));
+        const eVecs = Array.from({ length: k_krylov }, () => new Float64Array(k_krylov));
+        for (let i = 0; i < k_krylov; i++) {
+            T_mat[i][i] = alpha[i];
+            eVecs[i][i] = 1.0;
+            if (i < k_krylov - 1) {
+                T_mat[i][i + 1] = beta[i];
+                T_mat[i + 1][i] = beta[i];
+            }
+        }
+
+        for (let iter = 0; iter < 1500; iter++) {
+            let maxOff = 0.0, p = 0, q = 0;
+            for (let i = 0; i < k_krylov - 1; i++) {
+                for (let j = i + 1; j < k_krylov; j++) {
+                    const val = Math.abs(T_mat[i][j]);
+                    if (val > maxOff) { maxOff = val; p = i; q = j; }
+                }
+            }
+            if (maxOff < 1e-12) break;
+
+            const theta = (T_mat[q][q] - T_mat[p][p]) / (2.0 * T_mat[p][q]);
+            let t = 1.0 / (Math.abs(theta) + Math.sqrt(theta * theta + 1.0));
+            if (theta < 0) t = -t;
+            const cos_v = 1.0 / Math.sqrt(t * t + 1.0);
+            const sin_v = cos_v * t;
+
+            for (let i = 0; i < k_krylov; i++) {
+                if (i !== p && i !== q) {
+                    const tip = T_mat[i][p], tiq = T_mat[i][q];
+                    T_mat[i][p] = T_mat[p][i] = cos_v * tip - sin_v * tiq;
+                    T_mat[i][q] = T_mat[q][i] = sin_v * tip + cos_v * tiq;
+                }
+                const eip = eVecs[i][p], eiq = eVecs[i][q];
+                eVecs[i][p] = cos_v * eip - sin_v * eiq;
+                eVecs[i][q] = sin_v * eip + cos_v * eiq;
+            }
+            const tpp = T_mat[p][p], tqq = T_mat[q][q], tpq = T_mat[p][q];
+            T_mat[p][p] = cos_v * cos_v * tpp - 2.0 * sin_v * cos_v * tpq + sin_v * sin_v * tqq;
+            T_mat[q][q] = sin_v * sin_v * tpp + 2.0 * sin_v * cos_v * tpq + cos_v * cos_v * tqq;
+            T_mat[p][q] = T_mat[q][p] = 0.0;
+        }
+
+        // --- 7. Extraction + Procrustes gauge ---
+        const eigenPairs: { val: number; vec: number[] }[] = [];
+        for (let i = 0; i < k_krylov; i++) {
+            eigenPairs.push({ val: T_mat[i][i], vec: eVecs.map(row => row[i]) });
+        }
+        eigenPairs.sort((a, b) => b.val - a.val);
+
+        const getFullVec = (y_vec: number[]): Float64Array => {
             const vec = new Float64Array(N);
-            let currentSeed = (dataSeed + seedModifier) | 0;
-            for (let i = 0; i < N; i++) {
-                currentSeed = (currentSeed * 1103515245 + 12345) | 0;
-                vec[i] = ((currentSeed >>> 16) & 0x7fff) / 32768.0 - 0.5;
+            for (let j = 0; j < k_krylov; j++) {
+                for (let i = 0; i < N; i++) vec[i] += V[j][i] * y_vec[j];
             }
+            // Procrustes gauge: dominant component (max |.|) forced positive.
+            let maxAbs = -1, signMul = 1;
+            for (let i = 0; i < N; i++) {
+                const a = Math.abs(vec[i]);
+                if (a > maxAbs) { maxAbs = a; signMul = vec[i] < 0 ? -1 : 1; }
+            }
+            if (signMul === -1) for (let i = 0; i < N; i++) vec[i] *= -1;
+            return vec;
+        };
 
-            const v_next = new Float64Array(N);
-            let mu = 0;
-            let prev_mu = -1;
-            let prevDelta = Infinity;
+        // FIX: Push incondicional con aplastamiento térmico.
+        // Preserva multiplicidad del null-space (disconnected graphs).
+        const eigenvalues: number[] = [];
+        const topK = Math.min(k_krylov, 10);
+        for (let i = 0; i < topK; i++) {
+            let lam = c - eigenPairs[i].val;
+            if (lam < 1e-12) lam = 0;
+            eigenvalues.push(lam);
+        }
 
-            for (let iter = 0; iter < 150; iter++) {
-                // 1. Deflate trivial eigenvector
-                // TRAMPA MORTAL 1: L_sym's v₁ ∝ √D, NOT constant.
-                // Subtracting mean projects against wrong subspace → thermal noise.
-                if (normalized) {
-                    // Project out v₁ = √D / √vol
-                    let dot = 0;
-                    for (let i = 0; i < N; i++) dot += vec[i] * v1_norm[i];
-                    for (let i = 0; i < N; i++) vec[i] -= dot * v1_norm[i];
-                } else {
-                    // Combinatorio: v₁ = [1,1,...,1]/√N → subtract mean
-                    let sum = 0;
-                    for (let i = 0; i < N; i++) sum += vec[i];
-                    const mean = sum / N;
-                    for (let i = 0; i < N; i++) vec[i] -= mean;
-                }
+        if (k_krylov === 0 || eigenvalues.length === 0) {
+            return { fiedler: 0, volume };
+        }
 
-                // 2. Gram-Schmidt orthogonalization against previous vectors
-                for (const dv of deflateVectors) {
-                    let dot = 0;
-                    for (let i = 0; i < N; i++) dot += vec[i] * dv[i];
-                    for (let i = 0; i < N; i++) vec[i] -= dot * dv[i];
-                }
+        const fiedler_val = eigenvalues[0];
 
-                // 3. L2 normalization
-                let normSq = 0;
-                for (let i = 0; i < N; i++) normSq += vec[i] * vec[i];
-                if (normSq < 1e-18) break;
-                const rNorm = 1.0 / Math.sqrt(normSq);
-                for (let i = 0; i < N; i++) vec[i] *= rNorm;
-
-                // 4. Fused SpMV: (cI - L)v + Rayleigh Quotient
-                let norm = 0;
-                mu = 0;
+        // DEGENERATE CASE: K_n cliques converge en k_krylov=1.
+        // V[0] es eigenvector válido del único eigenvalue no-trivial.
+        if (eigenvalues.length === 1) {
+            const v2_full = getFullVec(eigenPairs[0].vec);
+            let isSane = Number.isFinite(fiedler_val);
+            if (isSane) {
                 for (let i = 0; i < N; i++) {
-                    let Lv_i: number;
-
-                    if (normalized) {
-                        // L_sym·v = v_i - Σ (w_ij / √(d_i × d_j)) × v_j
-                        // ISOLATED NODE EXILE: degree=0 nodes have eigenvalue c in the
-                        // shifted matrix (cI - L_sym), which DOMINATES over the Fiedler.
-                        // Without exile, power iteration converges to orphan files
-                        // instead of the real architectural bottleneck.
-                        if (degree[i] === 0) {
-                            v_next[i] = 0;
-                            continue;
-                        }
-                        Lv_i = vec[i]; // Diagonal of L_sym = 1.0 for connected nodes
-                        const end = rowPtr[i + 1];
-                        for (let k = rowPtr[i]; k < end; k++) {
-                            const j = colIdx[k];
-                            Lv_i -= csrValues[k] * invSqrtD[i] * invSqrtD[j] * vec[j];
-                        }
-                    } else {
-                        // L·v = D·v - A·v (original combinatorio)
-                        Lv_i = degree[i] * vec[i];
-                        const end = rowPtr[i + 1];
-                        for (let k = rowPtr[i]; k < end; k++) {
-                            Lv_i -= csrValues[k] * vec[colIdx[k]];
-                        }
-                    }
-
-                    const val = c * vec[i] - Lv_i;
-                    v_next[i] = val;
-                    norm += val * val;
-                    mu += vec[i] * val;
-                }
-
-                // ─── HOT-LOOP THERMAL GUARD ───
-                // If SpMV overflows (c·v − L·v → Inf − Inf → NaN), abort the
-                // power iteration *immediately* with an explicit return — not
-                // a `break`, because `break` would still execute the gauge
-                // fixing pass over a corrupted vec array. V8 inlines
-                // Number.isFinite to a single native instruction; cost ~0.
-                // The outer Numerical Sanity Firewall traps the NaN here and
-                // returns the degenerate variant of the discriminated union.
-                if (!Number.isFinite(norm) || !Number.isFinite(mu)) {
-                    return { val: NaN, vec };
-                }
-
-                norm = Math.sqrt(norm);
-                if (norm < 1e-9) break;
-                // Dual convergence criterion: eigenvalue AND eigenvector stability.
-                let maxVecDiff = 0;
-                for (let j = 0; j < N; j++) {
-                    const diff = Math.abs(vec[j] - v_next[j] / norm);
-                    if (diff > maxVecDiff) maxVecDiff = diff;
-                }
-                for (let i = 0; i < N; i++) vec[i] = v_next[i] / norm;
-
-                const delta = Math.abs(mu - prev_mu);
-                if (delta < 1e-7 && maxVecDiff < 1e-6) break;
-                // Divergence guard: if eigenvalue delta is growing instead of shrinking, bail out
-                if (iter > 20 && delta > prevDelta * 2) break;
-                prevDelta = delta;
-                prev_mu = mu;
-            }
-
-            // GAUGE FIXING (Phase Canonicalization)
-            let maxAbs = -1;
-            let signMultiplier = 1;
-            for (let i = 0; i < N; i++) {
-                const absVal = Math.abs(vec[i]);
-                if (absVal > maxAbs) {
-                    maxAbs = absVal;
-                    signMultiplier = vec[i] < 0 ? -1 : 1;
+                    if (!Number.isFinite(v2_full[i])) { isSane = false; break; }
                 }
             }
-            if (signMultiplier === -1) {
-                for (let i = 0; i < N; i++) vec[i] *= -1;
-            }
-
-            // ─── 4ta Capa: RAYLEIGH RESIDUAL GUARD ───
-            // Verificación post-convergencia: ||Mv - μv||∞ < 1e-3
-            // Si la iteración convergió a basura por ruido térmico de 64-bits,
-            // dispara NaN que el Numerical Sanity Firewall atrapa.
-            let maxResidual = 0;
-            for (let i = 0; i < N; i++) {
-                let Lv_i: number;
-
-                if (normalized) {
-                    if (degree[i] === 0) continue;
-                    Lv_i = vec[i]; // Diagonal de L_sym = 1.0
-                    const end = rowPtr[i + 1];
-                    for (let k = rowPtr[i]; k < end; k++) {
-                        const j = colIdx[k];
-                        Lv_i -= csrValues[k] * invSqrtD[i] * invSqrtD[j] * vec[j];
-                    }
-                } else {
-                    Lv_i = degree[i] * vec[i]; // Combinatorio
-                    const end = rowPtr[i + 1];
-                    for (let k = rowPtr[i]; k < end; k++) {
-                        Lv_i -= csrValues[k] * vec[colIdx[k]];
-                    }
-                }
-
-                const val_i = c * vec[i] - Lv_i;
-                const residual = Math.abs(val_i - mu * vec[i]);
-                if (residual > maxResidual) maxResidual = residual;
-            }
-
-            if (maxResidual > 1e-3) {
-                return { val: NaN, vec };
-            }
-
-            return { val: Math.max(0, c - mu), vec };
-        };
-
-        // Extract λ₂ (Fiedler) — seedModifier=0 preserves original behavior
-        const res2 = powerIteration([], 0);
-
-        // Short-circuit: if λ₂ already corrupted to NaN, the second power
-        // iteration would receive a poisoned `res2.vec` as its deflation
-        // basis and contaminate from iter=0. Skip it entirely. The outer
-        // firewall would catch the result anyway, but this avoids one
-        // wasted SpMV cycle — strict HPC discipline: no thermal waste.
-        if (!Number.isFinite(res2.val)) {
-            return { fiedler: 0, volume };
+            if (!isSane) return { fiedler: 0, volume };
+            return { fiedler: fiedler_val, volume, v2: v2_full, eigenvalues };
         }
 
-        // Extract λ₃ — seedModifier=99991 ensures different subspace, deflating v₂
-        const res3 = powerIteration([res2.vec], 99991);
+        // NORMAL CASE: spectrum with >= 2 eigenvalues
+        const lambda3_val = eigenvalues[1];
+        const v2_full = getFullVec(eigenPairs[0].vec);
+        const v3_full = getFullVec(eigenPairs[1].vec);
 
-        // ─── NUMERICAL SANITY FIREWALL (Defense in Depth) ───
-        // IEEE 754 protection: if power iteration overflows on hub-heavy graphs
-        // (c·v − L·v → Inf − Inf → NaN), catch it at the boundary.
-        // We let NaN propagate through the hot loop (HPC convention) and trap
-        // it here so the solver stays a clean black box. Restores the invariant:
-        // "spectral vectors are finite, or they don't exist at all".
-        // O(N) tight loop on Float64Array — V8 auto-vectorizes; cost <0.1ms at N=25k.
-        let isSane = Number.isFinite(res2.val) && Number.isFinite(res3.val);
+        // --- 8. Final sanity firewall ---
+        let isSane = Number.isFinite(fiedler_val) && Number.isFinite(lambda3_val);
         if (isSane) {
+            for (let i = 0; i < eigenvalues.length; i++) {
+                if (!Number.isFinite(eigenvalues[i])) { isSane = false; break; }
+            }
             for (let i = 0; i < N; i++) {
-                if (!Number.isFinite(res2.vec[i]) || !Number.isFinite(res3.vec[i])) {
-                    isSane = false;
-                    break;
+                if (!Number.isFinite(v2_full[i]) || !Number.isFinite(v3_full[i])) {
+                    isSane = false; break;
                 }
             }
         }
+        if (!isSane) return { fiedler: 0, volume };
 
-        if (!isSane) {
-            // The graph is mathematically intractable in float64.
-            // Fail-closed: drop to the degenerate variant of the discriminated
-            // union. Downstream consumers narrow on `if (result.v2)` and route
-            // every file to the "orphan" cluster — no phantom bridges produced.
-            return { fiedler: 0, volume };
-        }
-
-        return {
-            fiedler: res2.val,
-            volume,
-            v2: res2.vec,
-            lambda3: res3.val,
-            v3: res3.vec,
-        };
+        return { fiedler: fiedler_val, volume, v2: v2_full, lambda3: lambda3_val, v3: v3_full, eigenvalues };
     }
 }

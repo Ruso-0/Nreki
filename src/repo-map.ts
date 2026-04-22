@@ -539,9 +539,9 @@ export async function buildDependencyGraph(
             // normalized=false: Combinatorial Laplacian.
             // Prevents D^{-1/2} from crushing hub v₂ components into false bridges.
             const spectral = SpectralMath.analyzeTopology(allFiles.length, sparseEdges, false);
-            fiedler = spectral.fiedler;
+            fiedler = spectral.fiedler ?? 0;
 
-            if (spectral.v2) {
+            if (spectral.v2 && spectral.lambda3 !== undefined && spectral.v3) {
                 // σ(v₂): mean ≈ 0 by Gram-Schmidt deflation
                 let sumSq = 0;
                 for (let i = 0; i < allFiles.length; i++) {

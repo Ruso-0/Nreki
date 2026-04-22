@@ -623,7 +623,7 @@ export class NrekiKernel {
                 && explicitlyEditedFiles.size > 1
                 && this.rootNames.size <= 1000;
 
-            let preTopology: { fiedlerValue: number; volume: number; nodeCount: number; edgeCount: number; cyclomaticComplexity?: number; activeNodes?: number; v2?: Float64Array; lambda3?: number; v3?: Float64Array; nodeIndex?: Map<string, number> } | undefined;
+            let preTopology: { fiedler?: number; volume: number; nodeCount: number; edgeCount: number; cyclomaticComplexity?: number; activeNodes?: number; v2?: Float64Array; lambda3?: number; v3?: Float64Array; eigenvalues?: number[]; nodeIndex?: Map<string, number> } | undefined;
             if (isStructuralBatch && this.mode === "project" && this.tsBackend.tsProgram) {
                 try {
                     const { SpectralTopologist } = await import("./spectral-topology.js");
@@ -649,8 +649,9 @@ export class NrekiKernel {
                         : "⚖️ (Stable)";
 
                     const delta = SpectralTopologist.computeDelta(preTopology, postTopology);
-                    const fiedlerShift = preTopology.fiedlerValue > 0
-                        ? ((delta.fiedlerPost - delta.fiedlerPre) / preTopology.fiedlerValue) * 100
+                    const preFiedlerTopo = preTopology.fiedler ?? 0;
+                    const fiedlerShift = preFiedlerTopo > 0
+                        ? ((delta.fiedlerPost - delta.fiedlerPre) / preFiedlerTopo) * 100
                         : 0;
                     const icon = delta.verdict === "APPROVED" ? "✅"
                         : delta.verdict === "APPROVED_DECOUPLING" ? "🚀 DECOUPLED"

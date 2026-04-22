@@ -207,7 +207,7 @@ export async function computeAudit(
 
     if (N > 2 && sparseEdges.length > 0) {
         const spectral = SpectralMath.analyzeTopology(N, sparseEdges);
-        fiedlerValue = spectral.fiedler;
+        fiedlerValue = spectral.fiedler ?? 0;
 
         avgDegree = (2 * sparseEdges.length) / N;
         couplingRatio = avgDegree > 0 ? fiedlerValue / avgDegree : 0;

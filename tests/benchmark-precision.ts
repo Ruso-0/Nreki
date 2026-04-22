@@ -103,13 +103,13 @@ for (const file of candidateFiles) {
     const preSparse = SpectralTopologist.buildSparseGraph(preCrown.crownNodes, preCrown.crownEdges);
     const pre = SpectralMath.analyzeTopology(preSparse.N, preSparse.sparseEdges);
     const N_AST_pre = preCrown.crownNodes.size;
-    const preResult = { fiedlerValue: pre.fiedler, volume: pre.volume, nodeCount: N_AST_pre, edgeCount: preCrown.crownEdges.length };
+    const preResult = { fiedler: pre.fiedler, volume: pre.volume, nodeCount: N_AST_pre, edgeCount: preCrown.crownEdges.length };
 
     const postEdges = preCrown.crownEdges.filter(e => e.sourceFile !== file);
     const postSparse = SpectralTopologist.buildSparseGraph(preCrown.crownNodes, postEdges);
     const post = SpectralMath.analyzeTopology(postSparse.N, postSparse.sparseEdges);
     const N_AST_post = preCrown.crownNodes.size;
-    const postResult = { fiedlerValue: post.fiedler, volume: post.volume, nodeCount: N_AST_post, edgeCount: postEdges.length };
+    const postResult = { fiedler: post.fiedler, volume: post.volume, nodeCount: N_AST_post, edgeCount: postEdges.length };
 
     const delta = SpectralTopologist.computeDelta(preResult, postResult);
     const detected = delta.verdict === "REJECTED_ENTROPY";

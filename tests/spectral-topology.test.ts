@@ -119,15 +119,55 @@ describe("SpectralMath.analyzeTopology", () => {
     });
 
     it("should produce deterministic gauge-fixed vectors", () => {
+        // K_3 triangle: highly symmetric graph.
+        // Post v10.13.0 Lanczos-PRO transplant: K_n cliques converge in
+        // k_krylov=1 because L|⊥ = n·I (single eigenvalue with multiplicity).
+        // Returns degenerate variant (v2 only, no v3). This is mathematically
+        // honest: v3 from old power iteration was a redundant second vector
+        // in the same eigenspace, not genuine architectural information.
+        const edges: SparseEdge[] = [
+            { u: 0, v: 1, weight: 1 },
+            { u: 0, v: 2, weight: 1 },
+            { u: 1, v: 2, weight: 1 },
+        ];
+        const r1 = SpectralMath.analyzeTopology(3, edges, false);
+        const r2 = SpectralMath.analyzeTopology(3, edges, false);
+
+        expect(r1.fiedler).toBe(r2.fiedler);
+        expect(r1.v2).toBeDefined();
+        expect(r2.v2).toBeDefined();
+        for (let i = 0; i < 3; i++) {
+            expect(r1.v2![i]).toBe(r2.v2![i]);
+        }
+
+        // v3 only defined for non-degenerate spectra (>= 2 distinct eigenvalues).
+        if (r1.lambda3 !== undefined && r2.lambda3 !== undefined) {
+            expect(r1.v3).toBeDefined();
+            expect(r2.v3).toBeDefined();
+            for (let i = 0; i < 3; i++) {
+                expect(r1.v3![i]).toBe(r2.v3![i]);
+            }
+        }
+    });
+
+    it("should produce deterministic v2 and v3 for non-degenerate spectrum (path P_5)", () => {
+        // Path graph P_5: 5 nodes in line. Non-degenerate spectrum.
+        // Both v2 and v3 should exist and be deterministic.
         const edges: SparseEdge[] = [
             { u: 0, v: 1, weight: 1 },
             { u: 1, v: 2, weight: 1 },
-            { u: 0, v: 2, weight: 1 },
+            { u: 2, v: 3, weight: 1 },
+            { u: 3, v: 4, weight: 1 },
         ];
-        const r1 = SpectralMath.analyzeTopology(3, edges);
-        const r2 = SpectralMath.analyzeTopology(3, edges);
+        const r1 = SpectralMath.analyzeTopology(5, edges, false);
+        const r2 = SpectralMath.analyzeTopology(5, edges, false);
 
-        for (let i = 0; i < 3; i++) {
+        expect(r1.v2).toBeDefined();
+        expect(r1.v3).toBeDefined();
+        expect(r2.v2).toBeDefined();
+        expect(r2.v3).toBeDefined();
+
+        for (let i = 0; i < 5; i++) {
             expect(r1.v2![i]).toBe(r2.v2![i]);
             expect(r1.v3![i]).toBe(r2.v3![i]);
         }
@@ -266,7 +306,7 @@ describe("SpectralTopologist integration", () => {
         }
         const post = SpectralTopologist.analyze(programPost, targetPost);
 
-        expect(pre.fiedlerValue).toBeGreaterThan(post.fiedlerValue);
+        expect(pre.fiedler).toBeGreaterThan(post.fiedler);
         expect(pre.volume).toBeGreaterThan(post.volume);
     });
 
@@ -274,8 +314,8 @@ describe("SpectralTopologist integration", () => {
         // K3 pre-edit: 3 nodes, all connected, λ₂=3.0
         // Post-edit: AI puts any on node A. A is ghost (0 edges). B,C survive. λ₂=2.0
         // Φ_pre = 3.0/3 = 1.0, Φ_post = 2.0/3 = 0.666 → 33% drop → REJECT
-        const pre = { fiedlerValue: 3.0, volume: 3, nodeCount: 3, edgeCount: 3, activeNodes: 3 };
-        const post = { fiedlerValue: 2.0, volume: 1, nodeCount: 3, edgeCount: 1, activeNodes: 2 };
+        const pre = { fiedler: 3.0, volume: 3, nodeCount: 3, edgeCount: 3, activeNodes: 3 };
+        const post = { fiedler: 2.0, volume: 1, nodeCount: 3, edgeCount: 1, activeNodes: 2 };
         const delta = SpectralTopologist.computeDelta(pre, post);
         expect(delta.verdict).toBe("REJECTED_ENTROPY");
     });
@@ -284,8 +324,8 @@ describe("SpectralTopologist integration", () => {
         // K3 pre-edit: 3 nodes, all connected, λ₂=3.0
         // Post-edit: Human DELETES function A entirely. N_AST drops to 2. B,C survive. λ₂=2.0
         // Φ_pre = 3.0/3 = 1.0, Φ_post = 2.0/2 = 1.0 → 0% drop → APPROVE
-        const pre = { fiedlerValue: 3.0, volume: 3, nodeCount: 3, edgeCount: 3, activeNodes: 3 };
-        const post = { fiedlerValue: 2.0, volume: 1, nodeCount: 2, edgeCount: 1, activeNodes: 2 };
+        const pre = { fiedler: 3.0, volume: 3, nodeCount: 3, edgeCount: 3, activeNodes: 3 };
+        const post = { fiedler: 2.0, volume: 1, nodeCount: 2, edgeCount: 1, activeNodes: 2 };
         const delta = SpectralTopologist.computeDelta(pre, post);
         expect(delta.verdict).not.toBe("REJECTED_ENTROPY");
     });
@@ -293,8 +333,8 @@ describe("SpectralTopologist integration", () => {
     it("should REJECT with adaptive epsilon on small graph", () => {
         // Small graph: N_AST=4, ε capped at 0.30
         // Φ drops 35% → exceeds 0.30 → REJECT
-        const pre = { fiedlerValue: 2.0, volume: 5, nodeCount: 4, edgeCount: 4, activeNodes: 4 };
-        const post = { fiedlerValue: 1.3, volume: 3, nodeCount: 4, edgeCount: 2, activeNodes: 3 };
+        const pre = { fiedler: 2.0, volume: 5, nodeCount: 4, edgeCount: 4, activeNodes: 4 };
+        const post = { fiedler: 1.3, volume: 3, nodeCount: 4, edgeCount: 2, activeNodes: 3 };
         const delta = SpectralTopologist.computeDelta(pre, post);
         expect(delta.verdict).toBe("REJECTED_ENTROPY");
     });
