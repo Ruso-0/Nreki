@@ -220,13 +220,11 @@ export async function computeAudit(
 
     let spectralScore = 0.5;
     let eigengapScore = 0.5;
-    let entropyScore = 0.5;
     let couplingRatio = 0;
     let fiedlerValue = 0;
     let avgDegree = 0;
     let topologyAvailable = false;
     let eigengapAvailable = false;
-    let entropyAvailable = false;
 
     if (spectralComb?.fiedler !== undefined) {
         topologyAvailable = true;
@@ -255,34 +253,25 @@ export async function computeAudit(
             const gap = spectralSym.lambda3 - spectralSym.fiedler;
             const normalizedGap = Math.sign(gap) * Math.log1p(Math.abs(gap / density));
 
-            // TENTATIVE thresholds [5.0, 2.0, 0.5]: heuristic.
-            // Recalibrate via CDF on Django JSONL in v10.14.x.
-            eigengapScore = bucketScore(normalizedGap, [5.0, 2.0, 0.5]);
+            // Calibrated from Django STGT dataset (18,225 commits).
+            // P80=3.69 (healthy), P50=3.31 (fair), P20=2.69 (critical).
+            // Empirical range [1.58, 4.09]. TENTATIVE [5.0, 2.0, 0.5] was out of range.
+            // Cross-ecosystem recalibration planned for v10.14.x via multi-ecosystem dataset.
+            eigengapScore = bucketScore(normalizedGap, [3.69, 3.31, 2.69]);
         }
 
-        // Spectral Entropy: works with any number of positive eigenvalues.
-        const posEvals = spectralSym.eigenvalues.filter(e => e > 1e-12);
-        if (posEvals.length > 1) {
-            entropyAvailable = true;
-            const sumEvals = posEvals.reduce((x, y) => x + y, 0);
-            let vnEntropy = 0;
-            for (const v of posEvals) {
-                const p = v / sumEvals;
-                if (p > 0) vnEntropy -= p * Math.log(p);
-            }
-            const maxEntropy = Math.log(posEvals.length);
-            const normalizedEntropy = maxEntropy > 0 ? vnEntropy / maxEntropy : 0;
-
-            // TENTATIVE thresholds [0.3, 0.6, 0.8]: heuristic.
-            // Lower normalized entropy = concentration = less chaos.
-            entropyScore = bucketScoreInverse(normalizedEntropy, [0.3, 0.6, 0.8]);
-        }
+        // NOTE: Spectral Entropy (vonNeumann) removed from AHI in v10.13.0.
+        // Empirical calibration (Django STGT 18,225 commits) showed ±0.05
+        // discrimination band (97.6% in [0.80, 0.90]): Von Neumann over
+        // top-K=10 eigenvalues converges to near-uniform distribution.
+        // Pure function preserved in src/spectral/vonNeumann.ts for
+        // v10.14.x investigation (IPR alternative under consideration).
     }
 
     components.push({
         name: "Spectral Integrity",
         score: spectralScore,
-        weight: topologyAvailable ? 0.15 : 0.0,
+        weight: topologyAvailable ? 0.20 : 0.0,
         label: topologyAvailable ? scoreToLabel(spectralScore) : "N/A (graph skipped for mega-repo)",
         detail: topologyAvailable
             ? `Coupling Ratio: ${couplingRatio.toFixed(3)} (λ₂: ${fiedlerValue.toFixed(4)})`
@@ -300,18 +289,6 @@ export async function computeAudit(
             ? `Normalized gap indicates cluster partition risk`
             : `Insufficient spectral dimensionality (< 2 eigenvalues)`,
         available: eigengapAvailable && isDeep,
-    });
-
-    // New component: Spectral Entropy (deep mode only)
-    components.push({
-        name: "Spectral Entropy",
-        score: entropyScore,
-        weight: isDeep && entropyAvailable ? 0.05 : 0.0,
-        label: entropyAvailable ? scoreToLabel(entropyScore) : "N/A",
-        detail: entropyAvailable
-            ? `Von Neumann entropy measures architectural information distribution`
-            : `Insufficient positive eigenvalues for entropy calculation`,
-        available: entropyAvailable && isDeep,
     });
 
     if (fiedlerValue === 0 && N > 2 && sparseEdges.length > 0) {
@@ -436,18 +413,6 @@ export async function computeAudit(
                 impactOnScore: 0,
             });
         }
-    }
-
-    if (entropyAvailable && entropyScore < 0.4) {
-        issues.push({
-            file: "project-wide",
-            severity: "medium",
-            type: "spectral_chaos",
-            detail: `Spectral entropy indicates architectural information disorder (score: ${entropyScore.toFixed(2)}). ` +
-                `Global issue: Markov Blanket localization not applicable. Review full Repo Map for orphaned modules.`,
-            action: "Consolidate orphaned micro-services or isolated file clusters.",
-            impactOnScore: 0,
-        });
     }
 
     // ═════════════════════════════════════════════════════════
