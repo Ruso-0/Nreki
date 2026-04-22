@@ -2,6 +2,54 @@
 
 All notable changes to NREKI will be documented in this file.
 
+## [10.13.0] — 2026-04-22
+
+### AHI Engine: Lanczos-PRO Transplant + Empirical Calibration
+
+Major upgrade of the spectral analysis kernel, with empirical threshold
+calibration against Django STGT dataset (18,225 commits). Cross-audit
+methodology: Claude + Pipipi Furia + Antigravity.
+
+### Added
+
+- **Lanczos-PRO eigensolver** replacing power iteration in `SpectralMath.analyzeTopology`. Converges in ~20 SpMVs vs ~150 iterations. Performance: 2-8x faster on N>1000 graphs.
+- **Top-K eigenvalues exposure** in kernel return type (variable length, no zero-padding).
+- **Degenerate discriminated union variant** for highly symmetric graphs (K_n cliques where L|⊥ = n·I collapses Krylov to k=1).
+- **`vonNeumannEntropy` + `normalizedEigengap` pure functions** in `src/spectral/`.
+- **Eigengap Integrity** component in AHI (weight 0.05 deep mode). Thresholds `[3.69, 3.31, 2.69]` calibrated from Django STGT dataset.
+- **Markov Blanket localization** for eigengap_collapse issues (1-hop Ego-Graph around top-3 PageRank nodes).
+- **`engine_version` flag** in AuditReport for transparency across scoring engine updates.
+- **`scripts/calibrate-thresholds.py`** for reproducible empirical calibration.
+
+### Fixed
+
+- **B.1 Continuous reward gradient** in bucketScore: step-function cliff-drops replaced with linear interpolation. Prevents LLM agents from perceiving zero gradient on legitimate improvements (Pipipi Furia cross-audit).
+- **B.2 Mega-repo graceful degradation**: N>25000 returns `fiedler: undefined` and audit marks Spectral Integrity as unavailable instead of false "Toxic Monolith" verdict.
+- **B.3 Symmetric Ecosystem Percentile** for PageRank tier classification: `Math.log10(N/300)` scaling replaces static p85/p60. Stable across repo sizes (micro to mega).
+- **B.4 Chronos maturity gate**: Stability component requires ≥5 sessions before reporting (avoids false 10/10 on fresh NREKI installs in legacy codebases).
+
+### Changed
+
+- **Weight rebalance** in AHI: Spectral Integrity 0.25 → 0.20, new Eigengap Integrity 0.05. Total topological weight preserved at 0.25 (v10.12.0 baseline).
+- **Dual Laplacian analysis** in computeAudit: separate L_comb call for Spectral Integrity (historical semantics), L_sym call for Eigengap Integrity. ~2x Lanczos cost in explicit audit command (not hot-path).
+
+### Deferred to v10.14.x
+
+- **Spectral Entropy component**: empirical calibration revealed ±0.05 discrimination band (97.6% of values cluster in [0.80, 0.90]). Von Neumann over top-K=10 eigenvalues converges to near-uniform distribution in real codebases. Pure function preserved, component removed from AHI. Redesign candidates: full-spectrum entropy (O(N³) impractical), baseline-relative entropy vs Erdős-Rényi null, Inverse Participation Ratio (IPR) on Fiedler vector.
+- **Cross-ecosystem recalibration**: current thresholds biased toward Python/Django monolithic MVC architecture. Multi-ecosystem dataset generation (JS/TS/Rust/Python) planned.
+- **Chronos temporal KL-divergence** for architectural velocity (requires SQLite history infrastructure).
+
+### Performance Notes
+
+- Lanczos-PRO: net positive for N>1000 graphs. Negligible for N<500.
+- Dual Laplacian: audit command ~2x longer on mega-repos (N>10000). Hot-path `interceptAtomicBatch` unaffected.
+- AHI scores may shift for existing users due to weight rebalance and calibrated Eigengap. The `engine_version: "v10.13-spectral-enriched"` flag in AuditReport distinguishes engine update from architectural deterioration.
+
+### Acknowledgments
+
+1,114 backers whose crowdfunding supported this sprint. Cross-audit methodology by Pipipi Furia (local AI auditor on RX 580) validated kernel math, caught 5+ crimes in scoring logic, and derived empirical calibration against 18,225-commit STGT dataset.
+
+
 ## v10.12.0 — React/JSX Semantic Shield (Layer 1.5)
 
 Community-funded release (1,114 backers via PayPal). Thank you for making this possible.
