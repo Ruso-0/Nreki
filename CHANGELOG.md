@@ -2,6 +2,40 @@
 
 All notable changes to NREKI will be documented in this file.
 
+## [10.14.0] — 2026-04-22
+
+### Multi-Patch Transactional batch_edit + Enforcer Hotfixes
+
+Major feature: multiple patches to the same symbol are now allowed within a single `batch_edit` transaction, implemented via clustering + micro-splicing in RAM architecture. Bundled with enforcer hotfixes (F1 CSV focus, F2 passport persist, F3 win32 case-insensitive) identified during the v10.13.0 sprint retrospective. Cross-audit methodology: Claude + Pipipi Furia.
+
+### Added
+
+- **Block 3: Multi-Patch Transactional Architecture**: `batchSemanticEdit` now clusters edits by AST node identity (`chunk.startIndex`). Multiple patches to the same symbol are applied sequentially inside an isolated chunk string ("the Limbo"), then spliced back into the global file state in one atomic step. Enables refactors that previously required node-script bypasses (e.g., renaming a field that appears in non-contiguous regions of a single function).
+- **ACID pre-check**: each `search_text` in a multi-patch group must exist in the ORIGINAL chunk content. Prevents cross-patch corruption where a later patch anchors to content injected by an earlier one.
+- **Causal re-indent inheritance**: when a preceding patch alters indentation (e.g., wrapping code in try/catch), subsequent fuzzy-matched patches inherit the new indent via split/join preservation. Intentional — keeps sequential patches causally consistent.
+- **6 new tests** in `tests/batch-edit.test.ts` covering: happy multi-patch, ACID rejection, mixed-mode rejection, re-indent causal sequencing, per-iteration 80L cap enforcement, multi-chunk reverse-offset ordering.
+
+### Fixed
+
+- **F1 — CSV parse in `compress focus`**: `focus:"A, B, C"` was being stored as the literal string `"A, B, C"` in the passport's `focusedSymbols` Set, causing subsequent `.has("A")` lookups to fail. Split on comma and register each symbol individually.
+- **F2 — Passport persists post-edit**: removed aggressive decay (`focusedSymbols.delete` + `rawRead = false`) after successful `edit`/`batch_edit`. The agent retains in-context knowledge of symbols it just mutated; Layer 1 (AST sandbox), Layer 2 (TypeScript in RAM), and Cache Tickets already cover correctness and external-edit invalidation. Eliminates the recompress-after-every-edit loop that caused multi-step refactor deadlocks.
+- **F3 — Win32 path case-insensitive comparison in enforcer hook**: `path.resolve` does not normalize Windows drive-letter case (`D:/` vs `d:/`). The enforcer hook now compares paths case-insensitively on win32 only; POSIX behavior unchanged.
+
+### Changed
+
+- **Intra-chunk overlap detection** rewritten: instead of rejecting any two edits resolving to the same AST chunk, the enforcer now accepts multi-patch groups when all edits are `mode:"patch"` and `search_text` values pass the ACID pre-check.
+- **80L payload guillotine**: moved from pre-validation sweep to per-iteration check inside the Phase C micro-splice loop. Each patch in a multi-patch group is evaluated individually; the first patch exceeding 80L aborts the transaction.
+
+### Notes
+
+- Backward compatibility: 827/827 tests from v10.13.1 baseline pass unchanged. 833/833 total including the 6 new Block 3 tests.
+- `.claude/hooks/nreki-enforcer.mjs` and `.claude/settings.json` now tracked in git (previously untracked, which meant the enforcer was local-only to each developer). F3 is visible in the repo as of this release.
+
+### Acknowledgments
+
+Cross-audit triangular: Claude sourced code-level diagnostics and cross-audited the Block 3 architecture against the AST offset mismatch vector; Pipipi Furia confirmed root causes, proposed the clustering + micro-splicing design, and authored the initial test suite; Antigravity executed the multi-step protocol with hardened rollback discipline across the v10.13.1 hotfix and v10.14.0 feature release.
+
+
 ## [10.13.1] — 2026-04-22
 
 ### Enforcer Hotfix: CSV Parse + Passport Persistence
