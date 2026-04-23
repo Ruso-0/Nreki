@@ -16,7 +16,7 @@ import fs from "fs";
 import path from "path";
 import chokidar, { type FSWatcher } from "chokidar";
 
-import { NrekiDB } from "./database.js";
+import { NrekiDB, type ChunkRecord } from "./database.js";
 import { Embedder, getEmbedder } from "./embedder.js";
 import { ASTParser, type ParseResult } from "./parser.js";
 import { Compressor, type CompressionResult } from "./compressor.js";
@@ -415,6 +415,23 @@ export class NrekiEngine {
     async searchFilesBySymbol(symbolName: string): Promise<string[]> {
         await this.initialize();
         return this.db.searchRawCode(symbolName);
+    }
+
+    /**
+     * Fast symbol lookup via SQLite. Used by ast-navigator findDefinition fast path.
+     * Returns chunks matching symbol_name. If exact=false, COLLATE NOCASE fallback.
+     */
+    async getChunksBySymbolExact(symbolName: string, exact: boolean = true): Promise<ChunkRecord[]> {
+        await this.initialize();
+        return this.db.getChunksBySymbolExact(symbolName, exact);
+    }
+
+    /**
+     * Fast raw_code substring search via SQLite. Used by nreki_navigate fast_grep.
+     */
+    async searchRawCodeLike(queryText: string, limit: number = 50): Promise<ChunkRecord[]> {
+        await this.initialize();
+        return this.db.searchRawCodeLike(queryText, limit);
     }
 
     /** Find all files that import the given file path (relative). */

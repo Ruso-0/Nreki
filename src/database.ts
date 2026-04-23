@@ -169,6 +169,7 @@ export class NrekiDB {
 
       -- Indexes for common queries
       CREATE INDEX IF NOT EXISTS idx_chunks_path ON chunks(path);
+      CREATE INDEX IF NOT EXISTS idx_chunks_symbol_name ON chunks(symbol_name);
       CREATE INDEX IF NOT EXISTS idx_usage_timestamp ON usage_log(timestamp);
 
       -- Metadata key-value store (embedding dimension, model name, etc.)
@@ -878,6 +879,73 @@ export class NrekiDB {
         const results: string[] = [];
         for (const [filePath, idents] of this.rawIdentsByFile) {
             if (idents.has(symbolName)) { results.push(filePath); }
+        }
+        return results;
+    }
+
+    /**
+     * Exact symbol definition lookup. Used by ast-navigator findDefinition fast path.
+     * Replaces the O(N) full-disk walk. Requires idx_chunks_symbol_name.
+     */
+    getChunksBySymbolExact(symbolName: string, exact: boolean = true): ChunkRecord[] {
+        if (!this._ready) return [];
+        const sql = exact
+            ? "SELECT id, path, shorthand, raw_code, node_type, start_line, end_line, start_index, end_index, symbol_name FROM chunks WHERE symbol_name = ?"
+            : "SELECT id, path, shorthand, raw_code, node_type, start_line, end_line, start_index, end_index, symbol_name FROM chunks WHERE symbol_name = ? COLLATE NOCASE";
+        const stmt = this.db.prepare(sql);
+        const results: ChunkRecord[] = [];
+        try {
+            stmt.bind([symbolName]);
+            while (stmt.step()) {
+                const row = stmt.getAsObject() as Record<string, unknown>;
+                results.push({
+                    id: row.id as number,
+                    path: row.path as string,
+                    shorthand: row.shorthand as string,
+                    raw_code: row.raw_code as string,
+                    node_type: row.node_type as string,
+                    start_line: row.start_line as number,
+                    end_line: row.end_line as number,
+                    start_index: (row.start_index as number) ?? 0,
+                    end_index: (row.end_index as number) ?? 0,
+                    symbol_name: (row.symbol_name as string) ?? "",
+                });
+            }
+        } finally {
+            stmt.free();
+        }
+        return results;
+    }
+
+    /**
+     * Fast substring search over AST chunks raw code. Used by nreki_navigate fast_grep.
+     * Returns chunks whose raw_code contains the query as substring. LIMIT-bounded.
+     */
+    searchRawCodeLike(queryText: string, limit: number = 50): ChunkRecord[] {
+        if (!this._ready) return [];
+        const stmt = this.db.prepare(
+            "SELECT id, path, shorthand, raw_code, node_type, start_line, end_line, start_index, end_index, symbol_name FROM chunks WHERE raw_code LIKE ? LIMIT ?"
+        );
+        const results: ChunkRecord[] = [];
+        try {
+            stmt.bind(["%" + queryText + "%", limit]);
+            while (stmt.step()) {
+                const row = stmt.getAsObject() as Record<string, unknown>;
+                results.push({
+                    id: row.id as number,
+                    path: row.path as string,
+                    shorthand: row.shorthand as string,
+                    raw_code: row.raw_code as string,
+                    node_type: row.node_type as string,
+                    start_line: row.start_line as number,
+                    end_line: row.end_line as number,
+                    start_index: (row.start_index as number) ?? 0,
+                    end_index: (row.end_index as number) ?? 0,
+                    symbol_name: (row.symbol_name as string) ?? "",
+                });
+            }
+        } finally {
+            stmt.free();
         }
         return results;
     }
