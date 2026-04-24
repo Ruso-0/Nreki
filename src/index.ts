@@ -243,6 +243,36 @@ if (args[0] === "deinit") {
         }
     }
 
+    // 5. Clean SKILL.md — strip only NREKI block, preserve user own rules
+    const skillMdPath = path.join(cwd, "SKILL.md");
+    if (fs.existsSync(skillMdPath)) {
+        try {
+            const content = fs.readFileSync(skillMdPath, "utf-8").replace(/^\uFEFF/, "");
+            const nrekiMarker = "name: nreki-optimizer";
+            const nrekiIdx = content.indexOf(nrekiMarker);
+            if (nrekiIdx !== -1) {
+                // Back up to include the YAML front-matter "---" fence line if it precedes our marker
+                let stripFrom = nrekiIdx;
+                const before = content.substring(0, nrekiIdx);
+                const lastFence = before.lastIndexOf("---");
+                if (lastFence !== -1 && before.substring(lastFence).trim() === "---") {
+                    stripFrom = lastFence;
+                }
+                const cleanedContent = content.substring(0, stripFrom).trim();
+                if (cleanedContent === "") {
+                    fs.unlinkSync(skillMdPath);
+                    logger.info("Deleted empty SKILL.md");
+                } else {
+                    fs.writeFileSync(skillMdPath, cleanedContent + "\n", "utf-8");
+                    logger.info("Removed NREKI instructions from SKILL.md");
+                }
+                modified = true;
+            }
+        } catch (err) {
+            logger.error(`Failed to clean SKILL.md: ${(err as Error).message}`);
+        }
+    }
+
     if (modified) {
         logger.info("NREKI deinit complete. Your environment is clean.");
     } else {
@@ -287,6 +317,23 @@ if (args[0] === "init") {
     } else {
         fs.writeFileSync(agentsPath, getAgentsMdContent(), "utf-8");
         logger.info("Created AGENTS.md in " + process.cwd());
+    }
+
+    // ─── SKILL.md (Claude Code Skills system auto-discovery via YAML frontmatter) ───
+    const skillPath = path.join(process.cwd(), "SKILL.md");
+    const skillMarker = "name: nreki-optimizer";
+
+    if (fs.existsSync(skillPath)) {
+        const existing = fs.readFileSync(skillPath, "utf-8");
+        if (existing.includes(skillMarker)) {
+            logger.info("SKILL.md already contains NREKI optimizer skill. Skipping SKILL.md update.");
+        } else {
+            fs.appendFileSync(skillPath, "\n\n" + getSkillMdContent(), "utf-8");
+            logger.info("Appended NREKI optimizer skill to existing SKILL.md");
+        }
+    } else {
+        fs.writeFileSync(skillPath, getSkillMdContent(), "utf-8");
+        logger.info("Created SKILL.md in " + process.cwd());
     }
 
     // ─── INSTALADOR CLI HOOK (Capa 1: Perro Guardián) ───
@@ -335,6 +382,13 @@ function getClaudeMdContent(): string {
 function getAgentsMdContent(): string {
     return fs.readFileSync(
         new URL("../templates/AGENTS.md", import.meta.url),
+        "utf-8"
+    );
+}
+
+function getSkillMdContent(): string {
+    return fs.readFileSync(
+        new URL("../templates/SKILL.md", import.meta.url),
         "utf-8"
     );
 }

@@ -2,6 +2,18 @@
 
 All notable changes to NREKI will be documented in this file.
 
+## [10.16.1] - 2026-04-24
+
+### Multi-agent manifest completion
+
+- `nreki init` now also generates `SKILL.md` (completes the CLAUDE.md + AGENTS.md + SKILL.md trio). SKILL.md uses YAML frontmatter (`name: nreki-optimizer`) for Claude Code Skills system auto-discovery.
+- All three manifest files share the same IMMUNE SYSTEM operational rules: 80L Guillotine, Multi-patching ACID, Anti-Sweep Shield, TTRD Shield with CFI, Engrams with ASSERT prefix.
+- Cleanup: removed legacy `skills/SKILL.md` (orphan from pre-v10.12 era).
+
+### Note on v10.16.0
+
+v10.16.0 was tagged in git (`c08e61a`) but never published to npm. v10.16.1 is the first release of the v10.16.x line to reach the npm registry. Consumers should use 10.16.1 or later.
+
 ## [10.16.0] - 2026-04-24
 
 ### ⚡ Performance
