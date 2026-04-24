@@ -432,7 +432,8 @@ export async function handleBatchEdit(
                         const changedFiles = new Set<string>();
                         for (const edit of batchOps) {
                             if (edit.mode && edit.mode !== "replace" && edit.mode !== "patch") continue;
-                            const key = `${edit.path}::${edit.symbol}`;
+                            const resolvedPath = safePath(engine.getProjectRoot(), edit.path);
+                            const key = `${resolvedPath}::${edit.symbol}`;
                             const oldRaw = result.oldRawCodes.get(key);
                             const newRaw = result.newRawCodes.get(key);
                             if (oldRaw && newRaw && detectSignatureChange(oldRaw, newRaw)) {
