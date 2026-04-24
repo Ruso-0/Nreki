@@ -610,6 +610,34 @@ describe("symbolName extraction from AST", () => {
         expect(names).toContain("handler");
     });
 
+    it("should extract top-level const declarations", async () => {
+        const code = [
+            'const plain = 1;',
+            'export const exportedValue = 2;',
+            'const config = { port: 3000 };',
+            'function outer() {',
+            '    const nested = 3;',
+            '}',
+        ].join('\n');
+
+        const result = await parser.parse("consts.ts", code);
+        const names = result.chunks.map(c => c.symbolName);
+        const exported = result.chunks.find(c => c.symbolName === "exportedValue");
+
+        expect(names).toContain("plain");
+        expect(names).toContain("exportedValue");
+        expect(names).toContain("config");
+        expect(names).not.toContain("nested");
+        expect(exported?.rawCode).toMatch(/^export const exportedValue/);
+    });
+
+    it("should not duplicate arrow functions when const declarations are indexed", async () => {
+        const result = await parser.parse("arrow.ts", "const arrow = () => 1;");
+
+        expect(result.chunks).toHaveLength(1);
+        expect(result.chunks[0].symbolName).toBe("arrow");
+    });
+
     it("should extract symbolName for Python defs", async () => {
         const code = [
             'def process_data(items):',

@@ -84,6 +84,8 @@ const LANGUAGE_CONFIGS: Record<string, LanguageConfig> = {
       (export_statement declaration: (class_declaration name: (type_identifier) @exp_class_name)) @export_class
       (lexical_declaration (variable_declarator name: (identifier) @var_name value: [(arrow_function) (function_expression)])) @arrow_func
       (export_statement declaration: (lexical_declaration (variable_declarator name: (identifier) @exp_var_name value: [(arrow_function) (function_expression)]))) @export_arrow_func
+      (lexical_declaration (variable_declarator name: (identifier) @var_name)) @var_decl
+      (export_statement declaration: (lexical_declaration (variable_declarator name: (identifier) @exp_var_name))) @export_var_decl
     `,
     },
     ".tsx": {
@@ -97,6 +99,8 @@ const LANGUAGE_CONFIGS: Record<string, LanguageConfig> = {
       (export_statement declaration: (function_declaration name: (identifier) @exp_func_name)) @export_func
       (lexical_declaration (variable_declarator name: (identifier) @var_name value: [(arrow_function) (function_expression)])) @arrow_func
       (export_statement declaration: (lexical_declaration (variable_declarator name: (identifier) @exp_var_name value: [(arrow_function) (function_expression)]))) @export_arrow_func
+      (lexical_declaration (variable_declarator name: (identifier) @var_name)) @var_decl
+      (export_statement declaration: (lexical_declaration (variable_declarator name: (identifier) @exp_var_name))) @export_var_decl
     `,
     },
     ".js": {
@@ -108,6 +112,8 @@ const LANGUAGE_CONFIGS: Record<string, LanguageConfig> = {
       (export_statement declaration: (function_declaration name: (identifier) @exp_func_name)) @export_func
       (lexical_declaration (variable_declarator name: (identifier) @var_name value: [(arrow_function) (function_expression)])) @arrow_func
       (export_statement declaration: (lexical_declaration (variable_declarator name: (identifier) @exp_var_name value: [(arrow_function) (function_expression)]))) @export_arrow_func
+      (lexical_declaration (variable_declarator name: (identifier) @var_name)) @var_decl
+      (export_statement declaration: (lexical_declaration (variable_declarator name: (identifier) @exp_var_name))) @export_var_decl
     `,
     },
     ".jsx": {
@@ -119,6 +125,8 @@ const LANGUAGE_CONFIGS: Record<string, LanguageConfig> = {
       (export_statement declaration: (function_declaration name: (identifier) @exp_func_name)) @export_func
       (lexical_declaration (variable_declarator name: (identifier) @var_name value: [(arrow_function) (function_expression)])) @arrow_func
       (export_statement declaration: (lexical_declaration (variable_declarator name: (identifier) @exp_var_name value: [(arrow_function) (function_expression)]))) @export_arrow_func
+      (lexical_declaration (variable_declarator name: (identifier) @var_name)) @var_decl
+      (export_statement declaration: (lexical_declaration (variable_declarator name: (identifier) @exp_var_name))) @export_var_decl
     `,
     },
     ".py": {
@@ -151,6 +159,8 @@ const LANGUAGE_CONFIGS: Record<string, LanguageConfig> = {
       (export_statement declaration: (class_declaration name: (type_identifier) @exp_class_name)) @export_class
       (lexical_declaration (variable_declarator name: (identifier) @var_name value: [(arrow_function) (function_expression)])) @arrow_func
       (export_statement declaration: (lexical_declaration (variable_declarator name: (identifier) @exp_var_name value: [(arrow_function) (function_expression)]))) @export_arrow_func
+      (lexical_declaration (variable_declarator name: (identifier) @var_name)) @var_decl
+      (export_statement declaration: (lexical_declaration (variable_declarator name: (identifier) @exp_var_name))) @export_var_decl
     `,
     },
     ".cts": {
@@ -165,6 +175,8 @@ const LANGUAGE_CONFIGS: Record<string, LanguageConfig> = {
       (export_statement declaration: (class_declaration name: (type_identifier) @exp_class_name)) @export_class
       (lexical_declaration (variable_declarator name: (identifier) @var_name value: [(arrow_function) (function_expression)])) @arrow_func
       (export_statement declaration: (lexical_declaration (variable_declarator name: (identifier) @exp_var_name value: [(arrow_function) (function_expression)]))) @export_arrow_func
+      (lexical_declaration (variable_declarator name: (identifier) @var_name)) @var_decl
+      (export_statement declaration: (lexical_declaration (variable_declarator name: (identifier) @exp_var_name))) @export_var_decl
     `,
     },
     ".mjs": {
@@ -176,6 +188,8 @@ const LANGUAGE_CONFIGS: Record<string, LanguageConfig> = {
       (export_statement declaration: (function_declaration name: (identifier) @exp_func_name)) @export_func
       (lexical_declaration (variable_declarator name: (identifier) @var_name value: [(arrow_function) (function_expression)])) @arrow_func
       (export_statement declaration: (lexical_declaration (variable_declarator name: (identifier) @exp_var_name value: [(arrow_function) (function_expression)]))) @export_arrow_func
+      (lexical_declaration (variable_declarator name: (identifier) @var_name)) @var_decl
+      (export_statement declaration: (lexical_declaration (variable_declarator name: (identifier) @exp_var_name))) @export_var_decl
     `,
     },
     ".cjs": {
@@ -187,6 +201,8 @@ const LANGUAGE_CONFIGS: Record<string, LanguageConfig> = {
       (export_statement declaration: (function_declaration name: (identifier) @exp_func_name)) @export_func
       (lexical_declaration (variable_declarator name: (identifier) @var_name value: [(arrow_function) (function_expression)])) @arrow_func
       (export_statement declaration: (lexical_declaration (variable_declarator name: (identifier) @exp_var_name value: [(arrow_function) (function_expression)]))) @export_arrow_func
+      (lexical_declaration (variable_declarator name: (identifier) @var_name)) @var_decl
+      (export_statement declaration: (lexical_declaration (variable_declarator name: (identifier) @exp_var_name))) @export_var_decl
     `,
     },
     ".css": {
@@ -386,14 +402,20 @@ export class ASTParser {
 
                 const node = mainCapture.node;
 
+                if (mainCapture.name === "var_decl" && node.parent?.type !== "program") continue;
+                if (mainCapture.name === "export_var_decl" && node.parent?.type !== "program") continue;
+
                 // Fix Punto 1: minified JSON / multi-attr HTML dedup by absolute bytes + symbolName
                 const isWebExt = ext === ".json" || ext === ".html" || ext === ".css";
                 const nodeKey = isWebExt
                     ? `${node.startIndex}:${node.endIndex}:${symbolName}`
-                    : `${node.startPosition.row}:${node.endPosition.row}`;
+                    : `${node.startIndex}:${node.endIndex}`;
 
                 // Skip duplicates from overlapping query patterns
                 if (seen.has(nodeKey)) continue;
+                if (!isWebExt && result.some(c =>
+                    c.symbolName === symbolName && node.startIndex < c.endIndex && c.startIndex < node.endIndex
+                )) continue;
                 seen.add(nodeKey);
 
                 // OOM Parachute (D2): truncate on files with pathological symbol counts
@@ -538,6 +560,8 @@ export class ASTParser {
             export_class: "class",
             arrow_func: "func",
             export_arrow_func: "func",
+            var_decl: "var",
+            export_var_decl: "var",
         };
 
         return typeMap[captureName] ?? captureName;
