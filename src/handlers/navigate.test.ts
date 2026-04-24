@@ -34,6 +34,8 @@ function mkDeps(chunks: ChunkRecord[]): RouterDependencies {
     const mockEngine = {
         initialize: async () => {},
         getProjectRoot: () => "/test",
+        getStats: () => ({ filesIndexed: chunks.length, totalChunks: chunks.length }),
+        indexDirectory: async () => ({ indexed: 0, skipped: 0, errors: 0 }),
         logUsage: () => {},
         fastGrep: async (query: string, limit: number) =>
             chunks.filter(c => c.raw_code.includes(query)).slice(0, limit).map(c => ({

@@ -909,6 +909,12 @@ export async function handleFastGrep(
         };
     }
 
+    const stats = engine.getStats();
+    if (stats.filesIndexed === 0) {
+        logger.info("First-time project indexing for fast_grep...");
+        await engine.indexDirectory(engine.getProjectRoot());
+    }
+
     const limit = typeof params.limit === "number" ? Math.min(100, Math.max(1, params.limit)) : 50;
     const chunks = await engine.fastGrep(query, limit);
 

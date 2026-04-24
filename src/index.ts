@@ -755,6 +755,11 @@ async function main(): Promise<void> {
     // Connect and serve
     await server.connect(transport);
 
+    if (engine) {
+        engine.startWatcher();
+        logger.info("File watcher started (reactive mode).");
+    }
+
     // Engine initialization is lazy - each tool calls engine.initialize()
     // (fast: db + parser) or engine.initializeEmbedder() (full: + ONNX model)
     // as needed. This keeps the MCP handshake under 100ms.

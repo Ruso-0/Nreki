@@ -456,21 +456,19 @@ export class NrekiEngine {
     startWatcher(): void {
         if (this.watcher) return;
 
-        const globPatterns = this.config.watchPaths.map((p) => {
-            const exts = this.config.extensions.map((e) => e.slice(1)).join(",");
-            return `${p}/**/*.{${exts}}`;
-        });
+        const shouldWatchFile = (fp: string) => this.config.extensions.includes(path.extname(fp).toLowerCase());
 
-        this.watcher = chokidar.watch(globPatterns, {
+        this.watcher = chokidar.watch(this.config.watchPaths, {
             ignored: this.config.ignorePaths,
             persistent: true,
-            ignoreInitial: false,
+            ignoreInitial: true, // prevent race with handler bootstrap
         });
 
         this.watcher
-            .on("add", (fp: string) => this.queueIndexing(fp))
-            .on("change", (fp: string) => this.queueIndexing(fp))
+            .on("add", (fp: string) => { if (shouldWatchFile(fp)) this.queueIndexing(fp); })
+            .on("change", (fp: string) => { if (shouldWatchFile(fp)) this.queueIndexing(fp); })
             .on("unlink", (fp: string) => {
+                if (!shouldWatchFile(fp)) return;
                 this.db.clearChunks(fp);
                 this.scheduleSave();
             });
