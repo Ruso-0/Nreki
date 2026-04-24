@@ -11,6 +11,9 @@ import path from "path";
 import { ASTParser, type ParsedChunk } from "./parser.js";
 import { shouldProcess } from "./utils/file-filter.js";
 import { readSource } from "./utils/read-source.js";
+import { escapeRegExp } from "./utils/imports.js";
+import type { NrekiEngine } from "./engine.js";
+import type { ChunkRecord } from "./database.js";
 
 // ─── Types ───────────────────────────────────────────────────────────
 
@@ -197,14 +200,97 @@ function getExportStatus(rawCode: string, contentLines?: string[], startLine?: n
     return null;
 }
 
+/**
+ * Replace contents of string literals and comments with spaces, preserving
+ * line and column geometry of the source. Used by findReferences AST-light
+ * filter to avoid matching inside strings/comments without shifting line/column.
+ *
+ * ORDER IS CRITICAL: strings are neutralized FIRST. If comments were processed
+ * first, "//" inside a string like "http://api.com" would eat the rest of the
+ * line and break the string regex.
+ */
+function stripCommentsAndStringsPreservingGeometry(code: string): string {
+    return code
+        .replace(/(["\u0027`])(?:\\.|(?!\1)[^\\])*\1/g, (m) => m.replace(/[^\n]/g, " "))
+        .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "))
+        .replace(/\/\/[^\n]*/g, (m) => " ".repeat(m.length));
+}
+
+/** Convert a ChunkRecord (SQLite) to a DefinitionResult. Re-reads file only if export status is ambiguous. */
+function chunkRecordToDefinition(
+    chunk: ChunkRecord,
+    projectRoot: string,
+    symbolName: string,
+): DefinitionResult {
+    const chunkKind = NODE_TYPE_TO_KIND[chunk.node_type] || chunk.node_type;
+    const relPath = path.relative(projectRoot, path.resolve(projectRoot, chunk.path)).replace(/\\/g, "/");
+    const trimmed = chunk.raw_code.trim();
+    let exportedAs: string | null = null;
+    if (trimmed.startsWith("export default ")) exportedAs = "default";
+    else if (trimmed.startsWith("export ")) exportedAs = "named";
+    else {
+        // Inner AST node (e.g. interface/type/enum without export wrapper). Re-read source line.
+        try {
+            const absPath = path.resolve(projectRoot, chunk.path);
+            const content = readSource(absPath);
+            const lineText = content.split("\n")[chunk.start_line - 1];
+            if (lineText) {
+                const lt = lineText.trim();
+                if (lt.startsWith("export default ")) exportedAs = "default";
+                else if (lt.startsWith("export ")) exportedAs = "named";
+            }
+        } catch { /* non-fatal: leave exportedAs null */ }
+    }
+    return {
+        filePath: relPath,
+        name: chunk.symbol_name || symbolName,
+        kind: chunkKind,
+        signature: extractSignature(chunk.raw_code),
+        body: chunk.raw_code,
+        startLine: chunk.start_line,
+        endLine: chunk.end_line,
+        exportedAs,
+    };
+}
+
 // ─── Core Navigation Functions ──────────────────────────────────────
 
 export async function findDefinition(
     projectRoot: string,
     parser: ASTParser,
     symbolName: string,
-    kind: SymbolKind = "any"
+    kind: SymbolKind = "any",
+    engine?: NrekiEngine,
 ): Promise<DefinitionResult[]> {
+    if (!symbolName.trim()) return [];
+
+    // Fast path: SQLite lookup if engine provided
+    if (engine) {
+        try {
+            let chunks = await engine.getChunksBySymbolExact(symbolName, true);
+            if (chunks.length === 0) {
+                chunks = await engine.getChunksBySymbolExact(symbolName, false);
+            }
+            if (chunks.length > 0) {
+                const exactFast: DefinitionResult[] = [];
+                const partialFast: DefinitionResult[] = [];
+                const lowerSymbolFast = symbolName.toLowerCase();
+                for (const chunk of chunks) {
+                    const chunkKind = NODE_TYPE_TO_KIND[chunk.node_type] || chunk.node_type;
+                    if (kind !== "any" && chunkKind !== kind) continue;
+                    const def = chunkRecordToDefinition(chunk, projectRoot, symbolName);
+                    if (chunk.symbol_name === symbolName) exactFast.push(def);
+                    else if ((chunk.symbol_name || "").toLowerCase() === lowerSymbolFast) partialFast.push(def);
+                }
+                if (exactFast.length > 0 || partialFast.length > 0) {
+                    return [...exactFast, ...partialFast];
+                }
+                // Fast path returned chunks but none passed kind filter: fall through to slow path
+            }
+        } catch { /* SQLite unavailable — fall through to slow path */ }
+    }
+
+    // Slow path: walk disk (original behavior, backward-compatible)
     await parser.initialize();
 
     const files = walkFiles(projectRoot);
@@ -261,16 +347,33 @@ export async function findDefinition(
 export async function findReferences(
     projectRoot: string,
     parser: ASTParser,
-    symbolName: string
+    symbolName: string,
+    engine?: NrekiEngine,
 ): Promise<ReferenceResult[]> {
-    await parser.initialize();
+    if (!symbolName.trim()) return [];
 
-    const files = walkFiles(projectRoot);
+    // escapeRegExp from utils is blinded-tested and avoids the fragile inline character class
+    const symbolRe = new RegExp(`\\b${escapeRegExp(symbolName)}\\b`, "g");
     const results: ReferenceResult[] = [];
-    // Word boundary regex for the symbol
-    const symbolRe = new RegExp(`\\b${symbolName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "g");
 
-    for (const filePath of files) {
+    // Candidate file selection: SQLite inverted index if engine available, else walk disk
+    let candidatePaths: string[] = [];
+    let usedFastPath = false;
+    if (engine) {
+        try {
+            const relCandidates = await engine.searchFilesBySymbol(symbolName);
+            if (relCandidates.length > 0) {
+                candidatePaths = relCandidates.map((rel) => path.resolve(projectRoot, rel));
+                usedFastPath = true;
+            }
+        } catch { /* SQLite unavailable — fall through */ }
+    }
+    if (!usedFastPath) {
+        await parser.initialize();
+        candidatePaths = walkFiles(projectRoot);
+    }
+
+    for (const filePath of candidatePaths) {
         let content: string;
         try {
             content = readSource(filePath);
@@ -278,22 +381,25 @@ export async function findReferences(
             continue;
         }
 
-        const lines = content.split("\n");
+        // AST-light: zero out string/comment content (preserves line/column geometry)
+        const cleanContent = stripCommentsAndStringsPreservingGeometry(content);
+        const cleanLines = cleanContent.split("\n");
+        const rawLines = content.split("\n");
         const relPath = path.relative(projectRoot, filePath).replace(/\\/g, "/");
 
-        for (let i = 0; i < lines.length; i++) {
+        for (let i = 0; i < cleanLines.length; i++) {
             symbolRe.lastIndex = 0;
-            const match = symbolRe.exec(lines[i]);
+            const match = symbolRe.exec(cleanLines[i]);
             if (!match) continue;
 
-            // Build context: line + 1 line above and below
+            // Context: 1 line above and below from RAW content (not cleaned)
             const ctxStart = Math.max(0, i - 1);
-            const ctxEnd = Math.min(lines.length - 1, i + 1);
-            const context = lines.slice(ctxStart, ctxEnd + 1).join("\n");
+            const ctxEnd = Math.min(rawLines.length - 1, i + 1);
+            const context = rawLines.slice(ctxStart, ctxEnd + 1).join("\n");
 
             results.push({
                 filePath: relPath,
-                line: i + 1, // 1-indexed
+                line: i + 1,
                 column: match.index + 1,
                 context,
             });
