@@ -2,6 +2,31 @@
 
 All notable changes to NREKI will be documented in this file.
 
+## [10.16.0] - 2026-04-24
+
+### ⚡ Performance
+
+- **fast_grep zero-allocation rewrite**: `handleFastGrep` now uses O(L) pointer walking with `indexOf()` (V8's memchr SIMD internally) instead of per-hit `substring()+split()` allocations.
+- **FFI diet SELECT**: `NrekiDB.fastGrep` now reads only 4 columns (path, raw_code, start_line, symbol_name) instead of 10, reducing WASM-to-JS decoding overhead by ~13%.
+
+Combined benchmark delta on NREKI src/ (10 iter, median):
+- `export` (156 hits):     11.24ms → 5.22ms  (−54%)
+- `findDefinition`:         2.98ms → 2.26ms  (−24%)
+- `chronosMemory`:          2.16ms → 1.73ms  (−20%)
+- `[OK]`:                   1.81ms → 1.52ms  (−16%)
+
+Raw data: `scripts/benchmark-fastgrep-AFTER-patch.json`. Reproducible with `npx tsx scripts/benchmark-fastgrep.ts`.
+
+### ⚠️ BREAKING CHANGES
+
+- `NrekiDB.fastGrep()` return type changed from `ChunkRecord[]` (10 columns) to `FastGrepHit[]` (4 columns: path, raw_code, start_line, symbol_name). The legacy method has been removed.
+- Consumers relying on the full 10-column result (shorthand, node_type, defect_tags, external_refs, etc.) must use `NrekiDB.getChunkById()` or similar lookups for those fields.
+
+### 📦 Multi-agent manifest
+
+- `nreki init` now generates `CLAUDE.md` + `AGENTS.md` templates, enabling compatibility with Claude Code, Codex, Gemini, and other MCP-capable agents.
+- Templates reflect current NREKI features: 80L Guillotine, Multi-patching ACID, Anti-Sweep Shield, TTRD Shield with CFI, Engrams with ASSERT prefix, Go/Python LSP sidecars.
+
 ## [10.15.1] — 2026-04-24
 
 ### Multi-Agent Manifest
