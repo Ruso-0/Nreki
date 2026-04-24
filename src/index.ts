@@ -214,6 +214,35 @@ if (args[0] === "deinit") {
         }
     }
 
+    // 4. Clean AGENTS.md — strip only NREKI block, preserve user own rules
+    const agentsMdPath = path.join(cwd, "AGENTS.md");
+    if (fs.existsSync(agentsMdPath)) {
+        try {
+            const content = fs.readFileSync(agentsMdPath, "utf-8").replace(/^\uFEFF/, "");
+            const nrekiMarker = "# Instructions for AI coding agents consuming NREKI via MCP";
+            const nrekiIdx = content.indexOf(nrekiMarker);
+            if (nrekiIdx !== -1) {
+                let stripFrom = nrekiIdx;
+                const before = content.substring(0, nrekiIdx);
+                const lastH1 = before.lastIndexOf("# AGENTS.md");
+                if (lastH1 !== -1 && before.substring(lastH1).trim() === "# AGENTS.md") {
+                    stripFrom = lastH1;
+                }
+                const cleanedContent = content.substring(0, stripFrom).trim();
+                if (cleanedContent === "") {
+                    fs.unlinkSync(agentsMdPath);
+                    logger.info("Deleted empty AGENTS.md");
+                } else {
+                    fs.writeFileSync(agentsMdPath, cleanedContent + "\n", "utf-8");
+                    logger.info("Removed NREKI instructions from AGENTS.md");
+                }
+                modified = true;
+            }
+        } catch (err) {
+            logger.error(`Failed to clean AGENTS.md: ${(err as Error).message}`);
+        }
+    }
+
     if (modified) {
         logger.info("NREKI deinit complete. Your environment is clean.");
     } else {
@@ -241,6 +270,23 @@ if (args[0] === "init") {
     } else {
         fs.writeFileSync(claudePath, getClaudeMdContent(), "utf-8");
         logger.info("Created CLAUDE.md in " + process.cwd());
+    }
+
+    // ─── AGENTS.md (AI coding agents via MCP: Codex, Gemini, others) ───
+    const agentsPath = path.join(process.cwd(), "AGENTS.md");
+    const agentsMarker = "# Instructions for AI coding agents consuming NREKI via MCP";
+
+    if (fs.existsSync(agentsPath)) {
+        const existing = fs.readFileSync(agentsPath, "utf-8");
+        if (existing.includes(agentsMarker)) {
+            logger.info("AGENTS.md already contains NREKI instructions. Skipping AGENTS.md update.");
+        } else {
+            fs.appendFileSync(agentsPath, "\n\n" + getAgentsMdContent(), "utf-8");
+            logger.info("Appended NREKI instructions to existing AGENTS.md");
+        }
+    } else {
+        fs.writeFileSync(agentsPath, getAgentsMdContent(), "utf-8");
+        logger.info("Created AGENTS.md in " + process.cwd());
     }
 
     // ─── INSTALADOR CLI HOOK (Capa 1: Perro Guardián) ───
@@ -282,6 +328,13 @@ if (args[0] === "init") {
 function getClaudeMdContent(): string {
     return fs.readFileSync(
         new URL("../templates/CLAUDE.md", import.meta.url),
+        "utf-8"
+    );
+}
+
+function getAgentsMdContent(): string {
+    return fs.readFileSync(
+        new URL("../templates/AGENTS.md", import.meta.url),
         "utf-8"
     );
 }

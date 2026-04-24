@@ -1,5 +1,5 @@
-# NREKI ACTIVE (IMMUNE SYSTEM)
-If nreki_* tools fail: fall back to native Read/Write ONLY for new files or <100L. Native tools are BLOCKED by filesystem hooks for >100L files.
+# AGENTS.md
+# Instructions for AI coding agents consuming NREKI via MCP (Codex, Gemini, others)
 
 ## 0. ZERO-CHATTER
 - Call tools immediately. No "I will now..." or "Let me...".
