@@ -695,9 +695,13 @@ process.stdin.on("end", () => {
         try {
             absPath = path.resolve(process.cwd(), targetPath).replace(/\\\\/g, "/");
             const cwdPosix = process.cwd().replace(/\\\\/g, "/");
-            const a = process.platform === "win32" ? absPath.toLowerCase() : absPath;
-            const c = process.platform === "win32" ? cwdPosix.toLowerCase() : cwdPosix;
-            if (!a.startsWith(c + "/") && a !== c) {
+            // v10.13.1: Windows path.resolve no normaliza case del drive letter.
+            // Comparar case-insensitive SOLO en win32 evita falsos positivos con
+            // "d:/Nreki/..." vs "D:/Nreki/..." sin afectar semántica en POSIX.
+            const isWin = process.platform === "win32";
+            const checkAbs = isWin ? absPath.toLowerCase() : absPath;
+            const checkCwd = isWin ? cwdPosix.toLowerCase() : cwdPosix;
+            if (!checkAbs.startsWith(checkCwd + "/") && checkAbs !== checkCwd) {
                 console.error("Blocked: Path traversal attempt.");
                 process.exit(2);
             }
