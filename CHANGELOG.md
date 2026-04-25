@@ -2,6 +2,71 @@
 
 All notable changes to NREKI will be documented in this file.
 
+## [10.17.0] - 2026-04-25
+
+### Reliability pass: 6 critical bugs fixed
+
+Pre-publish audit revealed 6 bugs in v10.16.x tags (never published to
+npm). All fixed in this release.
+
+- **fix(parser)**: `.tsx` files now use dedicated tree-sitter-tsx
+  grammar. Previously JSX caused 0 chunks, making React/Next/Remix
+  components invisible to NREKI. `da8275e`
+- **fix(engine)**: File watcher auto-starts on boot. `fast_grep`
+  bootstraps index on first call. chokidar config uses
+  `ignoreInitial: true` and root-directory watching (required by
+  chokidar@4, which dropped glob support) to prevent race with
+  handler-side indexing. `77afbed`
+- **fix(parser)**: Top-level `const`/`let` declarations now indexed.
+  Previously only arrow-function/function-expression constants
+  captured. Config objects, lookup tables, hardcoded values now
+  visible to fast_grep. `25287b2`
+- **fix(semantic-edit)**: `batch_edit` path keys normalized via
+  `safePath()` for both stores and lookups, including hologram branch.
+  Relative paths no longer silently skip blast radius detection.
+  `907b7d2` + follow-up commit.
+- **fix(path-jail)**: Windows drive letter comparison case-insensitive.
+  Lowercase `d:/` no longer blocked as traversal. Affects VSCode URIs,
+  WSL symlinks, shell copy-paste. `9c346d9`
+- **fix(signature)**: `extractSignature` strips body from one-liner
+  functions, cutting at `=>` or `{` at zero paren/angle depth. No more
+  false positive blast radius on body-only edits. `76d778e`
+
+### Performance improvements
+
+Zero-allocation rewrite + FFI diet from abandoned v10.16.0 branch now
+published in this release:
+
+- **perf(navigate)**: fast_grep O(L) pointer walk via `indexOf`
+  (V8 memchr SIMD internally). Replaces per-hit allocations.
+- **perf(fast_grep)**: Lean SELECT (4 cols) reduces WASM-to-JS FFI
+  decoding overhead. Legacy 10-col method removed (breaking for
+  any hypothetical external consumer).
+
+Combined benchmark delta on NREKI src/ (10 iter, median):
+  - export (156 hits):   11.24ms -> 5.22ms  (-54%)
+  - findDefinition:       2.98ms -> 2.26ms  (-24%)
+  - chronosMemory:        2.16ms -> 1.73ms  (-20%)
+  - [OK]:                 1.81ms -> 1.52ms  (-16%)
+
+### Multi-agent manifest
+
+`nreki init` now generates CLAUDE.md + AGENTS.md + SKILL.md. All three
+share the IMMUNE SYSTEM operational rules: 80L Guillotine, Multi-patching
+ACID, Anti-Sweep Shield, TTRD Shield with CFI, Engrams with ASSERT prefix.
+Compatible with Claude Code, Codex, Gemini, and any MCP-capable agent.
+
+### Tests
+
+877 passing, 1 skipped (Linux-specific case-sensitivity test skipped on
+win32). +26 tests added across 6 bug fixes.
+
+### Note on unreleased versions
+
+v10.16.0 (`c08e61a`) and v10.16.1 (`ae9a526`) were git-tagged but never
+reached npm registry due to the 6 bugs above discovered in pre-publish
+audit. v10.17.0 is the next version reaching npm after v10.15.1.
+
 ## [10.16.1] - 2026-04-24
 
 ### Multi-agent manifest completion
