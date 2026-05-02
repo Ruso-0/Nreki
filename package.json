@@ -1,6 +1,6 @@
 {
   "name": "@ruso-0/nreki",
-  "version": "10.17.0",
+  "version": "10.18.0",
   "description": "MCP plugin that validates AI agent edits in RAM before they touch disk. Spectral clustering, architecture diffs, bridge detection, dead code oracle, and cross-file semantic checks for TypeScript, Go (gopls), and Python (pyright). Zero cloud dependencies.",
   "main": "dist/index.js",
   "type": "module",
@@ -57,21 +57,21 @@
   "author": "Jherson Eddie Tintaya Holguin (https://github.com/Ruso-0)",
   "license": "Apache-2.0",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.12.1",
-    "@typescript-eslint/parser": "^8.59.0",
-    "chokidar": "^4.0.3",
-    "eslint": "^9.39.4",
-    "eslint-plugin-jsx-a11y": "^6.10.2",
-    "eslint-plugin-react": "^7.37.5",
-    "eslint-plugin-react-hooks": "^7.1.1",
-    "picomatch": "^4.0.3",
+    "@modelcontextprotocol/sdk": "1.23.1",
+    "@typescript-eslint/parser": "8.59.0",
+    "chokidar": "4.0.3",
+    "eslint": "9.39.4",
+    "eslint-plugin-jsx-a11y": "6.10.2",
+    "eslint-plugin-react": "7.37.5",
+    "eslint-plugin-react-hooks": "7.1.1",
+    "picomatch": "4.0.3",
     "sql.js": "1.14.1",
     "tree-sitter-wasms": "0.1.13",
-    "web-tree-sitter": "^0.24.7",
-    "zod": "^3.24.2"
+    "web-tree-sitter": "0.24.7",
+    "zod": "3.25.76"
   },
   "peerDependencies": {
-    "typescript": ">=5.5.0"
+    "typescript": ">=5.5.0 <6.0.0"
   },
   "peerDependenciesMeta": {
     "typescript": {
@@ -79,7 +79,7 @@
     }
   },
   "optionalDependencies": {
-    "@xenova/transformers": "^2.17.2"
+    "@xenova/transformers": "2.17.2"
   },
   "devDependencies": {
     "@types/node": "^22.13.10",
