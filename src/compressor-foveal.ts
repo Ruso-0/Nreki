@@ -104,7 +104,16 @@ export async function tfcCompress(
     if (parseResult.chunks.length === 0) return null;
 
     // 1. MULTI-FOCAL TARGETS + OVERLOAD FIX
-    const foci = focusInput.split(",").map(s => s.trim().toLowerCase()).filter(Boolean);
+    const ext = path.extname(filePath).toLowerCase();
+    const isCss = ext === ".css" || ext === ".html";
+
+    const foci = focusInput.split(",").map(s => {
+        let clean = s.trim().toLowerCase();
+        if (isCss) {
+            clean = clean.replace(/[.#,]/g, " ").replace(/\s+/g, " ").trim();
+        }
+        return clean;
+    }).filter(Boolean);
     const foveas = new Set<ParsedChunk>();
 
     for (const focus of foci) {
@@ -154,7 +163,6 @@ export async function tfcCompress(
     }
 
     // 3. CAUSAL PAST (External Imports)
-    const ext = path.extname(filePath).toLowerCase();
     const allImports = extractDependencies(content, ext);
     const usedImports = allImports.filter(imp => {
         const safeName = imp.localName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
