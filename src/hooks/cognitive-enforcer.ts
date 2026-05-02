@@ -204,16 +204,26 @@ export class CognitiveEnforcer {
                 // causaría deadlock ineludible. TokenMonitor es guillotina secundaria.
                 return { blocked: false };
             }
-            return { blocked: true, errorText: `Blocked: >100L file. Raw read destroys context. Use compress focus:"<symbol>".` };
+            return { blocked: true, errorText: `Blocked: file is >100 lines. Raw read would burn context budget.\n` +
+                `Required: focused compression. Emit:\n` +
+                `nreki_code action:"compress" path:"${params.path}" focus:"<symbol_name_from_outline>"\n` +
+                `Run nreki_navigate action:"outline" path:"${params.path}" first to find symbol names.` };
         }
 
         // LEY 2: Compress sin focus BLOQUEADO. Sin excepción de level:"light".
         if (action === "compress") {
             if (!params.focus) {
                 if (!passport.outlined && !passport.rawRead) {
-                    return { blocked: true, errorText: `Blocked: >100L file. Run outline first.` };
+                    return { blocked: true, errorText: `Blocked: file is >100 lines. Compression requires a symbol focus.\n` +
+                        `Required: outline before focused compression. Emit:\n` +
+                        `nreki_navigate action:"outline" path:"${params.path}"\n` +
+                        `Then emit:\n` +
+                        `nreki_code action:"compress" path:"${params.path}" focus:"<symbol_name_from_outline>".` };
                 } else {
-                    return { blocked: true, errorText: `Blocked: Monolithic compress forbidden. Use focus:"<symbol>".` };
+                    return { blocked: true, errorText: `Blocked: monolithic compression forbidden on >100 line files.\n` +
+                        `Required: focused compression. Emit:\n` +
+                        `nreki_code action:"compress" path:"${params.path}" focus:"<symbol_name_from_outline>"\n` +
+                        `Run nreki_navigate action:"outline" path:"${params.path}" first to find symbol names.` };
                 }
             }
             return { blocked: false };
