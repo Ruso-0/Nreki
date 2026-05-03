@@ -94,6 +94,7 @@ function createMockDeps(): RouterDependencies {
         shutdown: vi.fn(),
         getTopHeavyFiles: vi.fn().mockReturnValue([]),
         markFileRead: vi.fn(),
+    // TODO(v10.19.x): Deuda técnica heredada. Reemplazar escape de tipos con mock type-safe estricto para NrekiEngine.
     } as any;
 
     return {

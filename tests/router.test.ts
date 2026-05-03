@@ -26,7 +26,7 @@ import os from "os";
 
 // ─── Mock dependencies ──────────────────────────────────────────────
 
-function createMockDeps(): RouterDependencies {
+function createMockDeps(tmpDir: string): RouterDependencies {
     const mockEngine = {
         initialize: vi.fn().mockResolvedValue(undefined),
         initializeEmbedder: vi.fn().mockResolvedValue(undefined),
@@ -42,7 +42,7 @@ function createMockDeps(): RouterDependencies {
             parse: vi.fn().mockResolvedValue({ chunks: [] }),
             isSupported: vi.fn().mockReturnValue(true),
         }),
-        getProjectRoot: vi.fn().mockReturnValue(process.cwd()),
+        getProjectRoot: vi.fn().mockReturnValue(tmpDir),
         indexDirectory: vi.fn().mockResolvedValue({ indexed: 5, skipped: 0, errors: 0 }),
         getRepoMap: vi.fn().mockResolvedValue({
             map: {},
@@ -88,6 +88,7 @@ function createMockDeps(): RouterDependencies {
         shutdown: vi.fn(),
         getTopHeavyFiles: vi.fn().mockReturnValue([]),
         markFileRead: vi.fn(),
+    // TODO(v10.19.x): Deuda técnica heredada. Reemplazar escape de tipos con mock type-safe estricto para NrekiEngine.
     } as any;
 
     const monitor = new TokenMonitor();
@@ -106,9 +107,15 @@ function createMockDeps(): RouterDependencies {
 
 describe("handleNavigate", () => {
     let deps: RouterDependencies;
+    let tmpDir: string;
 
     beforeEach(() => {
-        deps = createMockDeps();
+        tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nreki-router-"));
+        deps = createMockDeps(tmpDir);
+    });
+
+    afterEach(() => {
+        try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
     });
 
     it("dispatches 'search' action correctly", async () => {
@@ -197,12 +204,12 @@ describe("handleCode", () => {
     let tmpDir: string;
 
     beforeEach(() => {
-        deps = createMockDeps();
-        tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tg-test-"));
+        tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nreki-router-"));
+        deps = createMockDeps(tmpDir);
     });
 
     afterEach(() => {
-        try { fs.rmSync(tmpDir, { recursive: true }); } catch { /* ignore */ }
+        try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
     });
 
     it("dispatches 'read' action correctly", async () => {
@@ -290,9 +297,15 @@ describe("handleCode", () => {
 
 describe("handleGuard", () => {
     let deps: RouterDependencies;
+    let tmpDir: string;
 
     beforeEach(() => {
-        deps = createMockDeps();
+        tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nreki-router-"));
+        deps = createMockDeps(tmpDir);
+    });
+
+    afterEach(() => {
+        try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
     });
 
     it("dispatches 'pin' action correctly", async () => {
@@ -351,9 +364,15 @@ describe("handleGuard", () => {
 
 describe("Response format", () => {
     let deps: RouterDependencies;
+    let tmpDir: string;
 
     beforeEach(() => {
-        deps = createMockDeps();
+        tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nreki-router-"));
+        deps = createMockDeps(tmpDir);
+    });
+
+    afterEach(() => {
+        try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
     });
 
     it("all responses have content array with text type", async () => {
