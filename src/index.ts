@@ -825,11 +825,17 @@ process.stdin.on("end", () => {
         if (size < 1024) process.exit(0);
         if (size > 500000) {
             if (/^(Write|Edit|Replace)(File)?$/i.test(tool)) {
-                console.error("Blocked: Native writes forbidden on >100L files. Use nreki_code edit or batch_edit.");
+                console.error("Blocked: native writes forbidden on >100 line files.\n" +
+                    "Required: use NREKI semantic editing. Emit:\n" +
+                    "nreki_code action:\"edit\" path:\"" + targetPath + "\" symbol:\"<symbol_name_from_outline>\"\n" +
+                    "Run nreki_navigate action:\"outline\" path:\"" + targetPath + "\" first to find symbol names.");
                 process.exit(2);
             }
             if (/^(Read|View)(File)?$/i.test(tool) || tool === "read_file") {
-                console.error("Blocked: >100L file. Use nreki_navigate outline then nreki_code compress focus.");
+                console.error("Blocked: file is >100 lines. Raw read would burn context budget.\n" +
+                    "Required: focused compression. Emit:\n" +
+                    "nreki_code action:\"compress\" path:\"" + targetPath + "\" focus:\"<symbol_name_from_outline>\"\n" +
+                    "Run nreki_navigate action:\"outline\" path:\"" + targetPath + "\" first to find symbol names.");
                 process.exit(2);
             }
             process.exit(0);
@@ -842,11 +848,17 @@ process.stdin.on("end", () => {
         }
         if (lines < 100) process.exit(0);
         if (/^(Write|Edit|Replace)(File)?$/i.test(tool)) {
-            console.error("Blocked: Native writes forbidden on >100L files. Use nreki_code edit or batch_edit.");
+            console.error("Blocked: native writes forbidden on >100 line files.\n" +
+                "Required: use NREKI semantic editing. Emit:\n" +
+                "nreki_code action:\"edit\" path:\"" + targetPath + "\" symbol:\"<symbol_name_from_outline>\"\n" +
+                "Run nreki_navigate action:\"outline\" path:\"" + targetPath + "\" first to find symbol names.");
             process.exit(2);
         }
         if (/^(Read|View)(File)?$/i.test(tool) || tool === "read_file") {
-            console.error("Blocked: >100L file. Use nreki_navigate outline then nreki_code compress focus.");
+            console.error("Blocked: file is >100 lines. Raw read would burn context budget.\n" +
+                "Required: focused compression. Emit:\n" +
+                "nreki_code action:\"compress\" path:\"" + targetPath + "\" focus:\"<symbol_name_from_outline>\"\n" +
+                "Run nreki_navigate action:\"outline\" path:\"" + targetPath + "\" first to find symbol names.");
             process.exit(2);
         }
         process.exit(0);

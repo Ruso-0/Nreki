@@ -327,7 +327,9 @@ describe("CognitiveEnforcer", () => {
         fs.writeFileSync(tempFile, Array(150).fill("const x = 1;").join("\n"));
         const result = enforcer.evaluate("nreki_code", "read", { path: tempFile });
         expect(result.blocked).toBe(true);
-        expect(result.errorText).toContain("compress focus");
+        expect(result.errorText).toContain('nreki_code action:"compress"');
+        expect(result.errorText).toContain('focus:');
+        expect(result.errorText).toContain('outline');
     });
 
     it("should allow compress with focus", () => {

@@ -76,11 +76,13 @@ export async function handleEdit(
                     type: "text" as const,
                     text:
                         `## Edit Blocked - High Friction File\n\n` +
-                        `File \`${path.basename(resolvedPath)}\` has high historical error rate (high Cognitive Friction Index).\n` +
-                        `You attempted a blind edit without mapping its full logic into your context.\n\n` +
-                        `**ACTION REQUIRED**: Run \`nreki_code action:"read" compress:false path:"${file}"\` first.\n` +
-                        `NREKI will unlock the edit once you have read the uncompressed code.\n\n` +
-                        `Chronos edit gating active.`,
+                        `File \`${path.basename(resolvedPath)}\` has high historical error rate.\n` +
+                        `Required: read the full file before editing, with chronos recovery bypass.\n\n` +
+                        `**Emit this exact JSON-RPC tool call:**\n` +
+                        `\`\`\`json\n` +
+                        `{"name":"nreki_code","arguments":{"action":"read","path":"${file}","compress":false,"_nreki_bypass":"chronos_recovery"}}\n` +
+                        `\`\`\`\n\n` +
+                        `After NREKI returns the file content, retry your edit.`,
                 }],
                 isError: true,
             };
@@ -368,9 +370,12 @@ export async function handleBatchEdit(
                         text:
                             `## Edit Blocked - High Friction File\n\n` +
                             `File \`${path.relative(engine.getProjectRoot(), p)}\` has high historical error rate.\n` +
-                            `You MUST read it uncompressed before including it in a batch edit.\n\n` +
-                            `**ACTION REQUIRED**: Run \`nreki_code action:"read" compress:false path:"${path.relative(engine.getProjectRoot(), p)}"\` first.\n\n` +
-                            `Chronos edit gating active.`,
+                            `Required: read the full file before editing, with chronos recovery bypass.\n\n` +
+                            `**Emit this exact JSON-RPC tool call:**\n` +
+                            `\`\`\`json\n` +
+                            `{"name":"nreki_code","arguments":{"action":"read","path":"${path.relative(engine.getProjectRoot(), p)}","compress":false,"_nreki_bypass":"chronos_recovery"}}\n` +
+                            `\`\`\`\n\n` +
+                            `After NREKI returns the file content, retry your batch edit.`,
                     }],
                     isError: true,
                 };
