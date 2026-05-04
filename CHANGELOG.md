@@ -1036,7 +1036,7 @@ Three localized security/correctness fixes shipped as separate bisectable commit
 
 ### Added
 - **Fiedler Vector extraction**: `analyzeTopology` now returns the full eigenvector `v2` (bridge fragility map)
-- **Third eigenvalue (λ₃)**: Enables spectral gap computation ∇(λ₃ - λ₂) for predictive analysis
+- **Third eigenvalue (λ₃)**: Enables spectral gap computation ∇(λ₃ - λ₂) for spectral gap analysis
 - **Third eigenvector (v3)**: Topological stress coordinates per node
 - **Gauge Fixing**: Deterministic phase canonicalization prevents sign ambiguity across commits (critical for ML pipelines)
 - **Gram-Schmidt deflation**: Reusable `powerIteration()` function extracts arbitrary eigenvectors
