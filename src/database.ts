@@ -126,6 +126,23 @@ export class NrekiDB {
         // Setup schema first (creates metadata table needed for dimension lookup)
         this.setupSchema();
 
+        // ─── Schema Version Gate ──────────────────────────────────────
+        // Force full reindex when parser/index format changes between
+        // versions. Users on older schema get a clean slate without
+        // manual .nreki.db deletion. Bumped in v10.18.1.
+        const PARSER_SCHEMA_VERSION = 2;
+        const storedSchema = parseInt(this.getMetadata("parser_schema_version") ?? "0", 10);
+        if (storedSchema < PARSER_SCHEMA_VERSION) {
+            if (storedSchema > 0) {
+                logger.warn(
+                    `[NREKI] Parser schema upgrade (v${storedSchema} -> v${PARSER_SCHEMA_VERSION}). ` +
+                    `Forcing full AST reindex.`
+                );
+            }
+            this.wipeAllIndexedData();
+            this.setMetadata("parser_schema_version", String(PARSER_SCHEMA_VERSION));
+        }
+
         // Load vector index using stored dimension (default 512)
         const storedDim = parseInt(this.getMetadata("embedding_dim") ?? "512", 10);
         if (fs.existsSync(this.vecPath)) {
@@ -278,8 +295,41 @@ export class NrekiDB {
     }
 
     /**
+     * Wipes all indexed data from RAM and disk.
+     * Prevents ghost vectors and ID drift by cleaning up sequence counters
+     * and orphaned .vec files. Used during cache invalidation.
+     */
+    private wipeAllIndexedData(): void {
+        // 1. Purge disk artifacts to prevent ghost data on next boot
+        if (fs.existsSync(this.vecPath)) {
+            try {
+                fs.unlinkSync(this.vecPath);
+            } catch (err) {
+                logger.warn(`[NREKI] Could not delete stale vector index ${this.vecPath}: ${err}`);
+            }
+        }
+
+        // 2. Wipe SQL tables
+        this.db.run("DELETE FROM chunks");
+        this.db.run("DELETE FROM files");
+
+        // 3. Reset AUTOINCREMENT sequences (ONLY for wiped tables)
+        try {
+            this.db.run("DELETE FROM sqlite_sequence WHERE name = 'chunks'");
+        } catch {
+            // Ignored: sqlite_sequence is created automatically by SQLite on first INSERT
+        }
+
+        // 4. Reset RAM state
+        this.vecIndex = new VectorIndex();
+        this.kwIndex = new KeywordIndex();
+        this.rawIdentsByFile.clear();
+        this.rawIdentsLoaded = false;
+    }
+
+    /**
      * Check if the active embedding dimension matches what was stored.
-     * If they differ, clear all vectors and update the stored dimension.
+     * If they differ, wipe all indexed data and update the stored dimension.
      * Returns true if a re-index is needed.
      */
     checkEmbeddingDimension(activeDim: number): boolean {
@@ -287,14 +337,7 @@ export class NrekiDB {
 
         if (storedDim && parseInt(storedDim, 10) !== activeDim) {
             logger.warn(`Embedding dimension changed (${storedDim} -> ${activeDim}). Clearing index.`);
-            // Clear all vectors
-            this.vecIndex = new VectorIndex();
-            // Clear all chunks and files so they get re-indexed
-            this.db.run("DELETE FROM chunks");
-            this.db.run("DELETE FROM files");
-            this.kwIndex = new KeywordIndex();
-            this.rawIdentsByFile.clear();
-            this.rawIdentsLoaded = false;
+            this.wipeAllIndexedData();
             this.setMetadata("embedding_dim", String(activeDim));
             return true;
         }

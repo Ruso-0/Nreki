@@ -2,6 +2,79 @@
 
 All notable changes to NREKI will be documented in this file.
 
+## [10.18.1] - 2026-05-04
+
+# v10.18.1 — Cache schema versioning + web-symbol normalization + sprint hygiene
+
+Sprint focus: bug fixes, cache invalidation correctness, test isolation, and
+documentation precision. Closes the migration TODO from v10.18.0
+("schema-versioned cache invalidation shipping in v10.18.1") and the web-symbol
+asymmetry between parser storage and edit lookup.
+
+## Fixed
+
+### `batch_edit` / `edit` symbol normalization on web files (CSS / HTML / JSON)
+Asymmetric normalization: the parser stripped prefixes at chunk storage time
+(`.` for CSS classes, `#` for IDs, quotes for JSON keys), but `semanticEdit`
+and `batchSemanticEdit` matched against the raw caller-supplied symbol. LLM
+callers sending `.className` or `"key"` now correctly match parser-stored
+chunks. Also closes a key-leak in blast-radius detection where `oldRawCodes` /
+`newRawCodes` were keyed off the normalized symbol while downstream lookups
+used the raw input. (`59c3934`)
+
+### Test isolation leak in router and backward-compat tests
+Tests no longer pollute global state; previously-flaky tests now pass
+deterministically. (`77ae56c`)
+
+## Added
+
+### Parser schema version gate for cache invalidation (`69e5acd`, `bb10bb4`)
+Bumped `PARSER_SCHEMA_VERSION` to 2. Existing `.nreki.db` caches with v1 schema
+are auto-wiped on next run, eliminating the manual `rm -rf .nreki .nreki.db`
+step that v10.18.0 documented as a workaround. Includes characterization tests
+covering version-gate transitions.
+
+### `READ_ONLY_ACTIONS` whitelist in circuit breaker (`9717ce7`)
+20 read-only actions skip the `containsError()` heuristic to prevent
+false-positive doom-loop trips during normal navigation. `filter_output` is
+deliberately excluded — it remains the primary gateway for detecting
+test/build error loops. `response.isError === true` continues to trip the
+breaker even on read-only actions (hardware signal vs heuristic).
+
+### NREKI artifact exclusion from `DEFAULT_IGNORE` (`a50df2d`)
+`**/.nreki/**` and `**/.nreki.db*` patterns now ignored by default. Critical
+for upcoming corpus work — without this, NREKI re-indexed its own artifacts on
+every repo it scanned.
+
+## Changed
+
+### Removed `nreki-enforcer` hook integration (`fe2c0d0`)
+Cleanup of unused Claude hook. No functional impact on package consumers.
+
+## Documentation
+
+### Clarified v7.x spectral gap language in CHANGELOG (`2efa26a`)
+"for predictive analysis" → "for spectral gap analysis" in the v7.x λ₃ entry.
+AHI is a deterministic descriptive composite (percentile bucketing P20/P50/P80
+over peer-group distribution), not a supervised classifier — phrasing aligned
+with that design.
+
+## Tests
+
+- 909 passed | 1 skipped (893 base + 16 new from
+  `tests/web-symbol-normalization.test.ts`).
+- `tsc --noEmit` clean.
+
+## Compatibility
+
+- **Recommended runtime: Claude Sonnet 4.6+** for 1M context window support.
+  The 1M context beta header was retired for Sonnet 4.5/4 on 2026-04-30;
+  NREKI's compression remains effective on 200k contexts but benefits more
+  from 1M.
+- `@modelcontextprotocol/sdk` remains pinned at `1.23.1` (1.24.0+ injects
+  `execution: { taskSupport: 'forbidden' }` which breaks NREKI's tool
+  registration).
+
 ## [10.18.0] - 2026-05-02
 
 # v10.18.0 — Schema compatibility + CSS parser + UX deadlock fix
@@ -1036,7 +1109,7 @@ Three localized security/correctness fixes shipped as separate bisectable commit
 
 ### Added
 - **Fiedler Vector extraction**: `analyzeTopology` now returns the full eigenvector `v2` (bridge fragility map)
-- **Third eigenvalue (λ₃)**: Enables spectral gap computation ∇(λ₃ - λ₂) for predictive analysis
+- **Third eigenvalue (λ₃)**: Enables spectral gap computation ∇(λ₃ - λ₂) for spectral gap analysis
 - **Third eigenvector (v3)**: Topological stress coordinates per node
 - **Gauge Fixing**: Deterministic phase canonicalization prevents sign ambiguity across commits (critical for ML pipelines)
 - **Gram-Schmidt deflation**: Reusable `powerIteration()` function extracts arbitrary eigenvectors
