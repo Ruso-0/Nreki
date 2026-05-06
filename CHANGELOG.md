@@ -2,6 +2,55 @@
 
 All notable changes to NREKI will be documented in this file.
 
+## [10.19.0] - 2026-05-05
+
+# v10.19.0 — Zombie shutdown fix (parent watchdog + signal handlers)
+
+Sprint focus: prevent NREKI processes from surviving as zombies when their
+parent terminal or MCP host dies — observed in field as 8.5 GB RAM consumption
+with `--enable-embeddings` orphaned after Windows console close. Two-layer
+defense ensures shutdown across signal-delivery edge cases.
+
+## Fixed
+
+### Zombie processes after parent terminal / MCP host dies (`32b4fc3`)
+Two-layer defense added to `gracefulShutdown`:
+
+1. **Signal/event listeners** — extends prior SIGINT/SIGTERM coverage with
+   SIGHUP (POSIX hygiene) and `process.stdin` `'close'` / `'end'` events
+   (cross-platform pipe-break detection). The handler remains 100% synchronous;
+   async paths in shutdown risked event-loop stalls leaving the process zombie
+   indefinitely.
+
+2. **Parent process watchdog** — `process.kill(ppid, 0)` polled every 3s,
+   triggers shutdown on `ESRCH`. Covers Windows X-close of console (where
+   SIGHUP and stdin EOF are not delivered), MCP host SIGKILLed, and
+   Electron-inherited handles keeping pipes alive after the parent dies.
+   Timer is `unref()`'d so MCP graceful close still terminates cleanly.
+
+`EPERM` / `EACCES` on the parent check are treated as parent-alive (avoids
+false-positive suicide when antivirus or permissions block `OpenProcess`).
+
+Empirically verified on Windows: physical X-click on PowerShell window running
+`nreki --enable-embeddings` kills the process within `PARENT_CHECK_MS` (~3s),
+including the 505 MB orphan observed during sprint testing.
+
+## Notes
+
+### Test platform skips
+Integration tests (`zombie-shutdown.test.ts`, `zombie-watchdog.test.ts`) are
+skipped on Windows due to non-deterministic process-state semantics during PID
+transitions and ~25s NREKI cold-start time exceeding test budget. Linux/Mac
+CI passes deterministically. Manual verification (PowerShell X-click) is the
+source of truth for Windows.
+
+### Follow-up: cold-start investigation (v10.20.0)
+Cold-start time on Windows measured at ~25s (24.2-28.5s observed across 10
+runs, all paths including dist load, WASM grammars, LSP sidecar boot). Tracked
+as separate work item for v10.20.0 — outside zombie-fix scope. Boot-time
+control experiment confirmed the shutdown fix does not regress cold-start
+(median 24.7s post vs 25.5s pre — within statistical noise).
+
 ## [10.18.1] - 2026-05-04
 
 # v10.18.1 — Cache schema versioning + web-symbol normalization + sprint hygiene
