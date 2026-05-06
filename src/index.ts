@@ -723,8 +723,16 @@ server.tool(
 async function main(): Promise<void> {
     const transport = new StdioServerTransport();
 
-    // Graceful shutdown
+    // Graceful shutdown 100% SÍNCRONO.
+    // Async en shutdown path = riesgo de zombie atascado en event loop.
+    // El verdadero GC es process.exit(0) — el SO recupera RAM nativa
+    // de @xenova/transformers y mata in-flight requests instantáneo.
+    let _shuttingDown = false;
+
     const gracefulShutdown = () => {
+        if (_shuttingDown) return;
+        _shuttingDown = true;
+
         try {
             if (kernel && kernel.isBooted()) {
                 chronos.syncTechDebt(
@@ -732,13 +740,60 @@ async function main(): Promise<void> {
                     kernel.getCurrentErrorCount(),
                 );
             }
-            chronos.forcePersist();
-        } catch { /* Never block shutdown */ }
-        engine.shutdown();
+            chronos.forcePersist();  // sync, ~2-5ms, dentro de ventana de gracia del SO
+        } catch { /* never block shutdown on telemetry */ }
+
+        try { engine.shutdown(); } catch { /* swallow */ }
+
         process.exit(0);
     };
-    process.on("SIGINT", gracefulShutdown);
+
+    process.on("SIGINT",  gracefulShutdown);
     process.on("SIGTERM", gracefulShutdown);
+    process.on("SIGHUP",  gracefulShutdown);  // higiene POSIX
+
+    // Bala de plata multiplataforma: detecta orfandad cuando padre
+    // cierra terminal en Windows (donde SIGHUP no llega). stdin es
+    // EventEmitter — múltiples listeners sin colisión con SDK.
+    process.stdin.on("close", gracefulShutdown);
+    process.stdin.on("end",   gracefulShutdown);
+
+    // ─── Parent Process Watchdog ────────────────────────────────────
+    // Fallback final cuando los signals/events del SO fallan en
+    // X-close de Windows o SIGKILL abrupto del cliente MCP.
+    // Verificado empíricamente: process.stdin EOF y SIGHUP NO se
+    // disparan al cerrar consola PowerShell con X (PID 16696
+    // sobrevivió al test manual). Polling activo del ppid es el
+    // único mecanismo confiable cross-platform.
+    const initialPpid = process.ppid;
+    if (initialPpid && initialPpid !== 1) {
+        const PARENT_CHECK_MS = 3000;
+        const parentWatchdog = setInterval(() => {
+            if (_shuttingDown) {
+                clearInterval(parentWatchdog);
+                return;
+            }
+            try {
+                // kill(0) verifica existencia sin enviar señal de terminación.
+                process.kill(initialPpid, 0);
+            } catch (err) {
+                const code = (err as NodeJS.ErrnoException).code;
+                // EPERM/EACCES: padre VIVO pero SO/AV deniega inspección.
+                // NO disparar shutdown — falso positivo letal.
+                if (code === "EPERM" || code === "EACCES") {
+                    return;
+                }
+                // ESRCH (No such process) o cualquier otro: padre muerto.
+                clearInterval(parentWatchdog);
+                gracefulShutdown();
+            }
+        }, PARENT_CHECK_MS);
+
+        // Vital: permite que el event loop termine si MCP cierra limpio.
+        // Sin unref(), el setInterval mantiene NREKI vivo eternamente
+        // bloqueando el shutdown ordenado del cliente.
+        parentWatchdog.unref();
+    }
 
     // ─── AUTO-PATCH SECURITY HOOK (v10.x) ───
     try {
