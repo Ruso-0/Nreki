@@ -117,7 +117,28 @@ export class IndexPipeline {
             });
         }
 
-        this.db.insertChunksBatch(chunkData);
+        const chunkIds = this.db.insertChunksBatch(chunkData);
+
+        // Type Ledger: persist consumes/produces relations from parser.
+        const ioRows: Array<{ chunkId: number; ioType: "consumes" | "produces"; typeName: string }> = [];
+        for (let i = 0; i < result.chunks.length; i++) {
+            const chunk = result.chunks[i];
+            const chunkId = chunkIds[i];
+            if (chunk.consumes !== undefined && chunk.consumes.length > 0) {
+                for (const typeName of chunk.consumes) {
+                    ioRows.push({ chunkId, ioType: "consumes", typeName });
+                }
+            }
+            if (chunk.produces !== undefined && chunk.produces.length > 0) {
+                for (const typeName of chunk.produces) {
+                    ioRows.push({ chunkId, ioType: "produces", typeName });
+                }
+            }
+        }
+        if (ioRows.length > 0) {
+            this.db.insertSymbolIosBulk(ioRows);
+        }
+
         this.db.upsertFile(filePath, this.db.hashContent(content));
 
         return result;
