@@ -8,7 +8,7 @@
 
 ## 1. NAVIGATION & READING
 - NEVER use Explore, Bash `grep`/`rg`/`cat`, or native `Read File`.
-- EXACT SEARCH: ALWAYS use `nreki_navigate action:"fast_grep"`. Returns 3D AST topological coordinates (File + Symbol + Line) via SQLite index, orders of magnitude faster than bash grep.
+- EXACT SEARCH: ALWAYS use `nreki_navigate action:"fast_grep"`. Returns 3D AST topological coordinates (File + Symbol + Line) via in-memory SoA cache populated at engine boot from pre-segmented AST chunks. Hot path uses V8's vectorized `String.prototype.indexOf` (memchr SIMD), zero SQLite calls per query. Median P50 ~1.7ms / P99 ~3.6ms on NREKI's own corpus, ~13× faster than ripgrep in mediana.
 - SEMANTIC SEARCH: Use `nreki_navigate action:"search"` for concept-based queries.
 - BATCH READING: NEVER read functions one by one. Use ONE call with comma-separated targets: `nreki_code action:"compress" focus:"func1, func2, func3"`.
 - LARGE FILES: `nreki_navigate action:"outline"` auto-expands HIGH-risk methods up to 6,000 token budget.
