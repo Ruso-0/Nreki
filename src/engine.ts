@@ -26,6 +26,7 @@ import { readSource } from "./utils/read-source.js";
 import { safePath } from "./utils/path-jail.js";
 import { getOrGenerateRepoMap, type RepoMap, type DependencyGraph } from "./repo-map.js";
 import { logger } from "./utils/logger.js";
+import { FastGrepRAMCache } from "./search/fastgrep-cache.js";
 
 // ─── Sub-pipelines (v8.5 decomposition) ──────────────────────────────
 import { IndexPipeline } from "./engine/indexer.js";
@@ -112,6 +113,8 @@ class SessionTracker {
 // ─── NREKI Engine ────────────────────────────────────────────────────
 
 export class NrekiEngine {
+    public readonly fgCache = new FastGrepRAMCache();
+
     private db: NrekiDB;
     private embedder: Embedder;
     private parser: ASTParser;
@@ -189,6 +192,10 @@ export class NrekiEngine {
             () => this.initialize(),
             () => this.initializeEmbedder(),
         );
+
+        // Tier 2 Paso A: populate SoA cache from DB.
+        // Inert for now; it is not used in the hot path until Paso B.
+        this.fgCache.populateFromDatabase(this.db);
 
         this.initialized = true;
     }

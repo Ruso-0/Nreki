@@ -55,6 +55,14 @@ export interface FastGrepHit {
     symbol_name: string;
 }
 
+export type FastGrepCacheRow = [
+    id: number,
+    path: string,
+    symbolName: string,
+    startLine: number,
+    rawCode: string,
+];
+
 export interface HybridSearchResult {
     id: number;
     path: string;
@@ -522,7 +530,7 @@ export class NrekiDB {
             endIndex?: number;
             symbolName?: string;
         }>
-    ): void {
+    ): number[] {
         this.db.run("BEGIN TRANSACTION");
         // Track inserted IDs so we can purge RAM indexes on rollback.
         // Without this, SQLite rows are reverted but vecIndex/kwIndex
@@ -545,6 +553,7 @@ export class NrekiDB {
                 insertedIds.push(id);
             }
             this.db.run("COMMIT");
+            return insertedIds;
         } catch (err) {
             this.db.run("ROLLBACK");
             // Purge phantom entries from in-memory indexes
@@ -1097,6 +1106,29 @@ export class NrekiDB {
                     start_line: row.start_line as number,
                     symbol_name: (row.symbol_name as string) ?? "",
                 });
+            }
+        } finally {
+            stmt.free();
+        }
+        return results;
+    }
+
+    exportAllChunksForCache(): FastGrepCacheRow[] {
+        if (!this._ready) return [];
+        const stmt = this.db.prepare(
+            "SELECT id, path, symbol_name, start_line, raw_code FROM chunks ORDER BY id ASC"
+        );
+        const results: FastGrepCacheRow[] = [];
+        try {
+            while (stmt.step()) {
+                const row = stmt.get() as Array<string | number | null>;
+                results.push([
+                    row[0] as number,
+                    row[1] as string,
+                    (row[2] as string | null) ?? "",
+                    row[3] as number,
+                    row[4] as string,
+                ]);
             }
         } finally {
             stmt.free();
