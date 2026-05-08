@@ -1,5 +1,10 @@
 import type { FastGrepCacheRow, NrekiDB } from "../database.js";
 
+// Singleton para slots tombstoneados. Cero alocaciones por
+// tombstone (el patrón new Uint32Array(0) cada vez sería
+// wasteful en sesiones con muchos saves del watcher).
+const EMPTY_U32 = new Uint32Array(0);
+
 export class FastGrepRAMCache {
     public chunkIds = new Uint32Array(0);
     public startLines = new Uint32Array(0);
@@ -40,6 +45,31 @@ export class FastGrepRAMCache {
             this.symbols.push(row[2]);
             this.rawCodes.push(row[4]);
             this.lineMaps.push(this.buildLineMap(row[4]));
+        }
+    }
+
+    /**
+     * Mark all slots whose path === filePath as tombstones.
+     * Slots remain in arrays (no compaction) but are zeroed
+     * so they no longer match queries.
+     *
+     * Idempotent: re-tombstoning the same path is O(N) but
+     * touches nothing (paths[i] is already "").
+     *
+     * Cost: zero allocations. The empty Uint32Array is a module-level
+     * singleton; "" is V8's interned EmptyString.
+     */
+    tombstoneByPath(filePath: string): void {
+        if (filePath === "") return;
+        for (let i = 0; i < this.size; i++) {
+            if (this.paths[i] === filePath) {
+                this.rawCodes[i] = "";
+                this.paths[i] = "";
+                this.symbols[i] = "";
+                this.lineMaps[i] = EMPTY_U32;
+                this.startLines[i] = 0;
+                this.chunkIds[i] = 0;
+            }
         }
     }
 

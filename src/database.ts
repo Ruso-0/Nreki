@@ -102,7 +102,7 @@ export class NrekiDB {
     private _hasIndexedFiles = false;
     private fastGrepStmt: SqlJsStatement | null = null;
     private usageStmt: SqlJsStatement | null = null;
-    private fastGrepCacheInvalidationHook: (() => void) | null = null;
+    private fastGrepCacheInvalidationHook: ((filePath?: string) => void) | null = null;
 
     constructor(dbPath: string = ".nreki.db") {
         this.dbPath = dbPath;
@@ -175,7 +175,7 @@ export class NrekiDB {
         return this._ready;
     }
 
-    setFastGrepCacheInvalidationHook(hook: (() => void) | null): void {
+    setFastGrepCacheInvalidationHook(hook: ((filePath?: string) => void) | null): void {
         this.fastGrepCacheInvalidationHook = hook;
     }
 
@@ -520,7 +520,7 @@ export class NrekiDB {
         // skip re-indexing when the file is recreated with the same content.
         this.db.run("DELETE FROM files WHERE path = ?", [filePath]);
         this._hasIndexedFiles = false;
-        this.fastGrepCacheInvalidationHook?.();
+        this.fastGrepCacheInvalidationHook?.(filePath);
     }
 
     // ─── Chunk Operations ────────────────────────────────────────

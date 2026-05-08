@@ -181,7 +181,13 @@ export class NrekiEngine {
     async initialize(): Promise<void> {
         if (this.initialized) return;
         await this.db.initialize();
-        this.db.setFastGrepCacheInvalidationHook(() => this.fgCache.clear());
+        this.db.setFastGrepCacheInvalidationHook((filePath?: string) => {
+            if (filePath !== undefined) {
+                this.fgCache.tombstoneByPath(filePath);
+            } else {
+                this.fgCache.clear();
+            }
+        });
         await this.parser.initialize();
 
         // Inject dependencies into sub-pipelines

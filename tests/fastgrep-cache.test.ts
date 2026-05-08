@@ -195,4 +195,81 @@ describe("FastGrepRAMCache", () => {
             cache.rawCodes[0] = originalCode;
         });
     });
+
+    it("tombstoneByPath limpia solo los slots del path indicado", async () => {
+        await withDb(async (db) => {
+            insertChunk(db, "export function a1() {}", { filePath: "src/a.ts", symbolName: "a1" });
+            insertChunk(db, "export function a2() {}", { filePath: "src/a.ts", symbolName: "a2" });
+            insertChunk(db, "export function b1() {}", { filePath: "src/b.ts", symbolName: "b1" });
+
+            const cache = new FastGrepRAMCache();
+            cache.populateFromDatabase(db);
+            cache.tombstoneByPath("src/a.ts");
+
+            expect(cache.size).toBe(3);
+            expect(cache.rawCodes[0]).toBe("");
+            expect(cache.paths[0]).toBe("");
+            expect(cache.rawCodes[1]).toBe("");
+            expect(cache.paths[1]).toBe("");
+            expect(cache.rawCodes[2]).toBe("export function b1() {}");
+            expect(cache.paths[2]).toBe("src/b.ts");
+        });
+    });
+
+    it("tombstoneByPath es idempotente", async () => {
+        await withDb(async (db) => {
+            insertChunk(db, "export function a1() {}", { filePath: "src/a.ts", symbolName: "a1" });
+            insertChunk(db, "export function a2() {}", { filePath: "src/a.ts", symbolName: "a2" });
+            insertChunk(db, "export function b1() {}", { filePath: "src/b.ts", symbolName: "b1" });
+
+            const cache = new FastGrepRAMCache();
+            cache.populateFromDatabase(db);
+            cache.tombstoneByPath("src/a.ts");
+            const afterFirst = {
+                rawCodes: [...cache.rawCodes],
+                paths: [...cache.paths],
+                symbols: [...cache.symbols],
+                startLines: [...cache.startLines],
+                chunkIds: [...cache.chunkIds],
+            };
+
+            cache.tombstoneByPath("src/a.ts");
+
+            expect(cache.rawCodes).toEqual(afterFirst.rawCodes);
+            expect(cache.paths).toEqual(afterFirst.paths);
+            expect(cache.symbols).toEqual(afterFirst.symbols);
+            expect([...cache.startLines]).toEqual(afterFirst.startLines);
+            expect([...cache.chunkIds]).toEqual(afterFirst.chunkIds);
+        });
+    });
+
+    it("tombstoneByPath con path inexistente es no-op", async () => {
+        await withDb(async (db) => {
+            insertChunk(db, "export function a1() {}", { filePath: "src/a.ts", symbolName: "a1" });
+            insertChunk(db, "export function b1() {}", { filePath: "src/b.ts", symbolName: "b1" });
+
+            const cache = new FastGrepRAMCache();
+            cache.populateFromDatabase(db);
+            const rawCodes = [...cache.rawCodes];
+
+            cache.tombstoneByPath("/nonexistent/file.ts");
+
+            expect(cache.rawCodes).toEqual(rawCodes);
+        });
+    });
+
+    it("tombstoneByPath con string vacío es no-op (defensive)", async () => {
+        await withDb(async (db) => {
+            insertChunk(db, "export function a1() {}", { filePath: "src/a.ts", symbolName: "a1" });
+            insertChunk(db, "export function b1() {}", { filePath: "src/b.ts", symbolName: "b1" });
+
+            const cache = new FastGrepRAMCache();
+            cache.populateFromDatabase(db);
+            const rawCodes = [...cache.rawCodes];
+
+            cache.tombstoneByPath("");
+
+            expect(cache.rawCodes).toEqual(rawCodes);
+        });
+    });
 });
