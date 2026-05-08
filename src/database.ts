@@ -13,7 +13,7 @@
  * portable to any platform without native compilation.
  */
 
-import initSqlJs, { type Database as SqlJsDatabase } from "sql.js";
+import initSqlJs, { type Database as SqlJsDatabase, type Statement as SqlJsStatement } from "sql.js";
 import crypto from "crypto";
 import fs from "fs";
 import path from "path";
@@ -99,6 +99,8 @@ export class NrekiDB {
     private vecPath: string;
     private initPromise: Promise<void> | null = null;
     private _ready = false;
+    private _hasIndexedFiles = false;
+    private fastGrepStmt: SqlJsStatement | null = null;
     private fastGrepCacheInvalidationHook: (() => void) | null = null;
 
     constructor(dbPath: string = ".nreki.db") {
@@ -164,6 +166,8 @@ export class NrekiDB {
         this.rebuildKeywordIndex();
 
         this._ready = true;
+        const result = this.db.exec("SELECT 1 FROM files LIMIT 1");
+        this._hasIndexedFiles = result.length > 0 && result[0].values.length > 0;
     }
 
     get ready(): boolean {
@@ -249,6 +253,11 @@ export class NrekiDB {
         for (const sql of migrationColumns) {
             try { this.db.run(sql); } catch { /* column already exists */ }
         }
+
+        this.db.run(`
+            PRAGMA cache_size = -65536;
+            PRAGMA temp_store = MEMORY;
+        `);
     }
 
     /** Rebuild the in-memory keyword index from all existing chunks. */
@@ -323,6 +332,11 @@ export class NrekiDB {
      * and orphaned .vec files. Used during cache invalidation.
      */
     private wipeAllIndexedData(): void {
+        if (this.fastGrepStmt) {
+            this.fastGrepStmt.free();
+            this.fastGrepStmt = null;
+        }
+
         // 1. Purge disk artifacts to prevent ghost data on next boot
         if (fs.existsSync(this.vecPath)) {
             try {
@@ -348,6 +362,7 @@ export class NrekiDB {
         this.kwIndex = new KeywordIndex();
         this.rawIdentsByFile.clear();
         this.rawIdentsLoaded = false;
+        this._hasIndexedFiles = false;
         this.fastGrepCacheInvalidationHook?.();
     }
 
@@ -461,9 +476,15 @@ export class NrekiDB {
             "INSERT OR REPLACE INTO files (path, hash, indexed_at) VALUES (?, ?, datetime('now'))",
             [filePath, hash]
         );
+        this._hasIndexedFiles = true;
     }
 
     clearChunks(filePath: string): void {
+        if (this.fastGrepStmt) {
+            this.fastGrepStmt.free();
+            this.fastGrepStmt = null;
+        }
+
         const stmt = this.db.prepare("SELECT id FROM chunks WHERE path = ?");
         const ids: number[] = [];
         try {
@@ -489,6 +510,7 @@ export class NrekiDB {
         // PATCH-6: Also remove from files table so fileNeedsUpdate() doesn't
         // skip re-indexing when the file is recreated with the same content.
         this.db.run("DELETE FROM files WHERE path = ?", [filePath]);
+        this._hasIndexedFiles = false;
         this.fastGrepCacheInvalidationHook?.();
     }
 
@@ -1103,25 +1125,36 @@ export class NrekiDB {
      */
     fastGrepSQLite(queryText: string, limit: number = 50): FastGrepHit[] {
         if (!this._ready) return [];
-        const stmt = this.db.prepare(
-            "SELECT path, raw_code, start_line, symbol_name FROM chunks WHERE INSTR(raw_code, ?) > 0 LIMIT ?"
-        );
+        if (!this.fastGrepStmt) {
+            this.fastGrepStmt = this.db.prepare(
+                "SELECT path, raw_code, start_line, symbol_name FROM chunks WHERE INSTR(raw_code, ?) > 0 LIMIT ?"
+            );
+        }
+        const stmt = this.fastGrepStmt;
+        stmt.reset();
+        stmt.bind([queryText, limit]);
         const results: FastGrepHit[] = [];
-        try {
-            stmt.bind([queryText, limit]);
-            while (stmt.step()) {
-                const row = stmt.getAsObject() as Record<string, unknown>;
-                results.push({
-                    path: row.path as string,
-                    raw_code: row.raw_code as string,
-                    start_line: row.start_line as number,
-                    symbol_name: (row.symbol_name as string) ?? "",
-                });
-            }
-        } finally {
-            stmt.free();
+        while (stmt.step()) {
+            const row = stmt.get() as Array<string | number | null>;
+            results.push({
+                path: row[0] as string,
+                raw_code: row[1] as string,
+                start_line: row[2] as number,
+                symbol_name: (row[3] as string | null) ?? "",
+            });
         }
         return results;
+    }
+
+    hasIndexedFiles(): boolean {
+        if (this._hasIndexedFiles) return true;
+        if (!this._ready) return false;
+        const result = this.db.exec("SELECT 1 FROM files LIMIT 1");
+        if (result.length > 0 && result[0].values.length > 0) {
+            this._hasIndexedFiles = true;
+            return true;
+        }
+        return false;
     }
 
     exportAllChunksForCache(): FastGrepCacheRow[] {
@@ -1149,6 +1182,10 @@ export class NrekiDB {
 
     close(): void {
         if (!this.db) return;
+        if (this.fastGrepStmt) {
+            this.fastGrepStmt.free();
+            this.fastGrepStmt = null;
+        }
         this.save();
         this.db.close();
     }

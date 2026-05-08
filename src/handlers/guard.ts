@@ -309,8 +309,7 @@ export async function handleAudit(
     const { engine, kernel, chronos } = deps;
     await engine.initialize();
 
-    const stats = engine.getStats();
-    if (stats.filesIndexed === 0) {
+    if (!engine.hasIndexedFiles()) {
         logger.info("First-time project indexing — this may take a moment for large repos.");
         await engine.indexDirectory(engine.getProjectRoot());
     }

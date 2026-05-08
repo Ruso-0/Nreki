@@ -37,8 +37,7 @@ export async function handleSearch(
 
     const query = params.query ?? "";
 
-    const stats = engine.getStats();
-    if (stats.filesIndexed === 0) {
+    if (!engine.hasIndexedFiles()) {
         logger.info("First-time project indexing — this may take a moment for large repos.");
         await engine.indexDirectory(engine.getProjectRoot());
     }
@@ -514,8 +513,7 @@ export async function handleMap(
     const { engine } = deps;
     await engine.initialize();
 
-    const stats = engine.getStats();
-    if (stats.filesIndexed === 0) {
+    if (!engine.hasIndexedFiles()) {
         logger.info("First-time project indexing — this may take a moment for large repos.");
         await engine.indexDirectory(engine.getProjectRoot());
     }
@@ -718,8 +716,7 @@ export async function handleOrphanOracle(
     const { engine } = deps;
     await engine.initialize();
 
-    const stats = engine.getStats();
-    if (stats.filesIndexed === 0) {
+    if (!engine.hasIndexedFiles()) {
         logger.info("First-time project indexing — this may take a moment for large repos.");
         await engine.indexDirectory(engine.getProjectRoot());
     }
@@ -909,8 +906,7 @@ export async function handleFastGrep(
         };
     }
 
-    const stats = engine.getStats();
-    if (stats.filesIndexed === 0) {
+    if (!engine.hasIndexedFiles()) {
         logger.info("First-time project indexing for fast_grep...");
         await engine.indexDirectory(engine.getProjectRoot());
     }
@@ -988,13 +984,9 @@ export async function handleFastGrep(
 
     lines.splice(1, 0, `Found ${matchCount} match(es) within ${chunks.length} AST symbol(s).\n`);
 
-    try {
-        const { Embedder } = await import("../embedder.js");
-        const tokens = Embedder.estimateTokens(lines.join("\n"));
-        engine.logUsage("nreki_navigate:fast_grep", tokens, tokens, 0);
-    } catch {}
+    const finalText = lines.join("\n");
 
     return {
-        content: [{ type: "text" as const, text: lines.join("\n") }],
+        content: [{ type: "text" as const, text: finalText }],
     };
 }

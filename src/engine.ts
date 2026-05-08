@@ -601,6 +601,10 @@ export class NrekiEngine {
         };
     }
 
+    hasIndexedFiles(): boolean {
+        return this.db.hasIndexedFiles();
+    }
+
     /** Log token usage for a tool invocation. */
     logUsage(
         toolName: string,
