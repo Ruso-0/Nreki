@@ -49,6 +49,41 @@ export class FastGrepRAMCache {
     }
 
     /**
+     * Append new chunks to the cache without rebuilding it.
+     * Used after incremental indexFile to add freshly-indexed
+     * chunks of a single path. The caller is responsible for
+     * having tombstoned old slots of that path FIRST (otherwise
+     * old + new coexist).
+     *
+     * Does NOT compact tombstones. Compaction is a separate
+     * operation (commit 3).
+     */
+    appendChunks(rows: FastGrepCacheRow[]): void {
+        if (rows.length === 0) return;
+        const oldSize = this.size;
+        const newSize = oldSize + rows.length;
+
+        const newChunkIds = new Uint32Array(newSize);
+        newChunkIds.set(this.chunkIds);
+        const newStartLines = new Uint32Array(newSize);
+        newStartLines.set(this.startLines);
+
+        for (let i = 0; i < rows.length; i++) {
+            const row = rows[i];
+            const slot = oldSize + i;
+            newChunkIds[slot] = row[0];
+            newStartLines[slot] = row[3];
+            this.paths.push(row[1]);
+            this.symbols.push(row[2]);
+            this.rawCodes.push(row[4]);
+            this.lineMaps.push(this.buildLineMap(row[4]));
+        }
+
+        this.chunkIds = newChunkIds;
+        this.startLines = newStartLines;
+    }
+
+    /**
      * Mark all slots whose path === filePath as tombstones.
      * Slots remain in arrays (no compaction) but are zeroed
      * so they no longer match queries.

@@ -238,7 +238,12 @@ export class NrekiEngine {
     async indexFile(filePath: string): Promise<ParseResult | null> {
         await this.initialize();
         const result = await this.indexer.indexFile(filePath);
-        this.fgCache.populateFromDatabase(this.db);
+        // Incremental fgCache update: tombstone old slots of
+        // this path, append fresh chunks. Avoids O(N) full
+        // repopulate per file.
+        this.fgCache.tombstoneByPath(filePath);
+        const rows = this.db.exportChunksByPath(filePath);
+        this.fgCache.appendChunks(rows);
         return result;
     }
 

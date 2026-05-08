@@ -3,7 +3,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 
-import { NrekiDB } from "../src/database.js";
+import { NrekiDB, type FastGrepCacheRow } from "../src/database.js";
 import { NrekiEngine } from "../src/engine.js";
 import { FastGrepRAMCache } from "../src/search/fastgrep-cache.js";
 
@@ -163,8 +163,11 @@ describe("FastGrepRAMCache", () => {
             const cache = new FastGrepRAMCache();
             cache.populateFromDatabase(db);
 
-            for (let i = 1; i < cache.chunkIds.length; i++) {
-                expect(cache.chunkIds[i]).toBeGreaterThan(cache.chunkIds[i - 1]);
+            let lastSeen = 0;
+            for (let i = 0; i < cache.size; i++) {
+                if (cache.paths[i] === "") continue;
+                expect(cache.chunkIds[i]).toBeGreaterThan(lastSeen);
+                lastSeen = cache.chunkIds[i];
             }
         });
     });
@@ -271,5 +274,101 @@ describe("FastGrepRAMCache", () => {
 
             expect(cache.rawCodes).toEqual(rawCodes);
         });
+    });
+
+    it("appendChunks crece arrays correctamente", async () => {
+        await withDb(async (db) => {
+            insertChunk(db, "export function a1() {}", { filePath: "src/a.ts", symbolName: "a1" });
+            insertChunk(db, "export function b1() {}", { filePath: "src/b.ts", symbolName: "b1" });
+
+            const cache = new FastGrepRAMCache();
+            cache.populateFromDatabase(db);
+            const row: FastGrepCacheRow = [99, "src/new.ts", "newSym", 42, "line1\nline2"];
+
+            cache.appendChunks([row]);
+
+            expect(cache.size).toBe(3);
+            expect(cache.paths[2]).toBe("src/new.ts");
+            expect(cache.symbols[2]).toBe("newSym");
+            expect(cache.startLines[2]).toBe(42);
+            expect(cache.chunkIds[2]).toBe(99);
+            expect(cache.rawCodes[2]).toBe("line1\nline2");
+            expect(cache.lineMaps[2].length).toBe(1);
+        });
+    });
+
+    it("appendChunks de array vacio es no-op", async () => {
+        await withDb(async (db) => {
+            insertChunk(db, "export function a1() {}", { filePath: "src/a.ts", symbolName: "a1" });
+            insertChunk(db, "export function b1() {}", { filePath: "src/b.ts", symbolName: "b1" });
+
+            const cache = new FastGrepRAMCache();
+            cache.populateFromDatabase(db);
+            const before = {
+                size: cache.size,
+                paths: [...cache.paths],
+                symbols: [...cache.symbols],
+                rawCodes: [...cache.rawCodes],
+                lineMapLengths: cache.lineMaps.map((m) => m.length),
+                startLines: [...cache.startLines],
+                chunkIds: [...cache.chunkIds],
+            };
+
+            cache.appendChunks([]);
+
+            expect(cache.size).toBe(before.size);
+            expect(cache.paths).toEqual(before.paths);
+            expect(cache.symbols).toEqual(before.symbols);
+            expect(cache.rawCodes).toEqual(before.rawCodes);
+            expect(cache.lineMaps.map((m) => m.length)).toEqual(before.lineMapLengths);
+            expect([...cache.startLines]).toEqual(before.startLines);
+            expect([...cache.chunkIds]).toEqual(before.chunkIds);
+        });
+    });
+
+    it("tombstone + append simula re-index limpio", async () => {
+        await withDb(async (db) => {
+            insertChunk(db, "export function a1() {}", { filePath: "src/a.ts", symbolName: "a1" });
+            insertChunk(db, "export function a2() {}", { filePath: "src/a.ts", symbolName: "a2" });
+            insertChunk(db, "export function b1() {}", { filePath: "src/b.ts", symbolName: "b1" });
+
+            const cache = new FastGrepRAMCache();
+            cache.populateFromDatabase(db);
+            cache.tombstoneByPath("src/a.ts");
+            cache.appendChunks([[4, "src/a.ts", "a3", 1, "export function a3() {}"]]);
+
+            expect(cache.size).toBe(4);
+            expect(cache.paths[0]).toBe("");
+            expect(cache.paths[1]).toBe("");
+            expect(cache.paths[2]).toBe("src/b.ts");
+            expect(cache.paths[3]).toBe("src/a.ts");
+            expect(cache.chunkIds[3]).toBe(4);
+        });
+    });
+
+    it("engine.indexFile actualiza fgCache incrementalmente", async () => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), "nreki-fg-incremental-"));
+        const srcDir = path.join(dir, "src");
+        fs.mkdirSync(srcDir);
+        const filePath = path.join(srcDir, "x.ts");
+        fs.writeFileSync(filePath, "export function foo() { return 1; }");
+
+        const engine = new NrekiEngine({ dbPath: path.join(dir, "engine.db"), watchPaths: [srcDir] });
+        try {
+            await engine.indexFile(filePath);
+            expect(engine.fgCache.size).toBeGreaterThan(0);
+            expect(engine.fgCache.symbols).toContain("foo");
+
+            fs.writeFileSync(filePath, "export function bar() { return 2; }");
+            await engine.indexFile(filePath);
+
+            const liveSymbols = engine.fgCache.symbols.filter((_, i) => engine.fgCache.paths[i] !== "");
+            expect(liveSymbols).toContain("bar");
+            expect(liveSymbols).not.toContain("foo");
+            expect(engine.fgCache.paths.some((p) => p === "")).toBe(true);
+        } finally {
+            engine.shutdown();
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
     });
 });

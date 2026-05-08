@@ -1216,6 +1216,36 @@ export class NrekiDB {
         return results;
     }
 
+    /**
+     * Exports chunks for a specific file path. Used by the
+     * incremental fgCache update path (after indexFile).
+     * Returns rows in the same FastGrepCacheRow format as
+     * exportAllChunksForCache but filtered.
+     */
+    exportChunksByPath(filePath: string): FastGrepCacheRow[] {
+        if (!this._ready) return [];
+        const stmt = this.db.prepare(
+            "SELECT id, path, symbol_name, start_line, raw_code FROM chunks WHERE path = ? ORDER BY id ASC"
+        );
+        const results: FastGrepCacheRow[] = [];
+        try {
+            stmt.bind([filePath]);
+            while (stmt.step()) {
+                const row = stmt.get() as Array<string | number | null>;
+                results.push([
+                    row[0] as number,
+                    row[1] as string,
+                    (row[2] as string | null) ?? "",
+                    row[3] as number,
+                    row[4] as string,
+                ]);
+            }
+        } finally {
+            stmt.free();
+        }
+        return results;
+    }
+
     close(): void {
         if (!this.db) return;
         if (this.fastGrepStmt) {
