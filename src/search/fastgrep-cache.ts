@@ -35,13 +35,13 @@ export class FastGrepRAMCache {
     }
 
     private buildLineMap(rawCode: string): Uint32Array {
-        const newlines: number[] = [];
-        for (let i = 0; i < rawCode.length; i++) {
-            if (rawCode.charCodeAt(i) === 10) {
-                newlines.push(i);
-            }
+        const offsets: number[] = [];
+        let pos = rawCode.indexOf("\n");
+        while (pos !== -1) {
+            offsets.push(pos);
+            pos = rawCode.indexOf("\n", pos + 1);
         }
-        return Uint32Array.from(newlines);
+        return Uint32Array.from(offsets);
     }
 
     /**
