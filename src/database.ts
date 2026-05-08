@@ -130,7 +130,8 @@ export class NrekiDB {
         // Force full reindex when parser/index format changes between
         // versions. Users on older schema get a clean slate without
         // manual .nreki.db deletion. Bumped in v10.18.1.
-        const PARSER_SCHEMA_VERSION = 2;
+        // Bumped in v10.20.0 (symbol_io table added).
+        const PARSER_SCHEMA_VERSION = 3;
         const storedSchema = parseInt(this.getMetadata("parser_schema_version") ?? "0", 10);
         if (storedSchema < PARSER_SCHEMA_VERSION) {
             if (storedSchema > 0) {
@@ -215,6 +216,15 @@ export class NrekiDB {
         created_at  TEXT DEFAULT (datetime('now')),
         PRIMARY KEY (path, symbol_name)
       );
+
+      CREATE TABLE IF NOT EXISTS symbol_io (
+        chunk_id   INTEGER NOT NULL,
+        io_type    TEXT NOT NULL CHECK (io_type IN ('consumes', 'produces')),
+        type_name  TEXT NOT NULL,
+        PRIMARY KEY (chunk_id, io_type, type_name)
+      );
+      CREATE INDEX IF NOT EXISTS idx_symbol_io_type_name ON symbol_io(type_name);
+      CREATE INDEX IF NOT EXISTS idx_symbol_io_chunk     ON symbol_io(chunk_id);
     `);
 
         // Migration: add columns for existing DBs that lack them
@@ -456,6 +466,10 @@ export class NrekiDB {
             this.vecIndex.deleteBulk(ids);
             this.kwIndex.deleteBulk(ids);
             if (this.rawIdentsLoaded) this.rawIdentsByFile.delete(filePath);
+            this.db.run(
+                "DELETE FROM symbol_io WHERE chunk_id IN (SELECT id FROM chunks WHERE path = ?)",
+                [filePath]
+            );
             this.db.run("DELETE FROM chunks WHERE path = ?", [filePath]);
         }
         // PATCH-6: Also remove from files table so fileNeedsUpdate() doesn't
@@ -970,6 +984,63 @@ export class NrekiDB {
         }
         return results;
     }
+
+
+    insertSymbolIosBulk(rows: { chunkId: number; ioType: 'consumes' | 'produces'; typeName: string }[]): void {
+        if (rows.length === 0) return;
+        this.db.run("BEGIN");
+        try {
+            const stmt = this.db.prepare(
+                "INSERT OR IGNORE INTO symbol_io (chunk_id, io_type, type_name) VALUES (?, ?, ?)"
+            );
+            try {
+                for (const r of rows) {
+                    stmt.run([r.chunkId, r.ioType, r.typeName]);
+                }
+            } finally {
+                stmt.free();
+            }
+            this.db.run("COMMIT");
+        } catch (err) {
+            this.db.run("ROLLBACK");
+            throw err;
+        }
+    }
+
+    getChunksByConsumedType(typeName: string): number[] {
+        const stmt = this.db.prepare(
+            "SELECT chunk_id FROM symbol_io WHERE type_name = ? AND io_type = 'consumes'"
+        );
+        const results: number[] = [];
+        try {
+            stmt.bind([typeName]);
+            while (stmt.step()) {
+                const row = stmt.getAsObject() as { chunk_id: number };
+                results.push(row.chunk_id);
+            }
+        } finally {
+            stmt.free();
+        }
+        return results;
+    }
+
+    getChunksByProducedType(typeName: string): number[] {
+        const stmt = this.db.prepare(
+            "SELECT chunk_id FROM symbol_io WHERE type_name = ? AND io_type = 'produces'"
+        );
+        const results: number[] = [];
+        try {
+            stmt.bind([typeName]);
+            while (stmt.step()) {
+                const row = stmt.getAsObject() as { chunk_id: number };
+                results.push(row.chunk_id);
+            }
+        } finally {
+            stmt.free();
+        }
+        return results;
+    }
+
 
     /**
      * Fast substring search over AST chunks raw code. Used by nreki_navigate fast_grep.
