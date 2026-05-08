@@ -99,6 +99,7 @@ export class NrekiDB {
     private vecPath: string;
     private initPromise: Promise<void> | null = null;
     private _ready = false;
+    private fastGrepCacheInvalidationHook: (() => void) | null = null;
 
     constructor(dbPath: string = ".nreki.db") {
         this.dbPath = dbPath;
@@ -167,6 +168,10 @@ export class NrekiDB {
 
     get ready(): boolean {
         return this._ready;
+    }
+
+    setFastGrepCacheInvalidationHook(hook: (() => void) | null): void {
+        this.fastGrepCacheInvalidationHook = hook;
     }
 
     // ─── Schema ──────────────────────────────────────────────────
@@ -343,6 +348,7 @@ export class NrekiDB {
         this.kwIndex = new KeywordIndex();
         this.rawIdentsByFile.clear();
         this.rawIdentsLoaded = false;
+        this.fastGrepCacheInvalidationHook?.();
     }
 
     /**
@@ -483,6 +489,7 @@ export class NrekiDB {
         // PATCH-6: Also remove from files table so fileNeedsUpdate() doesn't
         // skip re-indexing when the file is recreated with the same content.
         this.db.run("DELETE FROM files WHERE path = ?", [filePath]);
+        this.fastGrepCacheInvalidationHook?.();
     }
 
     // ─── Chunk Operations ────────────────────────────────────────
@@ -1085,12 +1092,16 @@ export class NrekiDB {
     }
 
     /**
+     * @deprecated Tier 2 Paso B: superseded by NrekiEngine.fastGrep
+     * which uses RAM-resident fgCache. This SQLite-backed implementation
+     * is kept as fallback / debugging tool. Do not call from hot paths.
+     *
      * Exact substring search for the nreki_navigate fast_grep action.
      * Uses SQLite INSTR (no wildcard interpretation — safe for arbitrary queries)
      * and SELECTs only the 4 columns handleFastGrep consumes to minimize
      * sql.js WASM row-serialization cost.
      */
-    fastGrep(queryText: string, limit: number = 50): FastGrepHit[] {
+    fastGrepSQLite(queryText: string, limit: number = 50): FastGrepHit[] {
         if (!this._ready) return [];
         const stmt = this.db.prepare(
             "SELECT path, raw_code, start_line, symbol_name FROM chunks WHERE INSTR(raw_code, ?) > 0 LIMIT ?"

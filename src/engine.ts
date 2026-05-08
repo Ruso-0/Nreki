@@ -177,6 +177,7 @@ export class NrekiEngine {
     async initialize(): Promise<void> {
         if (this.initialized) return;
         await this.db.initialize();
+        this.db.setFastGrepCacheInvalidationHook(() => this.fgCache.clear());
         await this.parser.initialize();
 
         // Inject dependencies into sub-pipelines
@@ -217,12 +218,16 @@ export class NrekiEngine {
 
     async indexFile(filePath: string): Promise<ParseResult | null> {
         await this.initialize();
-        return this.indexer.indexFile(filePath);
+        const result = await this.indexer.indexFile(filePath);
+        this.fgCache.populateFromDatabase(this.db);
+        return result;
     }
 
     async indexDirectory(dirPath: string): Promise<{ indexed: number; skipped: number; errors: number }> {
         await this.initialize();
-        return this.indexer.indexDirectory(dirPath);
+        const result = await this.indexer.indexDirectory(dirPath);
+        this.fgCache.populateFromDatabase(this.db);
+        return result;
     }
 
     // ─── Search (delegated to SearchEngine) ─────────────────────────
@@ -446,13 +451,32 @@ export class NrekiEngine {
         return this.db.searchRawCodeLike(queryText, limit);
     }
 
-    /**
-     * Exact substring search via SQLite INSTR. Returns only (path, raw_code,
-     * start_line, symbol_name). Used by the nreki_navigate fast_grep handler.
-     */
+    /** Exact substring search via RAM-resident fgCache. */
     async fastGrep(queryText: string, limit: number = 50): Promise<FastGrepHit[]> {
         await this.initialize();
-        return this.db.fastGrep(queryText, limit);
+        if (this.fgCache.size === 0) return [];
+
+        const cache = this.fgCache;
+        const results: FastGrepHit[] = [];
+        const N = cache.size;
+
+        for (let i = 0; i < N && results.length < limit; i++) {
+            const raw = cache.rawCodes[i];
+            // Skip tombstones when Paso C introduces them.
+            if (raw.length === 0) continue;
+
+            // V8 SIMD memchr fast path.
+            if (raw.indexOf(queryText) !== -1) {
+                results.push({
+                    path: cache.paths[i],
+                    raw_code: raw,
+                    start_line: cache.startLines[i],
+                    symbol_name: cache.symbols[i],
+                });
+            }
+        }
+
+        return results;
     }
 
     /** Find all files that import the given file path (relative). */

@@ -12,6 +12,15 @@ export class FastGrepRAMCache {
         return this.rawCodes.length;
     }
 
+    clear(): void {
+        this.chunkIds = new Uint32Array(0);
+        this.startLines = new Uint32Array(0);
+        this.rawCodes = [];
+        this.paths = [];
+        this.symbols = [];
+        this.lineMaps = [];
+    }
+
     populateFromDatabase(db: NrekiDB): void {
         const rows = db.exportAllChunksForCache();
         const count = rows.length;
