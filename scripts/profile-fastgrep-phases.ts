@@ -10,7 +10,7 @@
  *   F: + lines.join() (final serialization)
  *   G: the full handler (handleFastGrep)
  *
- * 20 iterations each, warmup discarded, median reported.
+ * 100 iterations each, 5 warmups discarded, percentiles reported.
  */
 
 import path from "path";
@@ -22,13 +22,18 @@ import type { RouterDependencies } from "../src/router.js";
 
 const ROOT = path.resolve(".");
 const SRC = path.join(ROOT, "src");
-const N = 20;
-const WARMUP = 1;
-const QUERY = "export";
+const N = 100;
+const WARMUP = 5;
+const QUERY = process.env.NREKI_PROFILE_QUERY ?? "export";
 
-function median(xs: number[]): number {
+function pct(xs: number[], p: number): number {
     const s = [...xs].sort((a, b) => a - b);
-    return Math.round(s[Math.floor(s.length / 2)] * 100) / 100;
+    const idx = Math.min(s.length - 1, Math.floor(s.length * p));
+    return Math.round(s[idx] * 100) / 100;
+}
+
+function stats(xs: number[]): { p50: number; p95: number; p99: number } {
+    return { p50: pct(xs, 0.50), p95: pct(xs, 0.95), p99: pct(xs, 0.99) };
 }
 
 async function main() {
@@ -265,26 +270,29 @@ async function main() {
         if (i >= WARMUP) phaseG.push(dt);
     }
 
-    const mA = median(phaseA);
-    const mB = median(phaseB);
-    const mC = median(phaseC);
-    const mD = median(phaseD);
-    const mE = median(phaseE);
-    const mF = median(phaseF);
-    const mG = median(phaseG);
+    const sA = stats(phaseA);
+    const sB = stats(phaseB);
+    const sC = stats(phaseC);
+    const sD = stats(phaseD);
+    const sE = stats(phaseE);
+    const sF = stats(phaseF);
+    const sG = stats(phaseG);
+
+    const fmt = (s: { p50: number; p95: number; p99: number }) =>
+        `p50=${s.p50.toFixed(2).padStart(6)}ms  p95=${s.p95.toFixed(2).padStart(6)}ms  p99=${s.p99.toFixed(2).padStart(6)}ms  Δ(p99-p50)=${(s.p99 - s.p50).toFixed(2).padStart(6)}ms`;
 
     console.log("");
     console.log("=== handleFastGrep phase breakdown (query=\"" + QUERY + "\", " + chunks.length + " chunks) ===");
     console.log("");
-    console.log("Phase                                  Median   Delta");
-    console.log("-----------------------------------------------------");
-    console.log("A  engine.fastGrep (SQLite)           " + mA.toFixed(2).padStart(6) + "ms");
-    console.log("B  + byFile Map                       " + mB.toFixed(2).padStart(6) + "ms   +" + (mB - mA).toFixed(2));
-    console.log("C  + sort + pointer walk (no strings) " + mC.toFixed(2).padStart(6) + "ms   +" + (mC - mB).toFixed(2));
-    console.log("D  + substring+trim per match         " + mD.toFixed(2).padStart(6) + "ms   +" + (mD - mC).toFixed(2));
-    console.log("E  + template literal push per match  " + mE.toFixed(2).padStart(6) + "ms   +" + (mE - mD).toFixed(2));
-    console.log("F  + lines.join                       " + mF.toFixed(2).padStart(6) + "ms   +" + (mF - mE).toFixed(2));
-    console.log("G  handleFastGrep full (incl. tokens) " + mG.toFixed(2).padStart(6) + "ms   +" + (mG - mF).toFixed(2));
+    console.log("Phase                                  Stats");
+    console.log("-----------------------------------------------------------------------------------------");
+    console.log("A  engine.fastGrep (SQLite)            " + fmt(sA));
+    console.log("B  + byFile Map                        " + fmt(sB) + "  Δprev(p50)=" + (sB.p50 - sA.p50).toFixed(2));
+    console.log("C  + sort + pointer walk (no strings)  " + fmt(sC) + "  Δprev(p50)=" + (sC.p50 - sB.p50).toFixed(2));
+    console.log("D  + substring+trim per match          " + fmt(sD) + "  Δprev(p50)=" + (sD.p50 - sC.p50).toFixed(2));
+    console.log("E  + template literal push per match   " + fmt(sE) + "  Δprev(p50)=" + (sE.p50 - sD.p50).toFixed(2));
+    console.log("F  + lines.join                        " + fmt(sF) + "  Δprev(p50)=" + (sF.p50 - sE.p50).toFixed(2));
+    console.log("G  handleFastGrep full (incl. tokens)  " + fmt(sG) + "  Δprev(p50)=" + (sG.p50 - sF.p50).toFixed(2));
 
     engine.shutdown();
     try { fs.unlinkSync(path.join(ROOT, ".nreki-profile-phases.db")); } catch {}
