@@ -156,6 +156,24 @@ function compareExtractionsStrict(tsx: IO, tsc: IO): boolean {
     return true;
 }
 
+
+function compareExtractionsUnderUnwrapSafe(tsx: IO, tsc: IO):
+    { safe: boolean; spurious: { consumes: string[]; produces: string[] } } {
+    const tsxC = new Set(tsx.consumes);
+    const tsxP = new Set(tsx.produces);
+    const tscC = new Set(tsc.consumes.filter((t) => !isSynthetic(t)));
+    const tscP = new Set(tsc.produces.filter((t) => !isSynthetic(t)));
+
+    const spuriousC = [...tsxC].filter((t) => !tscC.has(t));
+    const spuriousP = [...tsxP].filter((t) => !tscP.has(t));
+
+    return {
+        safe: spuriousC.length === 0 && spuriousP.length === 0,
+        spurious: { consumes: spuriousC, produces: spuriousP },
+    };
+}
+
+
 function collectTsFiles(dir: string, maxFiles: number): string[] {
     const out: string[] = [];
     const queue: string[] = [dir];
@@ -266,6 +284,22 @@ async function main(): Promise<void> {
     let totalProduces = 0;
     let chunksWithEmptyExtractorButOracleHasTypes = 0;
 
+    // Sub-sprint 2.2.1: under_unwrap_safe metric (heuristic ⊆ oracle)
+    let underUnwrapSafeAll = 0;
+    let underUnwrapSafeMeaningful = 0;
+    let meaningfulTotal = 0;
+    const underUnwrapSafeSuspects: Array<{
+        file: string;
+        symbol: string;
+        line: number;
+        tsx_consumes: string[];
+        tsx_produces: string[];
+        tsc_consumes: string[];
+        tsc_produces: string[];
+        spurious_consumes: string[];
+        spurious_produces: string[];
+    }> = [];
+
     for (const file of files) {
         try {
             const sf = program.getSourceFile(file);
@@ -290,6 +324,28 @@ async function main(): Promise<void> {
                 const cmp = compareExtractions(tsEntry.io, tscExtr);
                 if (cmp.match) matchedSymbols++;
                 if (compareExtractionsStrict(tsEntry.io, tscExtr)) matchedSymbolsStrict++;
+
+                const uus = compareExtractionsUnderUnwrapSafe(tsEntry.io, tscExtr);
+                if (uus.safe) underUnwrapSafeAll++;
+                const isMeaningful = cN > 0 || pN > 0;
+                if (isMeaningful) {
+                    meaningfulTotal++;
+                    if (uus.safe) underUnwrapSafeMeaningful++;
+                }
+                if (!uus.safe) {
+                    underUnwrapSafeSuspects.push({
+                        file: path.relative(absCorpus, file),
+                        symbol: key,
+                        line: tsEntry.line,
+                        tsx_consumes: tsEntry.io.consumes,
+                        tsx_produces: tsEntry.io.produces,
+                        tsc_consumes: tscExtr.consumes,
+                        tsc_produces: tscExtr.produces,
+                        spurious_consumes: uus.spurious.consumes,
+                        spurious_produces: uus.spurious.produces,
+                    });
+                }
+
                 if (cN === 0 && pN === 0 && (tscExtr.consumes.length + tscExtr.produces.length) > 0) {
                     chunksWithEmptyExtractorButOracleHasTypes++;
                 }
@@ -310,6 +366,13 @@ async function main(): Promise<void> {
     const accuracy = totalSymbols > 0 ? (matchedSymbols / totalSymbols) * 100 : 0;
     const accuracyStrict = totalSymbols > 0 ? (matchedSymbolsStrict / totalSymbols) * 100 : 0;
     const failureRate = 100 - accuracy;
+
+    const uusAllPct = totalSymbols > 0 ? (underUnwrapSafeAll / totalSymbols) * 100 : 100;
+    const uusMeaningfulPct = meaningfulTotal > 0 ? (underUnwrapSafeMeaningful / meaningfulTotal) * 100 : 100;
+    const uusZone: "PASS" | "QUARANTINE" | "HARD_FLOOR" =
+        uusMeaningfulPct >= 99.0 ? "PASS"
+        : uusMeaningfulPct >= 90.0 ? "QUARANTINE"
+        : "HARD_FLOOR";
 
     function bucketize(reason: string | undefined): string {
         if (!reason) return "no-reason";
@@ -400,6 +463,10 @@ async function main(): Promise<void> {
         accuracy_strict_bidirectional: accuracyStrict.toFixed(1) + "%",
         failureRate: failureRate.toFixed(1) + "%",
         killCriterion: failureRate > 20 ? "ABORT_SPRINT" : "PROCEED",
+        under_unwrap_safe_all: uusAllPct.toFixed(1) + "%",
+        under_unwrap_safe_meaningful: uusMeaningfulPct.toFixed(1) + "%",
+        under_unwrap_safe_kill_criterion: "99.0% meaningful",
+        under_unwrap_safe_zone: uusZone,
         coverage: {
             chunksFuncMethod,
             chunksWithIO,
@@ -452,6 +519,21 @@ async function main(): Promise<void> {
         path.join("scripts", "eval-type-ledger-report.json"),
         JSON.stringify(report, null, 2),
     );
+
+    if (uusZone !== "PASS") {
+        const corpusBase = path.basename(absCorpus);
+        const suspectsPayload = {
+            corpus: corpusBase,
+            zone: uusZone,
+            under_unwrap_safe_meaningful: uusMeaningfulPct.toFixed(1) + "%",
+            total_suspects: underUnwrapSafeSuspects.length,
+            suspects: underUnwrapSafeSuspects,
+        };
+        fs.writeFileSync(
+            path.join("scripts", `eval-type-ledger-suspects-${corpusBase}.json`),
+            JSON.stringify(suspectsPayload, null, 2),
+        );
+    }
 }
 
 main().catch((err) => {
