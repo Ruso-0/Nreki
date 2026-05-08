@@ -4,6 +4,8 @@ import type { FastGrepCacheRow, NrekiDB } from "../database.js";
 // tombstone (el patrón new Uint32Array(0) cada vez sería
 // wasteful en sesiones con muchos saves del watcher).
 const EMPTY_U32 = new Uint32Array(0);
+const TOMBSTONE_COUNT_FLOOR = 1000;
+const TOMBSTONE_RATIO_THRESHOLD = 0.50;
 
 export class FastGrepRAMCache {
     public chunkIds = new Uint32Array(0);
@@ -12,6 +14,7 @@ export class FastGrepRAMCache {
     public paths: string[] = [];
     public symbols: string[] = [];
     public lineMaps: Uint32Array[] = [];
+    public tombstoneCount: number = 0;
 
     get size(): number {
         return this.rawCodes.length;
@@ -24,6 +27,7 @@ export class FastGrepRAMCache {
         this.paths = [];
         this.symbols = [];
         this.lineMaps = [];
+        this.tombstoneCount = 0;
     }
 
     populateFromDatabase(db: NrekiDB): void {
@@ -46,6 +50,7 @@ export class FastGrepRAMCache {
             this.rawCodes.push(row[4]);
             this.lineMaps.push(this.buildLineMap(row[4]));
         }
+        this.tombstoneCount = 0;
     }
 
     /**
@@ -59,6 +64,12 @@ export class FastGrepRAMCache {
      * operation (commit 3).
      */
     appendChunks(rows: FastGrepCacheRow[]): void {
+        if (
+            this.tombstoneCount >= TOMBSTONE_COUNT_FLOOR &&
+            this.tombstoneRatio() >= TOMBSTONE_RATIO_THRESHOLD
+        ) {
+            this.compact();
+        }
         if (rows.length === 0) return;
         const oldSize = this.size;
         const newSize = oldSize + rows.length;
@@ -96,6 +107,7 @@ export class FastGrepRAMCache {
      */
     tombstoneByPath(filePath: string): void {
         if (filePath === "") return;
+        let matches = 0;
         for (let i = 0; i < this.size; i++) {
             if (this.paths[i] === filePath) {
                 this.rawCodes[i] = "";
@@ -104,8 +116,57 @@ export class FastGrepRAMCache {
                 this.lineMaps[i] = EMPTY_U32;
                 this.startLines[i] = 0;
                 this.chunkIds[i] = 0;
+                matches++;
             }
         }
+        this.tombstoneCount += matches;
+    }
+
+    tombstoneRatio(): number {
+        if (this.size === 0) return 0;
+        return this.tombstoneCount / this.size;
+    }
+
+    /**
+     * Copy-and-swap to dense arrays, discarding tombstones.
+     * Called automatically from appendChunks when the threshold
+     * is crossed. Can also be called manually (e.g. tests).
+     */
+    compact(): void {
+        if (this.tombstoneCount === 0) return;
+        const liveSize = this.size - this.tombstoneCount;
+        if (liveSize < 0) {
+            // Defensive: tombstoneCount drift detected, do nothing
+            // rather than corrupt cache.
+            return;
+        }
+        const newChunkIds = new Uint32Array(liveSize);
+        const newStartLines = new Uint32Array(liveSize);
+        const newPaths: string[] = [];
+        const newSymbols: string[] = [];
+        const newRawCodes: string[] = [];
+        const newLineMaps: Uint32Array[] = [];
+
+        let writeIdx = 0;
+        for (let i = 0; i < this.size; i++) {
+            if (this.paths[i] !== "") {
+                newChunkIds[writeIdx] = this.chunkIds[i];
+                newStartLines[writeIdx] = this.startLines[i];
+                newPaths.push(this.paths[i]);
+                newSymbols.push(this.symbols[i]);
+                newRawCodes.push(this.rawCodes[i]);
+                newLineMaps.push(this.lineMaps[i]);
+                writeIdx++;
+            }
+        }
+
+        this.chunkIds = newChunkIds;
+        this.startLines = newStartLines;
+        this.paths = newPaths;
+        this.symbols = newSymbols;
+        this.rawCodes = newRawCodes;
+        this.lineMaps = newLineMaps;
+        this.tombstoneCount = 0;
     }
 
     private buildLineMap(rawCode: string): Uint32Array {

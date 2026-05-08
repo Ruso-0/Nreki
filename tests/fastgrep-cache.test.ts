@@ -326,6 +326,137 @@ describe("FastGrepRAMCache", () => {
         });
     });
 
+    it("tombstoneCount incrementa por matches reales", async () => {
+        await withDb(async (db) => {
+            insertChunk(db, "export function a1() {}", { filePath: "src/a.ts", symbolName: "a1" });
+            insertChunk(db, "export function a2() {}", { filePath: "src/a.ts", symbolName: "a2" });
+            insertChunk(db, "export function b1() {}", { filePath: "src/b.ts", symbolName: "b1" });
+
+            const cache = new FastGrepRAMCache();
+            cache.populateFromDatabase(db);
+            expect(cache.tombstoneCount).toBe(0);
+
+            cache.tombstoneByPath("src/a.ts");
+            expect(cache.tombstoneCount).toBe(2);
+
+            cache.tombstoneByPath("src/a.ts");
+            expect(cache.tombstoneCount).toBe(2);
+        });
+    });
+
+    it("tombstoneRatio computa correctamente", async () => {
+        await withDb(async (db) => {
+            insertChunk(db, "export function a1() {}", { filePath: "src/a.ts", symbolName: "a1" });
+            insertChunk(db, "export function a2() {}", { filePath: "src/a.ts", symbolName: "a2" });
+            insertChunk(db, "export function b1() {}", { filePath: "src/b.ts", symbolName: "b1" });
+            insertChunk(db, "export function b2() {}", { filePath: "src/b.ts", symbolName: "b2" });
+
+            const cache = new FastGrepRAMCache();
+            cache.populateFromDatabase(db);
+            expect(cache.tombstoneRatio()).toBe(0);
+
+            cache.tombstoneByPath("src/a.ts");
+            expect(cache.tombstoneRatio()).toBe(0.5);
+        });
+    });
+
+    it("compact() reduce arrays a slots vivos", async () => {
+        await withDb(async (db) => {
+            for (let i = 0; i < 3; i++) {
+                insertChunk(db, `export function a${i}() {}`, { filePath: "src/a.ts", symbolName: `a${i}` });
+            }
+            for (let i = 0; i < 2; i++) {
+                insertChunk(db, `export function b${i}() {}`, { filePath: "src/b.ts", symbolName: `b${i}` });
+            }
+
+            const cache = new FastGrepRAMCache();
+            cache.populateFromDatabase(db);
+            cache.tombstoneByPath("src/a.ts");
+            expect(cache.size).toBe(5);
+            expect(cache.tombstoneCount).toBe(3);
+            expect(cache.tombstoneRatio()).toBe(0.6);
+
+            cache.compact();
+
+            expect(cache.size).toBe(2);
+            expect(cache.tombstoneCount).toBe(0);
+            expect(cache.paths.every((p) => p === "src/b.ts")).toBe(true);
+            expect(cache.rawCodes.length).toBe(2);
+            expect(cache.chunkIds.length).toBe(2);
+        });
+    });
+
+    it("compact() es no-op si tombstoneCount === 0", async () => {
+        await withDb(async (db) => {
+            insertChunk(db, "export function a1() {}", { filePath: "src/a.ts", symbolName: "a1" });
+            insertChunk(db, "export function b1() {}", { filePath: "src/b.ts", symbolName: "b1" });
+
+            const cache = new FastGrepRAMCache();
+            cache.populateFromDatabase(db);
+            const before = {
+                size: cache.size,
+                paths: [...cache.paths],
+                rawCodes: [...cache.rawCodes],
+                chunkIds: [...cache.chunkIds],
+            };
+
+            cache.compact();
+
+            expect(cache.size).toBe(before.size);
+            expect(cache.paths).toEqual(before.paths);
+            expect(cache.rawCodes).toEqual(before.rawCodes);
+            expect([...cache.chunkIds]).toEqual(before.chunkIds);
+        });
+    });
+
+    it("appendChunks compacta automaticamente si threshold cruzado", async () => {
+        await withDb(async (db) => {
+            for (let i = 0; i < 2001; i++) {
+                insertChunk(db, `export function f${i}() {}`, {
+                    filePath: `src/f${i}.ts`,
+                    symbolName: `f${i}`,
+                });
+            }
+
+            const cache = new FastGrepRAMCache();
+            cache.populateFromDatabase(db);
+            for (let i = 0; i < 1001; i++) {
+                cache.tombstoneByPath(`src/f${i}.ts`);
+            }
+
+            expect(cache.size).toBe(2001);
+            expect(cache.tombstoneCount).toBe(1001);
+            expect(cache.tombstoneRatio()).toBeGreaterThanOrEqual(0.5);
+
+            cache.appendChunks([[3000, "src/new.ts", "newSym", 1, "export function newSym() {}"]]);
+
+            expect(cache.tombstoneCount).toBe(0);
+            expect(cache.size).toBe(1001);
+        });
+    });
+
+    it("appendChunks NO compacta si tombstoneCount < floor", async () => {
+        await withDb(async (db) => {
+            for (let i = 0; i < 3; i++) {
+                insertChunk(db, `export function a${i}() {}`, { filePath: "src/a.ts", symbolName: `a${i}` });
+            }
+            for (let i = 0; i < 2; i++) {
+                insertChunk(db, `export function b${i}() {}`, { filePath: "src/b.ts", symbolName: `b${i}` });
+            }
+
+            const cache = new FastGrepRAMCache();
+            cache.populateFromDatabase(db);
+            cache.tombstoneByPath("src/a.ts");
+            expect(cache.tombstoneCount).toBe(3);
+            expect(cache.tombstoneRatio()).toBe(0.6);
+
+            cache.appendChunks([[99, "src/new.ts", "newSym", 1, "export function newSym() {}"]]);
+
+            expect(cache.size).toBe(6);
+            expect(cache.tombstoneCount).toBe(3);
+        });
+    });
+
     it("tombstone + append simula re-index limpio", async () => {
         await withDb(async (db) => {
             insertChunk(db, "export function a1() {}", { filePath: "src/a.ts", symbolName: "a1" });
