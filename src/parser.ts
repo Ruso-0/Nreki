@@ -14,6 +14,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { safeParse } from "./utils/safe-parse.js";
 import { logger } from "./utils/logger.js";
+import { extractTypeIO } from "./utils/type-extractor.js";
 
 // ─── Types ───────────────────────────────────────────────────────────
 
@@ -34,6 +35,19 @@ export interface ParsedChunk {
     endIndex: number;
     /** Symbol name extracted directly from AST name captures. */
     symbolName: string;
+    /**
+     * Type names consumed by this symbol (parameter types).
+     * Populated only when nodeType is "func" or "method".
+     * Undefined for class, interface, var_decl, CSS rules, HTML
+     * elements, JSON pairs, and other non-callable nodes.
+     * Heuristic regex-based extraction; not oracle-grade.
+     */
+    consumes?: string[];
+    /**
+     * Type names produced by this symbol (return types).
+     * Same population rules as `consumes`.
+     */
+    produces?: string[];
 }
 
 export interface ParseResult {
@@ -440,7 +454,26 @@ export class ASTParser {
                     endLine
                 );
 
-                result.push({ shorthand, rawCode, nodeType, startLine, endLine, startIndex: node.startIndex, endIndex: node.endIndex, symbolName });
+                let consumes: string[] | undefined;
+                let produces: string[] | undefined;
+                if (nodeType === "func" || nodeType === "method") {
+                    const io = extractTypeIO(rawCode);
+                    consumes = io.consumes;
+                    produces = io.produces;
+                }
+
+                result.push({
+                    shorthand,
+                    rawCode,
+                    nodeType,
+                    startLine,
+                    endLine,
+                    startIndex: node.startIndex,
+                    endIndex: node.endIndex,
+                    symbolName,
+                    ...(consumes !== undefined && { consumes }),
+                    ...(produces !== undefined && { produces }),
+                });
             }
 
             return result;
