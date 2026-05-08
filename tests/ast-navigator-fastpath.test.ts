@@ -177,7 +177,7 @@ describe("findReferences fast path (engine provided)", () => {
 
 // ─── fastGrep: SQLite INSTR substring search ──────────────────────
 
-describe("engine.fastGrep (SQLite INSTR)", () => {
+describe("engine.fastGrep (RAM-resident fgCache)", () => {
     it("finds exact substring across chunks", async () => {
         const chunks = await engine.fastGrep("calculateTax", 50);
         expect(chunks.length).toBeGreaterThan(0);

@@ -286,7 +286,7 @@ async function main() {
     console.log("");
     console.log("Phase                                  Stats");
     console.log("-----------------------------------------------------------------------------------------");
-    console.log("A  engine.fastGrep (SQLite)            " + fmt(sA));
+    console.log("A  engine.fastGrep (RAM)               " + fmt(sA));
     console.log("B  + byFile Map                        " + fmt(sB) + "  Δprev(p50)=" + (sB.p50 - sA.p50).toFixed(2));
     console.log("C  + sort + pointer walk (no strings)  " + fmt(sC) + "  Δprev(p50)=" + (sC.p50 - sB.p50).toFixed(2));
     console.log("D  + substring+trim per match          " + fmt(sD) + "  Δprev(p50)=" + (sD.p50 - sC.p50).toFixed(2));
