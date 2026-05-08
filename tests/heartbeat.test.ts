@@ -51,6 +51,7 @@ function makeMockDeps(overrides: {
             },
             setMetadata: (key: string, value: string) => { metadata[key] = value; },
             getStats: () => ({ filesIndexed: 0, totalChunks: 0, totalRawChars: 0, totalShorthandChars: 0, compressionRatio: 0, watchedPaths: [] }),
+            hasIndexedFiles: () => false,
             getUsageStats: () => ({ total_input: Math.floor(drift / 2), total_output: Math.ceil(drift / 2), total_saved: 0, tool_calls: target }),
         } as any,
         monitor: {} as any,
