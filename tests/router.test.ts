@@ -37,6 +37,7 @@ function createMockDeps(tmpDir: string): RouterDependencies {
             compressionRatio: 0.6,
             watchedPaths: ["/test"],
         }),
+        hasIndexedFiles: vi.fn().mockReturnValue(true),
         getParser: vi.fn().mockReturnValue({
             initialize: vi.fn().mockResolvedValue(undefined),
             parse: vi.fn().mockResolvedValue({ chunks: [] }),

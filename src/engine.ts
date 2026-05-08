@@ -129,6 +129,10 @@ export class NrekiEngine {
     private watcherReady: Promise<void> | null = null;
     private config: Required<EngineConfig>;
     private indexingQueue = new Set<string>();
+    private usageBuffer: Array<[string, number, number, number]> = [];
+    private usageFlushTimer: NodeJS.Timeout | null = null;
+    private static readonly USAGE_BATCH_SIZE = 50;
+    private static readonly USAGE_FLUSH_INTERVAL_MS = 2000;
     private isIndexing = false;
     private initialized = false;
     private saveTimeout: NodeJS.Timeout | null = null;
@@ -197,6 +201,15 @@ export class NrekiEngine {
         // Tier 2 Paso A: populate SoA cache from DB.
         // Inert for now; it is not used in the hot path until Paso B.
         this.fgCache.populateFromDatabase(this.db);
+
+        // Tier-write-behind: periodic flush of usage telemetry.
+        this.usageFlushTimer = setInterval(
+            () => this.flushUsageSync(),
+            NrekiEngine.USAGE_FLUSH_INTERVAL_MS,
+        );
+        if (typeof this.usageFlushTimer.unref === "function") {
+            this.usageFlushTimer.unref();
+        }
 
         this.initialized = true;
     }
@@ -612,7 +625,25 @@ export class NrekiEngine {
         outputTokens: number,
         savedTokens: number,
     ): void {
-        this.db.logUsage(toolName, inputTokens, outputTokens, savedTokens);
+        this.usageBuffer.push([toolName, inputTokens, outputTokens, savedTokens]);
+        if (this.usageBuffer.length >= NrekiEngine.USAGE_BATCH_SIZE) {
+            this.flushUsageSync();
+        }
+    }
+
+    async flushUsage(): Promise<void> {
+        this.flushUsageSync();
+    }
+
+    flushUsageSync(): void {
+        if (this.usageBuffer.length === 0) return;
+        const batch = this.usageBuffer;
+        this.usageBuffer = [];
+        try {
+            this.db.batchInsertUsage(batch);
+        } catch (err) {
+            logger.warn(`Usage log flush failed: ${err}`);
+        }
     }
 
     /** Get aggregated usage statistics. */
@@ -633,6 +664,11 @@ export class NrekiEngine {
 
     /** Shutdown engine: stop watcher and close database. */
     shutdown(): void {
+        if (this.usageFlushTimer) {
+            clearInterval(this.usageFlushTimer);
+            this.usageFlushTimer = null;
+        }
+        this.flushUsageSync();
         if (this.saveTimeout) {
             clearTimeout(this.saveTimeout);
             this.saveTimeout = null;

@@ -101,6 +101,7 @@ export class NrekiDB {
     private _ready = false;
     private _hasIndexedFiles = false;
     private fastGrepStmt: SqlJsStatement | null = null;
+    private usageStmt: SqlJsStatement | null = null;
     private fastGrepCacheInvalidationHook: (() => void) | null = null;
 
     constructor(dbPath: string = ".nreki.db") {
@@ -258,6 +259,10 @@ export class NrekiDB {
             PRAGMA cache_size = -65536;
             PRAGMA temp_store = MEMORY;
         `);
+        if (this.usageStmt) {
+            this.usageStmt.free();
+            this.usageStmt = null;
+        }
     }
 
     /** Rebuild the in-memory keyword index from all existing chunks. */
@@ -335,6 +340,10 @@ export class NrekiDB {
         if (this.fastGrepStmt) {
             this.fastGrepStmt.free();
             this.fastGrepStmt = null;
+        }
+        if (this.usageStmt) {
+            this.usageStmt.free();
+            this.usageStmt = null;
         }
 
         // 1. Purge disk artifacts to prevent ghost data on next boot
@@ -843,6 +852,11 @@ export class NrekiDB {
 
     // ─── Usage Tracking ──────────────────────────────────────────
 
+    /**
+     * @deprecated Direct synchronous INSERT. Superseded by
+     * NrekiEngine.logUsage which buffers and batch-flushes.
+     * Kept for backward compatibility only.
+     */
     logUsage(
         toolName: string,
         inputTokens: number,
@@ -854,6 +868,28 @@ export class NrekiDB {
        VALUES (?, ?, ?, ?)`,
             [toolName, inputTokens, outputTokens, savedTokens]
         );
+    }
+
+    batchInsertUsage(batch: ReadonlyArray<[string, number, number, number]>): void {
+        if (!this._ready || batch.length === 0) return;
+        if (!this.usageStmt) {
+            this.usageStmt = this.db.prepare(
+                "INSERT INTO usage_log (tool_name, input_tokens, output_tokens, saved_tokens) VALUES (?, ?, ?, ?)"
+            );
+        }
+        const stmt = this.usageStmt;
+        this.db.run("BEGIN TRANSACTION");
+        try {
+            for (const row of batch) {
+                stmt.bind(row);
+                stmt.step();
+                stmt.reset();
+            }
+            this.db.run("COMMIT");
+        } catch (err) {
+            this.db.run("ROLLBACK");
+            throw err;
+        }
     }
 
     getUsageStats(since?: string): {
@@ -1185,6 +1221,10 @@ export class NrekiDB {
         if (this.fastGrepStmt) {
             this.fastGrepStmt.free();
             this.fastGrepStmt = null;
+        }
+        if (this.usageStmt) {
+            this.usageStmt.free();
+            this.usageStmt = null;
         }
         this.save();
         this.db.close();
