@@ -26,6 +26,53 @@ import {
     extractParamTypes,
     extractReturnType,
 } from "../src/utils/type-extractor.js";
+import { TsCompilerWrapper, type VfsAdapter } from "../src/kernel/backends/ts-compiler-wrapper.js";
+
+function makeDiskVfsAdapter(): VfsAdapter {
+    // Static read-only passthrough. Since the corpus does not mutate
+    // during the benchmark, getScriptVersion can return a constant.
+    return {
+        readFile(fileName: string): string | undefined {
+            try {
+                return fs.readFileSync(fileName, "utf-8");
+            } catch {
+                return undefined;
+            }
+        },
+        fileExists(fileName: string): boolean {
+            try {
+                return fs.statSync(fileName).isFile();
+            } catch {
+                return false;
+            }
+        },
+        getModifiedTime(fileName: string): Date {
+            try {
+                return fs.statSync(fileName).mtime;
+            } catch {
+                return new Date(0);
+            }
+        },
+        directoryExists(dirName: string): boolean {
+            try {
+                return fs.statSync(dirName).isDirectory();
+            } catch {
+                return false;
+            }
+        },
+        getScriptVersion(_fileName: string): string {
+            return "1";
+        },
+        getScriptSnapshot(fileName: string): ts.IScriptSnapshot | undefined {
+            try {
+                const text = fs.readFileSync(fileName, "utf-8");
+                return ts.ScriptSnapshot.fromString(text);
+            } catch {
+                return undefined;
+            }
+        },
+    };
+}
 
 interface IO {
     consumes: string[];
@@ -247,26 +294,50 @@ async function main(): Promise<void> {
         console.log(`Evaluating ${files.length} TypeScript files from ${absCorpus}`);
     }
 
-    // ─── Vanilla TS program (ground truth) ───
-    const tsconfigPath = ts.findConfigFile(absCorpus, ts.sys.fileExists, "tsconfig.json");
-    let compilerOptions: ts.CompilerOptions = {
-        target: ts.ScriptTarget.ES2022,
-        module: ts.ModuleKind.ESNext,
-        allowJs: true,
-        skipLibCheck: true,
-    };
-    let rootNames: string[] = files;
-    if (tsconfigPath) {
-        const parsed = ts.parseJsonConfigFileContent(
-            ts.readConfigFile(tsconfigPath, ts.sys.readFile).config,
-            ts.sys,
-            absCorpus,
-        );
-        compilerOptions = parsed.options;
-        rootNames = Array.from(new Set([...parsed.fileNames, ...files]));
+    // ─── Oracle: vanilla ts.createProgram (default) OR
+    // ─── TsCompilerWrapper-backed program (--use-nreki-oracle flag).
+    const useNrekiOracle = args.includes("--use-nreki-oracle");
+    const oracleSource = useNrekiOracle
+        ? "nreki_compiler_wrapper"
+        : "vanilla_ts_createProgram";
+    let program: ts.Program;
+    let initMs = 0;
+    if (useNrekiOracle) {
+        const initStart = Date.now();
+        const wrapper = new TsCompilerWrapper();
+        wrapper.initConfig(absCorpus);
+        const vfs = makeDiskVfsAdapter();
+        wrapper.createCompilerInfra(absCorpus, vfs);
+        wrapper.updateProgram();
+        const wrapperProgram = wrapper.tsProgram;
+        if (!wrapperProgram) {
+            console.error("TsCompilerWrapper failed to produce a program (tsProgram is null/undefined)");
+            process.exit(1);
+        }
+        program = wrapperProgram;
+        initMs = Date.now() - initStart;
+        console.log(`NREKI oracle init+cold-start took ${initMs}ms`);
+    } else {
+        const tsconfigPath = ts.findConfigFile(absCorpus, ts.sys.fileExists, "tsconfig.json");
+        let compilerOptions: ts.CompilerOptions = {
+            target: ts.ScriptTarget.ES2022,
+            module: ts.ModuleKind.ESNext,
+            allowJs: true,
+            skipLibCheck: true,
+        };
+        let rootNames: string[] = files;
+        if (tsconfigPath) {
+            const parsed = ts.parseJsonConfigFileContent(
+                ts.readConfigFile(tsconfigPath, ts.sys.readFile).config,
+                ts.sys,
+                absCorpus,
+            );
+            compilerOptions = parsed.options;
+            rootNames = Array.from(new Set([...parsed.fileNames, ...files]));
+        }
+        compilerOptions.skipLibCheck = true;
+        program = ts.createProgram(rootNames, compilerOptions);
     }
-    compilerOptions.skipLibCheck = true;
-    const program = ts.createProgram(rootNames, compilerOptions);
 
     // ─── Tree-sitter parser (heuristic under test) ───
     const parser = new ASTParser();
@@ -454,6 +525,8 @@ async function main(): Promise<void> {
     const elapsedSec = ((Date.now() - startTime) / 1000).toFixed(1);
     const report = {
         corpus: absCorpus,
+        oracle_source: oracleSource,
+        oracle_init_ms: initMs,
         elapsedSec: elapsedSec + "s",
         filesEvaluated: files.length,
         totalSymbols,
