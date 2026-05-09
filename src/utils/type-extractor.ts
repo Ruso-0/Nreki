@@ -34,10 +34,33 @@ export const DISCARD_NAMES = new Set([
     "null", "undefined", "object",
     "__type", "__object",
     "_", "",
+    // Reserved words (Sub-sprint 2.2.2.2):
+    "typeof", "asserts", "keyof", "infer",
+    "extends", "is", "in", "as",
+    "satisfies", "readonly",
 ]);
 
 export function isDiscarded(name: string): boolean {
     return DISCARD_NAMES.has(name) || name.startsWith("(Anonymous");
+}
+
+// Sub-sprint 2.2.2.2: identifier purity + single-letter generic gates.
+const VALID_IDENTIFIER = /^[a-zA-Z_$][a-zA-Z0-9_$]*$/;
+const SINGLE_LETTER_GENERIC = /^[A-Z]$/;
+
+/**
+ * Validate a candidate type name post-unwrap and emit it or null.
+ * Single source of truth for emission policy: discards reserved/primitive
+ * names, non-identifier strings (inline objects, unions, intersections,
+ * arrays leaked through container unwrap), and single-letter generic
+ * type parameters.
+ */
+function emitOrDiscard(s: string): string | null {
+    if (s.length === 0) return null;
+    if (isDiscarded(s)) return null;
+    if (!VALID_IDENTIFIER.test(s)) return null;
+    if (SINGLE_LETTER_GENERIC.test(s)) return null;
+    return s;
 }
 
 /**
@@ -61,22 +84,19 @@ export function unwrapHeuristic(typeStr: string, depth: number = 0): string | nu
 
     const ltIdx = s.indexOf("<");
     if (ltIdx === -1) {
-        if (isDiscarded(s)) return null;
-        return s.length > 0 ? s : null;
+        return emitOrDiscard(s);
     }
     const head = s.slice(0, ltIdx).trim();
     const rgIdx = s.lastIndexOf(">");
     if (rgIdx === -1) {
-        if (isDiscarded(head)) return null;
-        return head.length > 0 ? head : null;
+        return emitOrDiscard(head);
     }
     if (UNWRAP_GENERICS.has(head)) {
         const argStr = s.slice(ltIdx + 1, rgIdx).trim();
         const firstArg = argStr.split(",")[0].trim();
         return unwrapHeuristic(firstArg, depth + 1);
     }
-    if (isDiscarded(head)) return null;
-    return head.length > 0 ? head : null;
+    return emitOrDiscard(head);
 }
 
 export const TYPE_TOKEN = /(?:readonly\s+)?[a-zA-Z_$][a-zA-Z0-9_$]*(?:\s*<[^>]+>)?(?:\s*\[\])*/;

@@ -1,5 +1,6 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { ASTParser } from "../src/parser.js";
+import { extractTypeIO } from "../src/utils/type-extractor.js";
 
 describe("parser type I/O extraction (sub-sprint 2.2)", () => {
     let parser: ASTParser;
@@ -81,3 +82,91 @@ describe("parser type I/O extraction (sub-sprint 2.2)", () => {
         expect(chunk.produces).toBeUndefined();
     });
 });
+
+describe("Sub-sprint 2.2.2.2: reserved words filtering", () => {
+    const reserved = [
+        "typeof", "asserts", "keyof", "infer",
+        "extends", "is", "in", "as",
+        "satisfies", "readonly",
+    ];
+
+    it.each(reserved)("discards reserved word '%s' from consumes", (token) => {
+        const result = extractTypeIO(`function f(x: ${token}): void {}`);
+        expect(result.consumes).not.toContain(token);
+    });
+});
+
+describe("Sub-sprint 2.2.2.2: single-letter generic filtering", () => {
+    it("discards single-letter T from consumes and produces", () => {
+        const result = extractTypeIO("function f<T>(x: T): T {}");
+        expect(result.consumes).not.toContain("T");
+        expect(result.produces).not.toContain("T");
+    });
+
+    it("discards single-letter K, V, R", () => {
+        const r1 = extractTypeIO("function f(x: K): V {}");
+        expect(r1.consumes).not.toContain("K");
+        expect(r1.produces).not.toContain("V");
+        const r2 = extractTypeIO("function g(x: P): R {}");
+        expect(r2.consumes).not.toContain("P");
+        expect(r2.produces).not.toContain("R");
+    });
+
+    it("preserves real custom 2-char types (ID, DB)", () => {
+        const result = extractTypeIO("function f(x: ID): DB {}");
+        expect(result.consumes).toContain("ID");
+        expect(result.produces).toContain("DB");
+    });
+
+    it("preserves multi-char identifiers", () => {
+        const result = extractTypeIO("function f(x: User): Order {}");
+        expect(result.consumes).toContain("User");
+        expect(result.produces).toContain("Order");
+    });
+});
+
+describe("Sub-sprint 2.2.2.2: inline object literal handling (structural fix)", () => {
+    it("does not emit inline object as type when wrapped in Promise", () => {
+        const sample =
+            "async function f(): Promise<{ a: string; b: number }> { return null as any; }";
+        const result = extractTypeIO(sample);
+        for (const t of result.produces) {
+            expect(t).not.toMatch(/[{\[\(\n]/);
+        }
+    });
+
+    it("does not emit union as type when wrapped in Promise", () => {
+        const sample = "async function h(): Promise<string[] | Error> { return []; }";
+        const result = extractTypeIO(sample);
+        for (const t of result.produces) {
+            expect(t).not.toMatch(/[{\[\(\n|]/);
+            expect(t).not.toMatch(/\s/);
+        }
+    });
+
+    it("does not emit intersection as type when wrapped in Promise", () => {
+        const sample =
+            "async function g(): Promise<T & { name: string }> { return null as any; }";
+        const result = extractTypeIO(sample);
+        for (const t of result.produces) {
+            expect(t).not.toMatch(/[{\[\(\n&]/);
+        }
+    });
+
+    it("control: Promise<User> still unwraps to User", () => {
+        const sample = "async function f(): Promise<User> { return null as any; }";
+        const result = extractTypeIO(sample);
+        expect(result.produces).toContain("User");
+    });
+
+    it("Promise<Result<User>> stops at Result (documented regex gap, L11-L13)", () => {
+        // TYPE_TOKEN's `<[^>]+>` greedy match captures "Promise<Result<User>"
+        // (one '>' short of full nested closure), so recursive unwrap stops
+        // at "Result". Sub-sprint 2.2.2.2 preserves this baseline; nested
+        // generic depth is a separate concern.
+        const sample = "async function f(): Promise<Result<User>> { return null as any; }";
+        const result = extractTypeIO(sample);
+        expect(result.produces).toContain("Result");
+    });
+});
+
