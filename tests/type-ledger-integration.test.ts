@@ -20,7 +20,6 @@ describe("Type Ledger end-to-end (sub-sprint 2.3)", () => {
         engine = new NrekiEngine({
             dbPath,
             watchPaths: [srcDir],
-            enableEmbeddings: false,
         });
         await engine.initialize();
         shutDown = false;

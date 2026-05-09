@@ -29,7 +29,6 @@ import os from "os";
 function createMockDeps(tmpDir: string): RouterDependencies {
     const mockEngine = {
         initialize: vi.fn().mockResolvedValue(undefined),
-        initializeEmbedder: vi.fn().mockResolvedValue(undefined),
         search: vi.fn().mockResolvedValue([]),
         getStats: vi.fn().mockReturnValue({
             filesIndexed: 10,

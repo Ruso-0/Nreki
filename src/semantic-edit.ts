@@ -16,7 +16,7 @@ import fs from "fs";
 import path from "path";
 import { ASTParser, type ParsedChunk, normalizeWebSymbol } from "./parser.js";
 import { AstSandbox } from "./ast-sandbox.js";
-import { Embedder } from "./embedder.js";
+import { estimateTokens } from "./utils/token-estimator.js";
 import { readSource } from "./utils/read-source.js";
 import { saveBackup, getBackupPath } from "./undo.js";
 import { extractSignature, cleanSignature, extractImports, extractExports } from "./repo-map.js";
@@ -1132,9 +1132,9 @@ export async function semanticEdit(
 
     // Tokens avoided: without NREKI Claude reads full file + sends old symbol code.
     // With NREKI: only sends newCode. Savings = (fullFile + oldSymbol) - newCode.
-    const fullFileTokens = Embedder.estimateTokens(content);
-    const symbolTokens = Embedder.estimateTokens(rawCode);
-    const newCodeTokens = Embedder.estimateTokens(newCode ?? spliceRes.newRawCode);
+    const fullFileTokens = estimateTokens(content);
+    const symbolTokens = estimateTokens(rawCode);
+    const newCodeTokens = estimateTokens(newCode ?? spliceRes.newRawCode);
     const tokensAvoided = Math.max(0, fullFileTokens + symbolTokens - newCodeTokens);
 
     let topologyChanged = false;

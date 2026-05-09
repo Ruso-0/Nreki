@@ -37,7 +37,6 @@ export interface EngineConfig {
     extensions?: string[];
     ignorePaths?: string[];
     wasmDir?: string;
-    enableEmbeddings?: boolean;
 }
 
 export interface SessionReport {

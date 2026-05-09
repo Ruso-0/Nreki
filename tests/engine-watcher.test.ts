@@ -35,7 +35,6 @@ describe("engine watcher and fast_grep bootstrap", () => {
         engine = new NrekiEngine({
             dbPath: path.join(tmpDir, ".nreki.db"),
             watchPaths: [watchRoot],
-            enableEmbeddings: false,
         });
     });
 

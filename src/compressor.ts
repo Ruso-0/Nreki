@@ -15,7 +15,7 @@
  */
 
 import { ASTParser } from "./parser.js";
-import { Embedder } from "./embedder.js";
+import { estimateTokens } from "./utils/token-estimator.js";
 
 // ─── Types ───────────────────────────────────────────────────────────
 
@@ -584,7 +584,7 @@ async function structuralCompress(
 export class AdvancedCompressor {
     private parser: ASTParser;
 
-    constructor(parser: ASTParser, _embedder: Embedder) {
+    constructor(parser: ASTParser) {
         this.parser = parser;
     }
 
@@ -641,7 +641,7 @@ export class AdvancedCompressor {
         const compressed = afterStructural;
         const compressedSize = compressed.length;
         const ratio = originalSize > 0 ? 1 - compressedSize / originalSize : 0;
-        const tokensSaved = Embedder.estimateTokens(content) - Embedder.estimateTokens(compressed);
+        const tokensSaved = estimateTokens(content) - estimateTokens(compressed);
 
         return {
             compressed,
@@ -665,7 +665,7 @@ export class AdvancedCompressor {
         fileContent: string,
         level: CompressionLevel = "medium"
     ): { estimatedRatio: number; estimatedTokensSaved: number } {
-        const tokens = Embedder.estimateTokens(fileContent);
+        const tokens = estimateTokens(fileContent);
         const ratioByLevel: Record<CompressionLevel, number> = {
             light: 0.50,
             medium: 0.75,
@@ -709,11 +709,9 @@ interface CompressorOptions {
  */
 export class Compressor {
     private parser: ASTParser;
-    private embedder: Embedder;
 
-    constructor(parser: ASTParser, embedder: Embedder) {
+    constructor(parser: ASTParser) {
         this.parser = parser;
-        this.embedder = embedder;
     }
 
     async compress(
@@ -725,7 +723,7 @@ export class Compressor {
             tier = 1,
             maxBodyLines = 5,
             includeHeader = true,
-            focusQuery,
+            focusQuery: _focusQuery, // v11.0.0: ranking removed with embeddings amputation
         } = options;
 
         const parseResult = await this.parser.parse(filePath, content);
@@ -770,13 +768,9 @@ export class Compressor {
             }
         }
 
-        let rankedChunks = parseResult.chunks;
-        if (focusQuery) {
-            rankedChunks = await this.rankByRelevance(
-                parseResult.chunks,
-                focusQuery
-            );
-        }
+        // v11.0.0: focusQuery semantic ranking removed with embeddings
+        // amputation. Chunks emitted in original AST order.
+        const rankedChunks = parseResult.chunks;
 
         for (const chunk of rankedChunks) {
             const compressed = this.compressChunk(chunk, tier, maxBodyLines);
@@ -787,8 +781,8 @@ export class Compressor {
         const originalSize = content.length;
         const compressedSize = compressed.length;
         const ratio = 1 - compressedSize / originalSize;
-        const tokensSaved = Embedder.estimateTokens(content) -
-            Embedder.estimateTokens(compressed);
+        const tokensSaved = estimateTokens(content) -
+            estimateTokens(compressed);
 
         return {
             compressed,
@@ -872,39 +866,11 @@ export class Compressor {
         return tier2;
     }
 
-    private async rankByRelevance(
-        chunks: import("./parser.js").ParsedChunk[],
-        query: string
-    ): Promise<import("./parser.js").ParsedChunk[]> {
-        const { embedding: queryEmbedding } = await this.embedder.embed(query);
-        const scored: Array<{ chunk: import("./parser.js").ParsedChunk; score: number }> = [];
-        for (const chunk of chunks) {
-            const { embedding } = await this.embedder.embed(chunk.shorthand);
-            const score = this.cosineSimilarity(queryEmbedding, embedding);
-            scored.push({ chunk, score });
-        }
-        scored.sort((a, b) => b.score - a.score);
-        return scored.map((s) => s.chunk);
-    }
-
-    private cosineSimilarity(a: Float32Array, b: Float32Array): number {
-        let dotProduct = 0;
-        let normA = 0;
-        let normB = 0;
-        for (let i = 0; i < a.length; i++) {
-            dotProduct += a[i] * b[i];
-            normA += a[i] * a[i];
-            normB += b[i] * b[i];
-        }
-        const denominator = Math.sqrt(normA) * Math.sqrt(normB);
-        return denominator === 0 ? 0 : dotProduct / denominator;
-    }
-
     static estimateSavings(
         fileContent: string,
         tier: CompressionTier = 1
     ): { estimatedRatio: number; estimatedTokensSaved: number } {
-        const tokens = Embedder.estimateTokens(fileContent);
+        const tokens = estimateTokens(fileContent);
         const ratioByTier: Record<CompressionTier, number> = { 1: 0.75, 2: 0.5, 3: 0.3 };
         const ratio = ratioByTier[tier];
         return {

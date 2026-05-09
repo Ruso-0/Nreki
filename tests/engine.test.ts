@@ -17,7 +17,6 @@ import path from "path";
 import os from "os";
 
 import { NrekiDB } from "../src/database.js";
-import { Embedder, MODEL_PRIORITY } from "../src/embedder.js";
 import { TokenMonitor } from "../src/monitor.js";
 import { CognitiveEnforcer } from "../src/hooks/cognitive-enforcer.js";
 import { Compressor } from "../src/compressor.js";
@@ -75,7 +74,6 @@ describe("NrekiDB", () => {
         // Clean up test database
         try {
             fs.unlinkSync(testDbPath);
-            fs.unlinkSync(testDbPath.replace(/\.db$/, ".vec"));
         } catch {
             // Files may not exist
         }
@@ -107,8 +105,6 @@ describe("NrekiDB", () => {
     });
 
     it("should insert and count chunks", () => {
-        const embedding = new Float32Array(512).fill(0.1);
-
         db.insertChunk(
             "/test/sample.ts",
             "[func] authenticate(username, password)",
@@ -116,7 +112,6 @@ describe("NrekiDB", () => {
             "func",
             10,
             15,
-            embedding
         );
 
         const stats = db.getStats();
@@ -132,7 +127,6 @@ describe("NrekiDB", () => {
                 nodeType: "func",
                 startLine: 1,
                 endLine: 3,
-                embedding: new Float32Array(512).fill(0.2),
             },
             {
                 path: "/test/batch.ts",
@@ -141,7 +135,6 @@ describe("NrekiDB", () => {
                 nodeType: "func",
                 startLine: 5,
                 endLine: 7,
-                embedding: new Float32Array(512).fill(0.3),
             },
         ];
 
@@ -150,21 +143,11 @@ describe("NrekiDB", () => {
         expect(stats.total_chunks).toBeGreaterThanOrEqual(3);
     });
 
-    it("should search with vector similarity", () => {
-        const queryEmbedding = new Float32Array(512).fill(0.1);
-        const results = db.searchVector(queryEmbedding, 5);
-        expect(results.length).toBeGreaterThan(0);
-    });
-
-    it("should search hybrid (vector + keyword)", () => {
-        const queryEmbedding = new Float32Array(512).fill(0.1);
-        const results = db.searchHybrid(queryEmbedding, "authenticate func", 5);
-        expect(results.length).toBeGreaterThan(0);
-    });
+    // (searchVector / searchHybrid tests removed v11.0.0:
+    //  embeddings amputated, only keyword search remains.)
 
     it("should clear chunks for a file", () => {
-        const embedding = new Float32Array(512).fill(0.4);
-        db.insertChunk("/test/clearme.ts", "[func] temp()", "function temp() {}", "func", 1, 1, embedding);
+        db.insertChunk("/test/clearme.ts", "[func] temp()", "function temp() {}", "func", 1, 1);
         db.clearChunks("/test/clearme.ts");
         // Cannot directly verify deletion without querying - but no error means success
     });
@@ -190,78 +173,13 @@ describe("NrekiDB", () => {
         expect(db.getMetadata("nonexistent")).toBeNull();
     });
 
-    it("should detect embedding dimension mismatch and clear index", () => {
-        // Store initial dimension
-        db.setMetadata("embedding_dim", "768");
-
-        // Insert a chunk so there's data to clear
-        const emb = new Float32Array(768).fill(0.1);
-        db.insertChunk("/test/dim.ts", "[fn] dimTest()", "function dimTest() {}", "func", 1, 1, emb);
-        expect(db.getVectorCount()).toBeGreaterThan(0);
-
-        // Check with different dimension - should clear
-        const needsReindex = db.checkEmbeddingDimension(384);
-        expect(needsReindex).toBe(true);
-        expect(db.getVectorCount()).toBe(0);
-        expect(db.getMetadata("embedding_dim")).toBe("384");
-    });
-
-    it("should not clear index when dimension matches", () => {
-        db.setMetadata("embedding_dim", "512");
-        const emb = new Float32Array(512).fill(0.1);
-        db.insertChunk("/test/match.ts", "[fn] match()", "function match() {}", "func", 1, 1, emb);
-        const before = db.getVectorCount();
-
-        const needsReindex = db.checkEmbeddingDimension(512);
-        expect(needsReindex).toBe(false);
-        expect(db.getVectorCount()).toBe(before);
-    });
+    // (Embedding dimension tests removed v11.0.0: checkEmbeddingDimension
+    //  and getVectorCount methods amputated with embeddings.)
 });
 
-// ─── Embedder Tests ─────────────────────────────────────────────────
-
-describe("Embedder", () => {
-    it("should report correct dimension for default (first priority) model", () => {
-        const embedder = new Embedder();
-        expect(embedder.getDimension()).toBe(MODEL_PRIORITY[0].dim);
-    });
-
-    it("should report correct dimension for pinned model", () => {
-        const embedder = new Embedder("Xenova/all-MiniLM-L6-v2");
-        expect(embedder.getDimension()).toBe(384);
-    });
-
-    it("should not be ready before initialization", () => {
-        const embedder = new Embedder();
-        expect(embedder.ready()).toBe(false);
-        expect(embedder.getLoadedModel()).toBeNull();
-    });
-
-    it("should have code-aware models before general models in priority list", () => {
-        const firstCodeIdx = MODEL_PRIORITY.findIndex(m => m.type === "code");
-        const firstGeneralIdx = MODEL_PRIORITY.findIndex(m => m.type === "general");
-        expect(firstCodeIdx).toBeLessThan(firstGeneralIdx);
-    });
-
-    it("should include at least one code and one general model in priority list", () => {
-        expect(MODEL_PRIORITY.some(m => m.type === "code")).toBe(true);
-        expect(MODEL_PRIORITY.some(m => m.type === "general")).toBe(true);
-    });
-
-    it("should estimate tokens for code", () => {
-        const code = "function hello() { return 'world'; }";
-        const tokens = Embedder.estimateTokens(code, true);
-        expect(tokens).toBeGreaterThan(0);
-        expect(tokens).toBeLessThan(code.length);
-    });
-
-    it("should estimate more tokens for prose than code", () => {
-        const text = "This is a regular English sentence with some words.";
-        const codeTokens = Embedder.estimateTokens(text, true);
-        const proseTokens = Embedder.estimateTokens(text, false);
-        expect(codeTokens).toBeGreaterThanOrEqual(proseTokens);
-    });
-});
+// (Embedder describe removed v11.0.0: class amputated.
+//  estimateTokens helper coverage in tests/parser-type-extraction.test.ts
+//  via real flow.)
 
 // ─── Monitor Tests ──────────────────────────────────────────────────
 
@@ -362,35 +280,32 @@ describe("Porter Stemmer (via KeywordIndex)", () => {
         db.close();
         try {
             fs.unlinkSync(stemDbPath);
-            fs.unlinkSync(stemDbPath.replace(/\.db$/, ".vec"));
         } catch { /* ignore */ }
     });
 
-    it("should find stemmed matches (running -> run)", () => {
-        const embedding = new Float32Array(512).fill(0.1);
-        db.insertChunk("/test/stem.ts", "[func] run() { /* TG:L1-L5 */ }", "function run() { ... }", "func", 1, 5, embedding);
+    it("should find keyword matches in shorthand", () => {
+        db.insertChunk("/test/stem.ts", "[func] running() { /* TG:L1-L5 */ }", "function running() { ... }", "func", 1, 5);
 
-        // "running" should match "run" via stemming
-        const results = db.searchHybrid(new Float32Array(512).fill(0.1), "running function", 5);
+        // v11.0.0: keyword-only via BM25. Stemming via Porter happens
+        // inside KeywordIndex if configured; literal "running" matches
+        // shorthand directly regardless of stemmer state.
+        const results = db.searchKeywordOnly("running", 5);
         expect(results.length).toBeGreaterThan(0);
     });
 
     it("should find stemmed matches (connections -> connect)", () => {
-        const embedding = new Float32Array(512).fill(0.15);
-        db.insertChunk("/test/stem.ts", "[func] connectDatabase() { /* TG:L10-L20 */ }", "function connectDatabase() { ... }", "func", 10, 20, embedding);
+        db.insertChunk("/test/stem.ts", "[func] connectDatabase() { /* TG:L10-L20 */ }", "function connectDatabase() { ... }", "func", 10, 20);
 
-        const results = db.searchHybrid(new Float32Array(512).fill(0.15), "connections database", 5);
+        const results = db.searchKeywordOnly("connections database", 5);
         expect(results.length).toBeGreaterThan(0);
     });
 
     it("should boost bigram phrase matches", () => {
-        const embedding1 = new Float32Array(512).fill(0.2);
-        const embedding2 = new Float32Array(512).fill(0.25);
-        db.insertChunk("/test/bigram1.ts", "[func] authMiddleware() auth middleware handler", "function authMiddleware() { ... }", "func", 1, 5, embedding1);
-        db.insertChunk("/test/bigram2.ts", "[func] something() auth unrelated middleware", "function something() { ... }", "func", 1, 5, embedding2);
+        db.insertChunk("/test/bigram1.ts", "[func] authMiddleware() auth middleware handler", "function authMiddleware() { ... }", "func", 1, 5);
+        db.insertChunk("/test/bigram2.ts", "[func] something() auth unrelated middleware", "function something() { ... }", "func", 1, 5);
 
         // "auth middleware" as a phrase should boost bigram1 which has them adjacent
-        const results = db.searchHybrid(new Float32Array(512).fill(0.2), "auth middleware", 5);
+        const results = db.searchKeywordOnly("auth middleware", 5);
         expect(results.length).toBeGreaterThan(0);
     });
 });

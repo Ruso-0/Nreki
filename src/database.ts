@@ -5,7 +5,6 @@
  * operation. Vector search AND keyword search are both implemented
  * in pure JavaScript:
  *
- * - VectorIndex: brute-force cosine similarity on Float32Array
  * - KeywordIndex: inverted index with Porter-inspired BM25 scoring
  *
  * This eliminates the need for FTS5, sqlite-vec, better-sqlite3,
@@ -21,7 +20,6 @@ import { logger } from "./utils/logger.js";
 import { escapeRegExp } from "./utils/imports.js";
 
 // ─── Motores de Búsqueda (Segregación de Dominio) ───
-import { VectorIndex, fastSimilarity } from "./search/vector-index.js";
 import { KeywordIndex } from "./search/keyword-index.js";
 
 // ─── Types ───────────────────────────────────────────────────────────
@@ -90,13 +88,11 @@ export interface TokenStats {
 
 export class NrekiDB {
     private db!: SqlJsDatabase;
-    private vecIndex = new VectorIndex();
     private kwIndex = new KeywordIndex();
     /** In-memory identifier index: file path → unique identifiers in that file's raw code. */
     private rawIdentsByFile = new Map<string, Set<string>>();
     private rawIdentsLoaded = false;
     private dbPath: string;
-    private vecPath: string;
     private initPromise: Promise<void> | null = null;
     private _ready = false;
     private _hasIndexedFiles = false;
@@ -106,7 +102,6 @@ export class NrekiDB {
 
     constructor(dbPath: string = ".nreki.db") {
         this.dbPath = dbPath;
-        this.vecPath = dbPath.replace(/\.db$/, ".vec");
     }
 
     /** Async initialization - must be called before any DB operation. */
@@ -128,7 +123,7 @@ export class NrekiDB {
                 this.db = new SQL.Database(fileBuffer);
             } catch (err) {
                 logger.error(`[NREKI] Database corrupted at ${this.dbPath}. Wiping to recover: ${err}`);
-                try { fs.unlinkSync(this.dbPath); if (fs.existsSync(this.vecPath)) fs.unlinkSync(this.vecPath); } catch {}
+                try { fs.unlinkSync(this.dbPath); } catch {}
                 this.db = new SQL.Database();
             }
         } else {
@@ -143,7 +138,8 @@ export class NrekiDB {
         // versions. Users on older schema get a clean slate without
         // manual .nreki.db deletion. Bumped in v10.18.1.
         // Bumped in v10.20.0 (symbol_io table added).
-        const PARSER_SCHEMA_VERSION = 3;
+        // Bumped in v11.0.0 (embeddings amputated, .vec file deprecated).
+        const PARSER_SCHEMA_VERSION = 4;
         const storedSchema = parseInt(this.getMetadata("parser_schema_version") ?? "0", 10);
         if (storedSchema < PARSER_SCHEMA_VERSION) {
             if (storedSchema > 0) {
@@ -154,13 +150,6 @@ export class NrekiDB {
             }
             this.wipeAllIndexedData();
             this.setMetadata("parser_schema_version", String(PARSER_SCHEMA_VERSION));
-        }
-
-        // Load vector index using stored dimension (default 512)
-        const storedDim = parseInt(this.getMetadata("embedding_dim") ?? "512", 10);
-        if (fs.existsSync(this.vecPath)) {
-            const vecBuffer = fs.readFileSync(this.vecPath);
-            this.vecIndex = VectorIndex.deserialize(vecBuffer, storedDim);
         }
 
         // Rebuild in-memory indexes from existing data
@@ -346,55 +335,23 @@ export class NrekiDB {
             this.usageStmt = null;
         }
 
-        // 1. Purge disk artifacts to prevent ghost data on next boot
-        if (fs.existsSync(this.vecPath)) {
-            try {
-                fs.unlinkSync(this.vecPath);
-            } catch (err) {
-                logger.warn(`[NREKI] Could not delete stale vector index ${this.vecPath}: ${err}`);
-            }
-        }
-
-        // 2. Wipe SQL tables
+        // 1. Wipe SQL tables
         this.db.run("DELETE FROM chunks");
         this.db.run("DELETE FROM files");
 
-        // 3. Reset AUTOINCREMENT sequences (ONLY for wiped tables)
+        // 2. Reset AUTOINCREMENT sequences (ONLY for wiped tables)
         try {
             this.db.run("DELETE FROM sqlite_sequence WHERE name = 'chunks'");
         } catch {
             // Ignored: sqlite_sequence is created automatically by SQLite on first INSERT
         }
 
-        // 4. Reset RAM state
-        this.vecIndex = new VectorIndex();
+        // 3. Reset RAM state
         this.kwIndex = new KeywordIndex();
         this.rawIdentsByFile.clear();
         this.rawIdentsLoaded = false;
         this._hasIndexedFiles = false;
         this.fastGrepCacheInvalidationHook?.();
-    }
-
-    /**
-     * Check if the active embedding dimension matches what was stored.
-     * If they differ, wipe all indexed data and update the stored dimension.
-     * Returns true if a re-index is needed.
-     */
-    checkEmbeddingDimension(activeDim: number): boolean {
-        const storedDim = this.getMetadata("embedding_dim");
-
-        if (storedDim && parseInt(storedDim, 10) !== activeDim) {
-            logger.warn(`Embedding dimension changed (${storedDim} -> ${activeDim}). Clearing index.`);
-            this.wipeAllIndexedData();
-            this.setMetadata("embedding_dim", String(activeDim));
-            return true;
-        }
-
-        if (!storedDim) {
-            this.setMetadata("embedding_dim", String(activeDim));
-        }
-
-        return false;
     }
 
     // ─── Persistence ─────────────────────────────────────────────
@@ -448,15 +405,6 @@ export class NrekiDB {
         const tmpDb = `${this.dbPath}.${crypto.randomBytes(4).toString("hex")}.tmp`;
         fs.writeFileSync(tmpDb, buffer);
         fs.renameSync(tmpDb, this.dbPath);
-
-        // Save vector index (skip if unchanged since last persist)
-        if (this.vecIndex.dirty) {
-            const vecData = this.vecIndex.serialize();
-            // Random suffix prevents cross-process collision.
-            const tmpVec = `${this.vecPath}.${crypto.randomBytes(4).toString("hex")}.tmp`;
-            fs.writeFileSync(tmpVec, vecData);
-            fs.renameSync(tmpVec, this.vecPath);
-        }
     }
 
     // ─── File Operations ─────────────────────────────────────────
@@ -507,7 +455,6 @@ export class NrekiDB {
         }
 
         if (ids.length > 0) {
-            this.vecIndex.deleteBulk(ids);
             this.kwIndex.deleteBulk(ids);
             if (this.rawIdentsLoaded) this.rawIdentsByFile.delete(filePath);
             this.db.run(
@@ -532,7 +479,6 @@ export class NrekiDB {
         nodeType: string,
         startLine: number,
         endLine: number,
-        embedding: Float32Array,
         startIndex: number = 0,
         endIndex: number = 0,
         symbolName: string = "",
@@ -546,10 +492,6 @@ export class NrekiDB {
         const rowid = (this.db.exec("SELECT last_insert_rowid() AS id")[0]
             .values[0][0] as number);
 
-        // A-04: Only insert non-empty vectors (Lite mode uses Float32Array(0))
-        if (embedding.length > 0) {
-            this.vecIndex.insert(rowid, embedding);
-        }
         this.kwIndex.insert(rowid, shorthand);
         this.addRawIdents(filePath, rawCode);
         return rowid;
@@ -563,7 +505,6 @@ export class NrekiDB {
             nodeType: string;
             startLine: number;
             endLine: number;
-            embedding: Float32Array;
             startIndex?: number;
             endIndex?: number;
             symbolName?: string;
@@ -571,8 +512,8 @@ export class NrekiDB {
     ): number[] {
         this.db.run("BEGIN TRANSACTION");
         // Track inserted IDs so we can purge RAM indexes on rollback.
-        // Without this, SQLite rows are reverted but vecIndex/kwIndex
-        // retain phantom entries that crash the result hydrator.
+        // Without this, SQLite rows are reverted but kwIndex retains
+        // phantom entries that crash the result hydrator.
         const insertedIds: number[] = [];
         try {
             for (const chunk of chunks) {
@@ -583,7 +524,6 @@ export class NrekiDB {
                     chunk.nodeType,
                     chunk.startLine,
                     chunk.endLine,
-                    chunk.embedding,
                     chunk.startIndex ?? 0,
                     chunk.endIndex ?? 0,
                     chunk.symbolName ?? "",
@@ -595,7 +535,6 @@ export class NrekiDB {
         } catch (err) {
             this.db.run("ROLLBACK");
             // Purge phantom entries from in-memory indexes
-            this.vecIndex.deleteBulk(insertedIds);
             this.kwIndex.deleteBulk(insertedIds);
             throw err;
         }
@@ -615,29 +554,6 @@ export class NrekiDB {
     }
 
     // ─── Batch Helpers ─────────────────────────────────────────────
-
-    /**
-     * Batch-fetch paths for an array of chunk IDs. Single SQL query.
-     * Used by RRF fusion to apply path boosting without N+1 queries.
-     */
-    private fetchPathsBatch(ids: number[]): Map<number, string> {
-        const result = new Map<number, string>();
-        if (ids.length === 0) return result;
-        const placeholders = ids.map(() => "?").join(",");
-        const stmt = this.db.prepare(
-            `SELECT id, path FROM chunks WHERE id IN (${placeholders})`,
-        );
-        try {
-            stmt.bind(ids);
-            while (stmt.step()) {
-                const row = stmt.getAsObject() as { id: number; path: string };
-                result.set(row.id, row.path);
-            }
-        } finally {
-            stmt.free();
-        }
-        return result;
-    }
 
     /**
      * Batch-fetch full chunk data for an array of chunk IDs. Single SQL query.
@@ -677,73 +593,7 @@ export class NrekiDB {
     // ─── Search Operations ───────────────────────────────────────
 
     /**
-     * Hybrid search using Reciprocal Rank Fusion (RRF).
-     * Combines:
-     *   - Vector similarity (semantic, cosine distance)
-     *   - BM25 keyword matching (in pure JS inverted index)
-     *
-     * RRF formula: score = Σ 1/(k + rank_i) where k=10
-     */
-    searchHybrid(
-        queryEmbedding: Float32Array,
-        queryText: string,
-        limit: number = 10
-    ): HybridSearchResult[] {
-        // 1. Vector search - top 60 by cosine similarity
-        const vecResults = this.vecIndex.search(queryEmbedding, 60);
-        const vecRanks = new Map<number, number>();
-        vecResults.forEach((r, i) => vecRanks.set(r.rowid, i + 1));
-
-        // 2. BM25 keyword search - top 60 by term relevance
-        const kwResults = this.kwIndex.search(queryText, 60);
-        const kwRanks = new Map<number, number>();
-        kwResults.forEach((r, i) => kwRanks.set(r.rowid, i + 1));
-
-        // 3. RRF fusion with path boosting (batch query)
-        const allIds = new Set([...vecRanks.keys(), ...kwRanks.keys()]);
-        const pathMap = this.fetchPathsBatch([...allIds]);
-        const scored: Array<{ id: number; rrf: number }> = [];
-
-        for (const id of allIds) {
-            const vecRank = vecRanks.get(id);
-            const kwRank = kwRanks.get(id);
-            let rrf =
-                (vecRank ? 1.0 / (10 + vecRank) : 0) +
-                (kwRank ? 1.0 / (10 + kwRank) : 0);
-
-            const filePath = pathMap.get(id);
-            if (filePath) {
-                rrf *= this.getPathBoost(filePath);
-            }
-
-            scored.push({ id, rrf });
-        }
-
-        scored.sort((a, b) => b.rrf - a.rrf);
-        const topIds = scored.slice(0, limit);
-
-        // 4. Fetch full chunk data (batch query)
-        const chunkMap = this.fetchChunksBatch(topIds.map(t => t.id));
-        const results: HybridSearchResult[] = [];
-        for (const { id, rrf } of topIds) {
-            const row = chunkMap.get(id);
-            if (row) {
-                results.push({
-                    id: row.id, path: row.path, shorthand: row.shorthand,
-                    raw_code: row.raw_code, node_type: row.node_type,
-                    start_line: row.start_line, end_line: row.end_line,
-                    start_index: row.start_index, end_index: row.end_index,
-                    symbol_name: row.symbol_name,
-                    rrf_score: rrf,
-                });
-            }
-        }
-
-        return results;
-    }
-
-    /**
-     * Keyword-only search using BM25 (for Lite mode - no embeddings needed).
+     * Keyword-only search using BM25 (v11.0.0: only retrieval mode post-amputation).
      * Uses the in-memory KeywordIndex with path boosting.
      */
     searchKeywordOnly(
@@ -817,33 +667,6 @@ export class NrekiDB {
                         break;
                     }
                 }
-            }
-        }
-
-        return results;
-    }
-
-    searchVector(
-        queryEmbedding: Float32Array,
-        limit: number = 10
-    ): HybridSearchResult[] {
-        const vecResults = this.vecIndex.search(queryEmbedding, limit);
-        if (vecResults.length === 0) return [];
-
-        const chunkMap = this.fetchChunksBatch(vecResults.map(r => r.rowid));
-        const results: HybridSearchResult[] = [];
-
-        for (const { rowid, distance } of vecResults) {
-            const row = chunkMap.get(rowid);
-            if (row) {
-                results.push({
-                    id: row.id, path: row.path, shorthand: row.shorthand,
-                    raw_code: row.raw_code, node_type: row.node_type,
-                    start_line: row.start_line, end_line: row.end_line,
-                    start_index: row.start_index, end_index: row.end_index,
-                    symbol_name: row.symbol_name,
-                    rrf_score: 1 - distance,
-                });
             }
         }
 
@@ -1000,10 +823,6 @@ export class NrekiDB {
         const rows = this.db.exec("SELECT COUNT(*) AS count FROM files");
         if (rows.length === 0) return 0;
         return rows[0].values[0][0] as number;
-    }
-
-    getVectorCount(): number {
-        return this.vecIndex.size;
     }
 
     /**
@@ -1260,8 +1079,5 @@ export class NrekiDB {
         this.db.close();
     }
 }
-
-// Re-export for testing
-export { fastSimilarity };
 
 

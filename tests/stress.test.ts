@@ -27,7 +27,7 @@ import {
     filterTokens,
 } from "../src/compressor.js";
 import { CognitiveEnforcer } from "../src/hooks/cognitive-enforcer.js";
-import { Embedder } from "../src/embedder.js";
+import { estimateTokens } from "../src/utils/token-estimator.js";
 
 // ─── Shared Fixtures ────────────────────────────────────────────────
 
@@ -131,8 +131,8 @@ describe("Stress: Huge 500KB TypeScript file", () => {
         expect(result.blocked).toBe(true);
     });
 
-    it("Embedder.estimateTokens handles large content", () => {
-        const tokens = Embedder.estimateTokens(hugeContent);
+    it("estimateTokens handles large content", () => {
+        const tokens = estimateTokens(hugeContent);
         expect(tokens).toBeGreaterThan(100_000);
     });
 });
@@ -221,16 +221,18 @@ const emoji_var = "🎉🎊🎈";
     it("database stores and retrieves unicode chunks", () => {
         const db = new NrekiDB(path.join(TMP_DIR, "unicode-test.db"));
         return db.initialize().then(() => {
-            const embedding = new Float32Array(512).fill(0.1);
+            // v11.0.0: keyword-only search does not index CJK tokens reliably
+            // (BM25 tokenizer is ASCII-oriented). Test verifies storage +
+            // hash integrity, not retrieval — semantic search would have
+            // matched but was amputated.
             db.insertChunk(
                 "/test/unicode.ts",
-                "[class] データ処理 { 実行() }",
+                "[class] unicodeClass containing データ処理",
                 UNICODE_CODE,
                 "class",
                 1, 15,
-                embedding
             );
-            const results = db.searchHybrid(embedding, "データ処理", 5);
+            const results = db.searchKeywordOnly("unicodeClass", 5);
             expect(results.length).toBeGreaterThan(0);
             expect(results[0].shorthand).toContain("データ処理");
             db.close();
@@ -276,8 +278,8 @@ describe("Stress: Minified JavaScript (single line)", () => {
         expect(filtered).toContain("var");
     });
 
-    it("Embedder.estimateTokens on minified JS", () => {
-        const tokens = Embedder.estimateTokens(minified);
+    it("estimateTokens on minified JS", () => {
+        const tokens = estimateTokens(minified);
         expect(tokens).toBeGreaterThan(10_000);
     });
 });
@@ -394,7 +396,6 @@ describe("Stress: Concurrent database operations", () => {
             nodeType: "func",
             startLine: 1,
             endLine: 10,
-            embedding: new Float32Array(512).fill(0.01 * i),
         }));
 
         // Batch insert should not throw
@@ -403,9 +404,8 @@ describe("Stress: Concurrent database operations", () => {
         const stats = db.getStats();
         expect(stats.total_chunks).toBe(50);
 
-        // Search should work across all 50 chunks
-        const queryEmb = new Float32Array(512).fill(0.25);
-        const results = db.searchHybrid(queryEmb, "handler request response", 10);
+        // Search should work across all 50 chunks (keyword-only post v11.0.0).
+        const results = db.searchKeywordOnly("handler request response", 10);
         expect(results.length).toBeGreaterThan(0);
         expect(results.length).toBeLessThanOrEqual(10);
 
@@ -416,15 +416,12 @@ describe("Stress: Concurrent database operations", () => {
         const db = new NrekiDB(path.join(TMP_DIR, "cycle-test.db"));
         await db.initialize();
 
-        const embedding = new Float32Array(512).fill(0.5);
-
         for (let i = 0; i < 20; i++) {
             db.insertChunk(
                 `/test/cycle.ts`,
                 `[func] cycle${i}()`,
                 `function cycle${i}() { return ${i}; }`,
                 "func", 1, 3,
-                embedding
             );
             if (i > 0 && i % 5 === 0) {
                 db.clearChunks(`/test/cycle.ts`);
@@ -539,8 +536,6 @@ describe("Stress: Repeated 100x indexing (idempotency)", () => {
         const db = new NrekiDB(path.join(TMP_DIR, "repeat-search-test.db"));
         await db.initialize();
 
-        const embedding = new Float32Array(512).fill(0.33);
-
         // Index the same file 50 times
         for (let i = 0; i < 50; i++) {
             db.clearChunks("/test/stable.ts");
@@ -549,18 +544,16 @@ describe("Stress: Repeated 100x indexing (idempotency)", () => {
                 "[func] stableFunction(input)",
                 "function stableFunction(input: string) { return input.trim(); }",
                 "func", 1, 3,
-                embedding
             );
         }
 
-        // Search should find exactly 1 result for this path
-        const results = db.searchVector(embedding, 10);
+        // Search should find exactly 1 result for this path (keyword-only post v11.0.0).
+        const results = db.searchKeywordOnly("stableFunction", 10);
         const uniquePaths = new Set(results.map(r => r.path));
         expect(uniquePaths.has("/test/stable.ts")).toBe(true);
 
-        // Keyword search should work
-        const hybridResults = db.searchHybrid(embedding, "stableFunction input", 10);
-        expect(hybridResults.length).toBeGreaterThan(0);
+        const moreResults = db.searchKeywordOnly("stableFunction input", 10);
+        expect(moreResults.length).toBeGreaterThan(0);
 
         db.close();
     });

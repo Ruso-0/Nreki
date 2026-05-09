@@ -4,7 +4,6 @@
  * Thin facade over:
  *  - NrekiDB (persistence)
  *  - ASTParser (Tree-sitter)
- *  - Embedder (ONNX local embeddings)
  *  - IndexPipeline (write side — see engine/indexer.ts)
  *  - SearchEngine (read side — see engine/searcher.ts)
  *  - SessionTracker (token savings telemetry)
@@ -17,7 +16,7 @@ import path from "path";
 import chokidar, { type FSWatcher } from "chokidar";
 
 import { NrekiDB, type ChunkRecord, type FastGrepHit } from "./database.js";
-import { Embedder, getEmbedder } from "./embedder.js";
+import { estimateTokens } from "./utils/token-estimator.js";
 import { ASTParser, type ParseResult } from "./parser.js";
 import { Compressor, type CompressionResult } from "./compressor.js";
 import { AdvancedCompressor, type CompressionLevel, type AdvancedCompressionResult } from "./compressor.js";
@@ -116,7 +115,6 @@ export class NrekiEngine {
     public readonly fgCache = new FastGrepRAMCache();
 
     private db: NrekiDB;
-    private embedder: Embedder;
     private parser: ASTParser;
     private compressor: Compressor;
     private advancedCompressor: AdvancedCompressor;
@@ -136,7 +134,6 @@ export class NrekiEngine {
     private isIndexing = false;
     private initialized = false;
     private saveTimeout: NodeJS.Timeout | null = null;
-    private embedderReady = false;
 
     /** Files that have been read (raw or compressed) in this session. */
     private safelyReadFiles = new Set<string>();
@@ -157,7 +154,6 @@ export class NrekiEngine {
             extensions: config.extensions ?? DEFAULT_EXTENSIONS,
             ignorePaths: config.ignorePaths ?? DEFAULT_IGNORE,
             wasmDir: config.wasmDir ?? "",
-            enableEmbeddings: config.enableEmbeddings ?? false,
         };
 
         // Defensive: empty watchPaths is a programmer error
@@ -166,17 +162,16 @@ export class NrekiEngine {
         }
 
         this.db = new NrekiDB(this.config.dbPath);
-        this.embedder = getEmbedder();
         this.parser = new ASTParser(this.config.wasmDir || undefined);
-        this.compressor = new Compressor(this.parser, this.embedder);
-        this.advancedCompressor = new AdvancedCompressor(this.parser, this.embedder);
+        this.compressor = new Compressor(this.parser);
+        this.advancedCompressor = new AdvancedCompressor(this.parser);
     }
 
     // ─── Initialization ────────────────────────────────────────────
 
     /**
-     * Fast initialization: SQLite + Tree-sitter only.
-     * Completes in ~100ms. Does NOT load the ONNX embedding model.
+     * Initialization: SQLite + Tree-sitter. Completes in ~100ms.
+     * v11.0.0: ONNX embeddings amputated; only one init path remains.
      */
     async initialize(): Promise<void> {
         if (this.initialized) return;
@@ -192,16 +187,14 @@ export class NrekiEngine {
 
         // Inject dependencies into sub-pipelines
         this.indexer = new IndexPipeline(
-            this.db, this.parser, this.embedder, this.config,
+            this.db, this.parser, this.config,
             () => this.initialize(),
-            () => this.initializeEmbedder(),
         );
         this.searcher = new SearchEngine(
-            this.db, this.embedder, this.config,
+            this.db,
             () => this.getDependencyGraph(),
             () => this.getProjectRoot(),
             () => this.initialize(),
-            () => this.initializeEmbedder(),
         );
 
         // Tier 2 Paso A: populate SoA cache from DB.
@@ -218,19 +211,6 @@ export class NrekiEngine {
         }
 
         this.initialized = true;
-    }
-
-    /**
-     * Full initialization: adds ONNX embedding model on top of fast init.
-     * First call takes ~5-10s (model download + warm-up). Subsequent calls are O(1).
-     */
-    async initializeEmbedder(): Promise<void> {
-        await this.initialize();
-        if (this.embedderReady) return;
-
-        await this.embedder.initialize();
-        this.db.checkEmbeddingDimension(this.embedder.getDimension());
-        this.embedderReady = true;
     }
 
     // ─── Indexing (delegated to IndexPipeline) ─────────────────────
@@ -319,7 +299,7 @@ export class NrekiEngine {
 
         // Track session savings
         const ext = path.extname(filePath).toLowerCase() || ".unknown";
-        this.sessionTracker.recordCompression(ext, Embedder.estimateTokens(content), result.tokensSaved);
+        this.sessionTracker.recordCompression(ext, estimateTokens(content), result.tokensSaved);
 
         return result;
     }

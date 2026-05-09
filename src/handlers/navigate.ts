@@ -10,7 +10,7 @@ import crypto from "crypto";
 import path from "path";
 import type Parser from "web-tree-sitter";
 import type { McpToolResponse, NavigateParams, RouterDependencies } from "../router.js";
-import { Embedder } from "../embedder.js";
+import { estimateTokens } from "../utils/token-estimator.js";
 import { safePath } from "../utils/path-jail.js";
 import { readSource } from "../utils/read-source.js";
 import {
@@ -100,7 +100,7 @@ export async function handleSearch(
     for (const r of results) {
         if (!seenFiles.has(r.path)) {
             seenFiles.add(r.path);
-            grepEstimate += Embedder.estimateTokens(r.rawCode) * 5;
+            grepEstimate += estimateTokens(r.rawCode) * 5;
         }
     }
 
@@ -108,7 +108,7 @@ export async function handleSearch(
     const resultText = `Search "${query}": ${results.length} results in ${fileCount} files\n\n` +
         formatted.join("\n\n");
 
-    const searchTokens = Embedder.estimateTokens(resultText);
+    const searchTokens = estimateTokens(resultText);
     const saved = Math.max(0, grepEstimate - searchTokens);
 
     const finalText = resultText;
@@ -159,7 +159,7 @@ export async function handleDefinition(
     });
 
     const bodyTokens = results.reduce(
-        (sum, r) => sum + Embedder.estimateTokens(r.body), 0,
+        (sum, r) => sum + estimateTokens(r.body), 0,
     );
 
     const autoContext = params.auto_context !== false;
@@ -191,7 +191,7 @@ export async function handleDefinition(
                         `\n\n### Related Signatures (auto-detected, may be incomplete)\n` +
                         `NREKI resolved these external dependencies used in the definition:\n` +
                         safeSigs.join("\n");
-                    extraTokens = Embedder.estimateTokens(autoContextBlock);
+                    extraTokens = estimateTokens(autoContextBlock);
                     engine.incrementAutoContext();
                 }
             }
@@ -254,7 +254,7 @@ export async function handleReferences(
     }
 
     const refTokens = results.reduce(
-        (sum, r) => sum + Embedder.estimateTokens(r.context), 0,
+        (sum, r) => sum + estimateTokens(r.context), 0,
     );
 
     engine.logUsage("nreki_refs", refTokens, refTokens, 0);
@@ -456,7 +456,7 @@ export async function handleOutline(
     let expandedTokens = 0;
 
     for (const sym of expandable) {
-        const symTokens = Embedder.estimateTokens(sym.body);
+        const symTokens = estimateTokens(sym.body);
         if (expandedTokens + symTokens > MAX_EXPAND_TOKENS) {
             omittedHighRisk.push(sym.name);
             continue;
@@ -486,11 +486,11 @@ export async function handleOutline(
         lines.push(`If auditing, you MUST run: nreki_code action:"compress" focus:"${omittedHighRisk.slice(0, 8).join(", ")}"`);
     }
 
-    const outlineTokens = Embedder.estimateTokens(lines.join("\n"));
+    const outlineTokens = estimateTokens(lines.join("\n"));
 
     try {
         const fullContent = readSource(resolvedPath);
-        const fullTokens = Embedder.estimateTokens(fullContent);
+        const fullTokens = estimateTokens(fullContent);
         const saved = Math.max(0, fullTokens - outlineTokens);
 
         engine.logUsage("nreki_outline", outlineTokens, outlineTokens, saved);
@@ -531,7 +531,7 @@ export async function handleMap(
 
     const pinnedText = getPinnedText(engine.getProjectRoot());
     const fullText = text + (pinnedText ? "\n" + pinnedText : "");
-    const tokens = Embedder.estimateTokens(fullText);
+    const tokens = estimateTokens(fullText);
 
     engine.logUsage("nreki_map", tokens, tokens, 0);
 

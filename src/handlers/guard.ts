@@ -10,7 +10,7 @@ import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 import type { McpToolResponse, GuardParams, RouterDependencies } from "../router.js";
-import { Embedder } from "../embedder.js";
+import { estimateTokens } from "../utils/token-estimator.js";
 import { safePath } from "../utils/path-jail.js";
 import { readSource } from "../utils/read-source.js";
 import { addPin, removePin, listPins } from "../pin-memory.js";
@@ -357,7 +357,7 @@ export async function handleSetPlan(
     }
 
     const planContent = readSource(resolvedPath);
-    const planTokens = Embedder.estimateTokens(planContent);
+    const planTokens = estimateTokens(planContent);
 
     if (planTokens > 4000) {
         return {

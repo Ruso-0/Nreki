@@ -34,7 +34,6 @@ function insertChunk(
         "function",
         opts.startLine ?? 1,
         opts.startLine ?? 1,
-        new Float32Array(0),
         0,
         rawCode.length,
         opts.symbolName ?? "sample",

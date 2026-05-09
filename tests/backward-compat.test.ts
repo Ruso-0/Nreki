@@ -25,7 +25,6 @@ import { TokenMonitor } from "../src/monitor.js";
 function createMockDeps(): RouterDependencies {
     const mockEngine = {
         initialize: vi.fn().mockResolvedValue(undefined),
-        initializeEmbedder: vi.fn().mockResolvedValue(undefined),
         search: vi.fn().mockResolvedValue([
             {
                 path: "/src/file.ts",

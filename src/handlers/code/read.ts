@@ -6,7 +6,7 @@ import fs from "fs";
 import path from "path";
 import type { McpToolResponse, CodeParams, RouterDependencies } from "../../router.js";
 import type { CompressionLevel } from "../../compressor.js";
-import { Embedder } from "../../embedder.js";
+import { estimateTokens } from "../../utils/token-estimator.js";
 import { safePath } from "../../utils/path-jail.js";
 import { shouldProcess } from "../../utils/file-filter.js";
 import { readSource } from "../../utils/read-source.js";
@@ -71,7 +71,7 @@ export async function handleRead(
                             `\n\n### Related Signatures (auto-detected, may be incomplete)\n` +
                             `NREKI resolved these external dependencies imported in this file:\n` +
                             safeSigs.join("\n");
-                        extraTokens = Embedder.estimateTokens(autoContextBlock);
+                        extraTokens = estimateTokens(autoContextBlock);
                         engine.incrementAutoContext();
                     }
                 }
@@ -104,7 +104,7 @@ export async function handleRead(
 
         if (!compress) {
             const forceRaw = params._nreki_bypass === "chronos_recovery";
-            const fullTokens = Embedder.estimateTokens(rawContent);
+            const fullTokens = estimateTokens(rawContent);
 
             // ─── ZERO-BOUNCE I/O (v9.0) ─────────────────────────────
             if (!forceRaw && fullTokens > 12000) {
@@ -115,8 +115,8 @@ export async function handleRead(
 
                 engine.logUsage(
                     "nreki_read",
-                    Embedder.estimateTokens(zbResult.compressed) + extraTokens,
-                    Embedder.estimateTokens(zbResult.compressed) + extraTokens,
+                    estimateTokens(zbResult.compressed) + extraTokens,
+                    estimateTokens(zbResult.compressed) + extraTokens,
                     zbResult.tokensSaved,
                 );
 
@@ -157,8 +157,8 @@ export async function handleRead(
 
         engine.logUsage(
             "nreki_read",
-            Embedder.estimateTokens(result.compressed) + extraTokens,
-            Embedder.estimateTokens(result.compressed) + extraTokens,
+            estimateTokens(result.compressed) + extraTokens,
+            estimateTokens(result.compressed) + extraTokens,
             saved,
         );
 
@@ -259,7 +259,7 @@ export async function handleCompress(
                 const tfcResult = tfcPayload.data;
                 engine.markFileRead(resolvedPath);
 
-                const compressedTokens = Embedder.estimateTokens(tfcResult.compressed);
+                const compressedTokens = estimateTokens(tfcResult.compressed);
                 engine.logUsage("nreki_compress_tfc",
                     compressedTokens,
                     compressedTokens,
@@ -314,8 +314,8 @@ export async function handleCompress(
 
             engine.logUsage(
                 "nreki_compress",
-                Embedder.estimateTokens(result.compressed),
-                Embedder.estimateTokens(result.compressed),
+                estimateTokens(result.compressed),
+                estimateTokens(result.compressed),
                 saved,
             );
 
@@ -340,8 +340,8 @@ export async function handleCompress(
 
         engine.logUsage(
             "nreki_compress",
-            Embedder.estimateTokens(result.compressed),
-            Embedder.estimateTokens(result.compressed),
+            estimateTokens(result.compressed),
+            estimateTokens(result.compressed),
             saved,
         );
 

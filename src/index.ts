@@ -132,14 +132,11 @@ Usage:
   npx @ruso-0/nreki deinit    # Safely removes NREKI hooks before npm uninstall
 
 Options:
-  --enable-embeddings   Enable local ONNX semantic search (Pro mode)
   --help, -h            Show this help message
   --version, -v         Show version
     `);
     process.exit(0);
 }
-
-const enableEmbeddings = args.includes("--enable-embeddings");
 
 // ─── Uninstall Subcommand (deinit) ───────────────────────────────
 // Safely removes NREKI hooks before npm uninstall to prevent
@@ -398,7 +395,6 @@ function getSkillMdContent(): string {
 const engine = new NrekiEngine({
     dbPath: path.join(process.cwd(), ".nreki.db"),
     watchPaths: [process.cwd()],
-    enableEmbeddings,
 });
 
 // Track session start so pressure is per-session, not historical.
@@ -475,12 +471,9 @@ const server = new McpServer({
     version: VERSION,
 });
 
-if (!enableEmbeddings) {
-    logger.info(
-        "Running in Lite mode (BM25 keyword search only). " +
-        "Run with --enable-embeddings for semantic search.",
-    );
-}
+logger.info(
+    "Running in Lite mode (BM25 keyword search). v11.0.0 amputated ONNX embeddings.",
+);
 
 // ─── Tool 1: nreki_navigate ───────────────────────────────────────────
 
@@ -725,8 +718,8 @@ async function main(): Promise<void> {
 
     // Graceful shutdown 100% SÍNCRONO.
     // Async en shutdown path = riesgo de zombie atascado en event loop.
-    // El verdadero GC es process.exit(0) — el SO recupera RAM nativa
-    // de @xenova/transformers y mata in-flight requests instantáneo.
+    // El verdadero GC es process.exit(0) — el SO mata in-flight
+    // requests instantáneo (post v11.0.0 amputación: ya sin ONNX).
     let _shuttingDown = false;
 
     const gracefulShutdown = () => {
@@ -816,8 +809,8 @@ async function main(): Promise<void> {
     }
 
     // Engine initialization is lazy - each tool calls engine.initialize()
-    // (fast: db + parser) or engine.initializeEmbedder() (full: + ONNX model)
-    // as needed. This keeps the MCP handshake under 100ms.
+    // (db + parser). v11.0.0: single init path post-embeddings amputation.
+    // This keeps the MCP handshake under 100ms.
 
     // JIT Holography: pre-load WASM parser (~50ms) without scanning project
     if (nrekiMode === "hologram" && kernel) {

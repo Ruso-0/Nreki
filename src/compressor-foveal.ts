@@ -24,7 +24,7 @@ import path from "path";
 import crypto from "crypto";
 import { type ParsedChunk, type ParseResult, normalizeWebSymbol } from "./parser.js";
 import { extractDependencies, cleanSignature } from "./utils/imports.js";
-import { Embedder } from "./embedder.js";
+import { estimateTokens } from "./utils/token-estimator.js";
 import type { NrekiEngine } from "./engine.js";
 
 // 🔥 TFC v2: TRUE LRU AST CACHE 🔥
@@ -283,7 +283,7 @@ export async function tfcCompress(
         };
     }
 
-    const tokensSaved = Math.max(0, Embedder.estimateTokens(content) - Embedder.estimateTokens(compressed));
+    const tokensSaved = Math.max(0, estimateTokens(content) - estimateTokens(compressed));
 
     return {
         kind: "success",

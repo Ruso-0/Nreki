@@ -7,34 +7,23 @@
 
 import path from "path";
 import type { NrekiDB } from "../database.js";
-import type { Embedder } from "../embedder.js";
 import type { DependencyGraph } from "../repo-map.js";
-import type { EngineConfig, SearchResult } from "../engine-types.js";
+import type { SearchResult } from "../engine-types.js";
 
 export class SearchEngine {
     constructor(
         private db: NrekiDB,
-        private embedder: Embedder,
-        private config: Required<EngineConfig>,
         private getGraphFn: () => Promise<DependencyGraph>,
         private getProjectRootFn: () => string,
         private initCore: () => Promise<void>,
-        private initEmbedder: () => Promise<void>,
     ) {}
 
     async search(query: string, limit: number = 10): Promise<SearchResult[]> {
         // 1. Fetch deep pool (5x limit) to overcome Semantic Dilution
         const fetchLimit = limit * 5;
-        let rawResults: import("../database.js").HybridSearchResult[];
-
-        if (!this.config.enableEmbeddings) {
-            await this.initCore();
-            rawResults = this.db.searchKeywordOnly(query, fetchLimit);
-        } else {
-            await this.initEmbedder();
-            const { embedding } = await this.embedder.embed(query);
-            rawResults = this.db.searchHybrid(embedding, query, fetchLimit);
-        }
+        await this.initCore();
+        // v11.0.0: keyword-only (BM25) — embeddings amputated.
+        const rawResults = this.db.searchKeywordOnly(query, fetchLimit);
 
         if (rawResults.length === 0) return [];
 

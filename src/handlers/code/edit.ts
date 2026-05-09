@@ -5,7 +5,7 @@
 import path from "path";
 import type { McpToolResponse, CodeParams, RouterDependencies } from "../../router.js";
 import type { NrekiInterceptResult } from "../../kernel/nreki-kernel.js";
-import { Embedder } from "../../embedder.js";
+import { estimateTokens } from "../../utils/token-estimator.js";
 import { safePath } from "../../utils/path-jail.js";
 import { semanticEdit, batchSemanticEdit, detectSignatureChange, type EditMode, type BatchEditOp } from "../../semantic-edit.js";
 import { acquireFileLock, releaseFileLock } from "../../middleware/file-lock.js";
@@ -224,8 +224,8 @@ export async function handleEdit(
 
         engine.logUsage(
             "nreki_code:edit",
-            Embedder.estimateTokens(result.newRawCode ?? new_code),
-            Embedder.estimateTokens(result.newRawCode ?? new_code),
+            estimateTokens(result.newRawCode ?? new_code),
+            estimateTokens(result.newRawCode ?? new_code),
             result.tokensAvoided,
         );
 

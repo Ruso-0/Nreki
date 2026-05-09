@@ -10,7 +10,6 @@ import path from "path";
 import picomatch from "picomatch";
 import type { NrekiDB } from "../database.js";
 import type { ASTParser, ParseResult } from "../parser.js";
-import type { Embedder } from "../embedder.js";
 import { shouldProcess } from "../utils/file-filter.js";
 import { readSource } from "../utils/read-source.js";
 import { logger } from "../utils/logger.js";
@@ -20,15 +19,12 @@ export class IndexPipeline {
     constructor(
         private db: NrekiDB,
         private parser: ASTParser,
-        private embedder: Embedder,
         private config: Required<EngineConfig>,
         private initCore: () => Promise<void>,
-        private initEmbedder: () => Promise<void>,
     ) {}
 
     async indexFile(filePath: string): Promise<ParseResult | null> {
-        if (this.config.enableEmbeddings) await this.initEmbedder();
-        else await this.initCore();
+        await this.initCore();
 
         let stat: fs.Stats;
         try { stat = fs.statSync(filePath); } catch { return null; }
@@ -59,13 +55,7 @@ export class IndexPipeline {
 
         this.db.clearChunks(filePath);
 
-        let embedding: Float32Array = new Float32Array(0);
-        if (this.config.enableEmbeddings) {
-            await this.initEmbedder();
-            ({ embedding } = await this.embedder.embed(content.slice(0, 1000)));
-        }
-
-        this.db.insertChunk(filePath, shorthand, content, "file", 1, lineCount, embedding);
+        this.db.insertChunk(filePath, shorthand, content, "file", 1, lineCount);
         this.db.upsertFile(filePath, this.db.hashContent(content));
 
         return {
@@ -92,17 +82,12 @@ export class IndexPipeline {
             nodeType: string;
             startLine: number;
             endLine: number;
-            embedding: Float32Array;
             startIndex: number;
             endIndex: number;
             symbolName: string;
         }> = [];
 
         for (const chunk of result.chunks) {
-            let embedding: Float32Array = new Float32Array(0);
-            if (this.config.enableEmbeddings) {
-                ({ embedding } = await this.embedder.embed(chunk.shorthand));
-            }
             chunkData.push({
                 path: filePath,
                 shorthand: chunk.shorthand,
@@ -110,7 +95,6 @@ export class IndexPipeline {
                 nodeType: chunk.nodeType,
                 startLine: chunk.startLine,
                 endLine: chunk.endLine,
-                embedding,
                 startIndex: chunk.startIndex,
                 endIndex: chunk.endIndex,
                 symbolName: chunk.symbolName,
@@ -145,8 +129,7 @@ export class IndexPipeline {
     }
 
     async indexDirectory(dirPath: string): Promise<{ indexed: number; skipped: number; errors: number }> {
-        if (this.config.enableEmbeddings) await this.initEmbedder();
-        else await this.initCore();
+        await this.initCore();
 
         let indexed = 0;
         let skipped = 0;

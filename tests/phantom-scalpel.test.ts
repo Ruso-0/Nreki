@@ -266,9 +266,9 @@ describe("Phantom Scalpel: Zero-Bounce I/O", () => {
         const filePath = writeTmp("large-file.ts", largeContent);
 
         // We test the handler logic indirectly via handleRead import
-        // For this test, verify the Embedder estimate exceeds threshold
-        const { Embedder } = await import("../src/embedder.js");
-        const tokens = Embedder.estimateTokens(largeContent);
+        // For this test, verify the token estimate exceeds threshold
+        const { estimateTokens } = await import("../src/utils/token-estimator.js");
+        const tokens = estimateTokens(largeContent);
         expect(tokens).toBeGreaterThan(12000);
 
         // The file should exist and be readable

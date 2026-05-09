@@ -20,7 +20,6 @@ import {
     type CompressionLevel,
 } from "../src/compressor.js";
 import { ASTParser } from "../src/parser.js";
-import { Embedder } from "../src/embedder.js";
 
 // ─── Test Fixtures ───────────────────────────────────────────────────
 
@@ -379,8 +378,7 @@ describe("Stub Bloat Guard", () => {
     beforeAll(async () => {
         const parser = new ASTParser();
         await parser.initialize();
-        const embedder = new Embedder();
-        compressor = new AdvancedCompressor(parser, embedder);
+        compressor = new AdvancedCompressor(parser);
     });
 
     it("aggressive always compresses more than medium", async () => {
