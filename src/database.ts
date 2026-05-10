@@ -881,13 +881,20 @@ export class NrekiDB {
 
     insertSymbolIosBulk(rows: { chunkId: number; ioType: 'consumes' | 'produces'; typeName: string }[]): void {
         if (rows.length === 0) return;
+        // Defense-in-depth: drop single-letter UPPERCASE generic params at
+        // insert time (T, U, K, V...). Upstream emitOrDiscard already filters
+        // these post-2.2.2.2, but old indexed data was poisoned. Sub-sprint
+        // 2.4 alignment prod/eval — single source of truth at storage layer.
+        const SINGLE_LETTER = /^[A-Z]$/;
+        const filtered = rows.filter(r => !SINGLE_LETTER.test(r.typeName));
+        if (filtered.length === 0) return;
         this.db.run("BEGIN");
         try {
             const stmt = this.db.prepare(
                 "INSERT OR IGNORE INTO symbol_io (chunk_id, io_type, type_name) VALUES (?, ?, ?)"
             );
             try {
-                for (const r of rows) {
+                for (const r of filtered) {
                     stmt.run([r.chunkId, r.ioType, r.typeName]);
                 }
             } finally {
@@ -898,6 +905,45 @@ export class NrekiDB {
             this.db.run("ROLLBACK");
             throw err;
         }
+    }
+
+    /**
+     * Inverse Type Ledger lookup: chunk_id → {consumes, produces}.
+     * Used by Phase 3 type_graph walker to expand from a chunk to its
+     * neighbors via the types it produces/consumes.
+     */
+    getSymbolIOByChunkId(chunkId: number): { consumes: string[]; produces: string[] } {
+        const consumes: string[] = [];
+        const produces: string[] = [];
+        const stmt = this.db.prepare(
+            "SELECT io_type, type_name FROM symbol_io WHERE chunk_id = ?"
+        );
+        try {
+            stmt.bind([chunkId]);
+            while (stmt.step()) {
+                const row = stmt.getAsObject() as { io_type: string; type_name: string };
+                if (row.io_type === "consumes") consumes.push(row.type_name);
+                else if (row.io_type === "produces") produces.push(row.type_name);
+            }
+        } finally {
+            stmt.free();
+        }
+        return { consumes, produces };
+    }
+
+    /**
+     * Public batch chunk hydration. Wraps the private fetchChunksBatch.
+     * Returns chunks in the order requested (missing ids skipped).
+     */
+    getChunksByIds(ids: number[]): ChunkRecord[] {
+        if (ids.length === 0) return [];
+        const map = this.fetchChunksBatch(ids);
+        const out: ChunkRecord[] = [];
+        for (const id of ids) {
+            const row = map.get(id);
+            if (row) out.push(row);
+        }
+        return out;
     }
 
     getChunksByConsumedType(typeName: string): number[] {
