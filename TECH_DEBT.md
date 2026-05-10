@@ -339,3 +339,170 @@ Furia 11/11 rounds adversariales ratificados.
 - **Estimated effort**: 12-25h ejecución en 4-8 sesiones
 
 ---
+
+## Phase 4 Markov Blanket Foveal — Spec firmada (Furia round 12)
+
+**Status:** Designed, frozen, ready for FASE C execution.
+
+### Scope re-estimated
+
+Surgical upgrade `compressor-foveal.ts` (303 LOC TFC-Ultra
+EXISTS) con Type Ledger cross-file parafovea injection.
+
+- ~300-410 LOC (DB method + helper + integration + tests)
+- 4-7h ejecución FASE C
+- 1-2 sesiones distribuidas
+- 50% reduction vs FASE A original estimate (600-1000 LOC)
+
+### Architecture decisions firmed Furia round 12
+
+**Tool surface:** Extension of existing `nreki_code action="compress"`
+(NO new tool, NO new MCP registration).
+
+**NEW params:**
+
+- `walk_depth`: 1 (default, K=1 ESTRICTO, K=2 RECHAZADO)
+- `max_cross_file`: 10 (default, hard cap pre-truncate)
+
+**Pipeline 5 pasos NEW + integration con existing TFC-Ultra:**
+
+1. **Database lookup (NEW METHOD):**
+   - `getChunkIdByPathAndSymbol(path, symbol_name)` → chunkId | null
+   - O(1) via existing `idx_chunks_symbol_name`
+   - Fail-open: si null, defensive ignore (no error)
+
+2. **Cross-file extraction (NEW HELPER):**
+   - `extractTypeLedgerParafovea(foveas, engine)`:
+     * For each fovea: `getSymbolIOByChunkId(chunkId)` →
+       `{consumes[], produces[]}`
+     * For each produced type: `getChunksByConsumedType(t)` →
+       upstream chunks
+     * For each consumed type: `getChunksByProducedType(t)` →
+       downstream chunks
+   - Filter SAME-FILE chunks (single-file ya cubierto regex)
+   - Anti-hub: `rankByInDegree(crossFileChunks)`
+   - Truncate: `max_cross_file=10` hard cap
+   - Truncated count tracked para advisory
+
+3. **Deduplication (FURIA #51 INNEGOCIABLE):**
+   - Símbolos resueltos por Type Ledger se RESTAN de `usedImports`
+   - BM25 `resolveImportSignatures` opera SOLO sobre residual
+   - Topological graph PRECEDE lexical (Layer 2 over Layer 3)
+   - Razón: External Parafovea YA OCUPADA por BM25 (L143-L162),
+     sumar Type Ledger sin dedup = double injection garantizado
+
+4. **Render cleanSignature (FURIA #3):**
+   - Consumers (Upstream): `// [UPSTREAM]: path::symbol`
+   - Producers (Downstream): `cleanSignature(shorthand)` inyectado
+     en EXTERNAL PARAFOVEA section
+   - Cero `AdvancedCompressor.compress()` recursive call (latigazo
+     #40 vigente)
+   - Cero AST parsing hot path
+   - cleanSignature como FUNCIÓN PURA
+
+5. **Density Shield exemption (FURIA #50 INNEGOCIABLE):**
+   - Cálculo ratio: `compressedSize/originalSize < 0.85`
+   - EXCLUIR cross-file bytes del compressedSize calculation
+   - Razón: shield evalúa el archivo principal, NO contexto externo
+   - Inversión semántica si sumamos: shield penaliza al TFC-Pro
+     por inyectar contexto útil
+   - La fovea es sagrada, jamás se sacrifica por cross-file
+
+### Output structure
+
+Existing TFC-Ultra layout preserved + NUEVA sección entre
+upstream y downstream existing:
+
+```
+// ─── UPSTREAM CROSS-FILE (Type Ledger consumers) ───
+[cleanSignature lines for chunks consuming fovea-produced types]
+
+// ─── DOWNSTREAM CROSS-FILE (Type Ledger producers) ───
+[cleanSignature lines for chunks producing fovea-consumed types]
+
+// ... and N more cross-file relations omitted (if truncated)
+```
+
+### Defensive policies firmed Furia round 12
+
+**#7 Type Ledger sync gap:** DEFENSIVE IGNORE (FAIL-OPEN).
+Si DB lookup fail (debounce watcher lag), degradar silenciosamente
+a regex local, agente sigue viendo código actual. Jamás romper
+operación de lectura por cache miss topológico.
+
+**#8 Backwards compat:** ROMPER tests + actualizar snapshots.
+Output mejora cualitativamente con cross-file injection. Tests
+estáticos en `bench-tfc.ts` + `compressor-advanced.test.ts` se
+ajustan a la nueva realidad estructural. Sin feature flags
+cobardes.
+
+### Tests obligatorios
+
+- Update existing `tfcCompress` assertions (snapshot updates)
+- 12-15 NEW dedicated tests:
+  * Cross-file upstream extraction
+  * Cross-file downstream extraction
+  * Same-file filter (no double regex+ledger)
+  * Anti-hub ranking pre-truncate
+  * `max_cross_file=10` hard cap + advisory message
+  * Deduplication BM25 ↔ Type Ledger NO duplicates
+  * Density Shield exemption (no false trigger en archivos
+    medianos por cross-file injection)
+  * Defensive ignore on DB lookup fail
+  * cleanSignature rendering Upstream + Downstream
+  * `walk_depth=1` enforcement (K=2 rechazado o ignored)
+  * Integration test full `nreki_code action="compress"` flow
+  * Backwards compat snapshots actualizados
+
+### Edge cases identificados Furia round 12
+
+**#50 Density Shield miopía matemática (latigazo a auditor):**
+Sumar cross-file bytes al `compressedSize` invierte semántica
+del shield. Shield evalúa archivo principal compresión, NO
+contexto externo injection.
+
+**#51 Edge Case Mortal (latigazo a auditor + Pipipi Code):**
+External Parafovea YA OCUPADA por BM25 `resolveImportSignatures`
+(compressor-foveal.ts:143-162). Sin deduplicación, double
+injection garantizado.
+
+### Latigazos Furia round 12
+
+- Auditor #50: Density Shield miopía matemática
+- Auditor #51: Edge Case Mortal (BM25 ↔ Type Ledger collision)
+- Pipipi Code #48 retroactivo: missear compressor-foveal en
+  FASE A original (estaba en `enforcer-state.json` mencionado)
+
+Furia 12/12 rounds adversariales ratificados.
+
+### Decisión Furia round 12 (5 architectural)
+
+| # | Decisión | Veredicto Furia |
+|---|----------|-----------------|
+| #1 | Replace vs augment regex causal | AUGMENT (B) — dimensiones ortogonales |
+| #2 | Default K-hop | K=1 ESTRICTO, K=2 RECHAZADO |
+| #3 | Render granularity | cleanSignature (β) — estándar oro |
+| #4 | Density Shield interaction | EXEMPTION explícita cross-file bytes |
+| #5 | chunkId lookup method | NEW `getChunkIdByPathAndSymbol` O(1) |
+
+### Riesgos identificados (preserved post-design)
+
+1. Cross-file explosion en hub types (mitigated: anti-hub
+   `rankByInDegree` + `max_cross_file=10` hard cap)
+
+2. Latigazo #40 reedición risk (NO TFC-Pro caja negra: cleanSignature
+   es función pura, NO recursive call al AdvancedCompressor)
+
+3. Type Ledger sync gap (mitigated: defensive ignore fail-open)
+
+4. Density Shield false positives (mitigated: exemption explícita
+   Furia #50)
+
+5. Backwards compat tests (mitigated: ROMPE + update snapshots,
+   no feature flags cobardes Furia #8)
+
+- **Registered**: Phase 4 spec persistence (this commit)
+- **Planned execution**: FASE C (β prompt firmable post-α confirm)
+- **Estimated effort**: ~300-410 LOC, 4-7h, 1-2 sesiones
+
+---
