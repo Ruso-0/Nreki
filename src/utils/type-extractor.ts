@@ -84,9 +84,12 @@ export function unwrapHeuristic(typeStr: string, depth: number = 0): string | nu
 
     const ltIdx = s.indexOf("<");
     if (ltIdx === -1) {
-        return emitOrDiscard(s);
+        let head = s;
+        if (head.includes(".")) head = head.split(".").pop()!.trim();
+        return emitOrDiscard(head);
     }
-    const head = s.slice(0, ltIdx).trim();
+    let head = s.slice(0, ltIdx).trim();
+    if (head.includes(".")) head = head.split(".").pop()!.trim();
     const rgIdx = s.lastIndexOf(">");
     if (rgIdx === -1) {
         return emitOrDiscard(head);
@@ -99,7 +102,7 @@ export function unwrapHeuristic(typeStr: string, depth: number = 0): string | nu
     return emitOrDiscard(head);
 }
 
-export const TYPE_TOKEN = /(?:readonly\s+)?[a-zA-Z_$][a-zA-Z0-9_$]*(?:\s*<[^>]+>)?(?:\s*\[\])*/;
+export const TYPE_TOKEN = /(?:readonly\s+)?[a-zA-Z_$][a-zA-Z0-9_$]*(?:\.[a-zA-Z_$][a-zA-Z0-9_$]*)*(?:\s*<[^>]+>)?(?:\s*\[\])*/;
 export const PARAM_TYPE_RX = new RegExp(`:\\s*(${TYPE_TOKEN.source})`, "g");
 export const RETURN_TYPE_RX = new RegExp(`\\)\\s*:\\s*(${TYPE_TOKEN.source})`);
 

@@ -168,5 +168,41 @@ describe("Sub-sprint 2.2.2.2: inline object literal handling (structural fix)", 
         const result = extractTypeIO(sample);
         expect(result.produces).toContain("Result");
     });
+
+    describe("Sub-sprint 2.2.2.3: qualified namespace F1", () => {
+        it("strips namespace prefix in non-generic types", () => {
+            const result = extractTypeIO("function f(x: core.Invoice): void {}");
+            expect(result.consumes).toContain("Invoice");
+            expect(result.consumes).not.toContain("core");
+        });
+
+        it("strips namespace inside generic argument", () => {
+            const result = extractTypeIO("function f(): Promise<models.User> { return null as any; }");
+            expect(result.produces).toContain("User");
+            expect(result.produces).not.toContain("models");
+        });
+
+        it("strips namespace prefix on whitelisted generic head", () => {
+            const result = extractTypeIO("function f(): z.ZodType<string> { return null as any; }");
+            expect(result.produces).toContain("ZodType");
+            expect(result.produces).not.toContain("z");
+        });
+
+        it("handles multi-level qualified namespace", () => {
+            const result = extractTypeIO("function f(): types.types.User { return null as any; }");
+            expect(result.produces).toContain("User");
+            expect(result.produces).not.toContain("types");
+        });
+
+        it("preserves non-namespaced single identifiers", () => {
+            const result = extractTypeIO("function f(): RuntimeDataModel { return null as any; }");
+            expect(result.produces).toContain("RuntimeDataModel");
+        });
+
+        it("handles namespace with array brackets", () => {
+            const result = extractTypeIO("function f(x: db.User[]): void {}");
+            expect(result.consumes).toContain("User");
+        });
+    });
 });
 
