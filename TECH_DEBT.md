@@ -181,162 +181,261 @@ empíricamente verificado en `src/semantic-edit.ts:713-774`.
 
 ---
 
-## Phase 5 SWE-bench TS Validation — Spec firmada (Furia rounds 10+11)
+## Phase 5 SWE-Bench-TS-Lite — Spec firmada UNION rounds 10+11+13
 
-**Status:** Designed, frozen, deferred to post-Phase 4 sealed.
+**Status:** Designed, frozen, ready for execution post-Phase 4 sealed
+(Phase 4 SEALED commit f6bf2ee).
+
+**Updated:** Round 13 rectificado tras latigazo capa 8 a Furia
+(context buffer collapse). Updates clave:
+
+- Multi-turn mode CORRECTED: mock template REJECTED como academic
+  fraud, solo Anthropic API real (β) o skip+Limitations (γ)
+- Curation REFINED: independent reviewer BLIND, prohibido ver PR
+  diff antes de aprobar
+- Anti-tests filter MORTAL: edge case #9 NEW, *.test.ts /
+  *.spec.ts / test/ excluidos de Recall ground truth
+- Ablation EXPANDED: (b') ripgrep alone + (c') compressor-foveal
+  cross-file Phase 4
+- Pre/Post Phase 4 ablation EXPLICIT como "corazón del paper"
+- Dogfooding pre-ejecución NEW: "trinchera fast_grep contra bugs
+  reales" antes de codear pipeline
+- Latigazos round 13: #56 (mock template fraud) + #58 (anti-tests
+  filter blindspot)
 
 ### Sequencing
 
-Phase 4 (Markov Blanket Compression) PRIMERO. Phase 5 después.
-Razón: Phase 5 mide producto, NREKI sin Phase 4 mide producto
-incompleto. Resultados pre-Phase 4 obsoletos al sealing Phase 4.
+Phase 4 PRIMERO ✓ (SEALED commit f6bf2ee).
+Phase 5 ahora unblocked.
 
-### Paradigma
+### Paradigma Δ — Token Cost to Recall
 
-Δ — Token Cost to Recall (Furia round 10 dominant metric).
-
-- Métrica primaria: median tokens_to_recall@K per task
-- Métricas secundarias: Recall@K + Precision@K + MRR + nDCG@K
-- USP defendido: "less tokens to reach correct context"
+- **Output Tokens Delivered (HEADLINE)**: Economía del Agente
+- **Compute Tokens (SECONDARY)**: Eficiencia Técnica
+- Delta entre ambos: prueba física de compresión
+- Métricas adicionales: Recall@K + Precision@K + MRR + nDCG@K
 
 ### Dataset
 
-Repos vírgenes post-training-cutoff, stratified por escala:
+Repos vírgenes post-Claude knowledge cutoff, stratified por escala:
 
 - Small library (<5K LOC): date-fns, ts-pattern
 - Medium framework (5K-50K): trpc, next-auth
 - Large framework (>50K): typescript, nest.js
 
-Verificación obligatoria: repos POST-Claude knowledge cutoff
-documentado per modelo evaluador.
+Verificación obligatoria: SHA target POST-cutoff per modelo
+evaluador, documentado per task.
 
 ### Task Count
 
 N=100-150 committed upfront. NO MVP-then-expand (early-stopping
-bias / p-hacking proxy). Statistical significance ±8-10% CI 95%.
+bias). Statistical significance ±8-10% CI 95%.
+
+### Curation (round 13 #1 + 11 #6)
+
+Híbrido: scripted candidate generation + INDEPENDENT BLIND review.
+
+**Blind constraint mandatory:** reviewer lee Issue para validar
+contexto suficiente, **PROHIBIDO ver PR diff antes de aprobar**.
+Anti-confirmation-bias estricto.
+
+Frozen randomness seed + reproducible script + reviewer NO es
+auditor mismo (evita confirmation bias auditor self-review).
+
+### Multi-turn Mode (round 13 #2 CORRECTED)
+
+Mock template determinístico REJECTED (academic fraud).
+
+Si budget Anthropic API permite: β agente real con prompt
+"given retrieval result, propose next query for missing info".
+
+Si NO budget: γ skip + Limitations section explícita
+documentando que evaluamos Retrieval Estático (Single-Turn).
+
+Cero simulaciones de juguete.
+
+### Time-Travel Guard (round 13 #3 + 11)
+
+Per-task individual clone @ base_commit. Fresh npm install per
+task. Pureza del entorno NO se negocia (artefactos
+.tsbuildinfo, mutación incremental node_modules envenenarían
+TsCompilerWrapper).
+
+Paralelizable via CI pipeline.
+
+### Chunk-Level Mapping (round 13 #4 + 11)
+
+Multi-level reporting en anexo: (a) strict containment,
+(b) permissive overlap ≥50%, (c) token-weighted.
+
+**Headline metric (abstract): α strict containment.** Si bug
+modificado en PR no está 100% contenido en chunk retornado,
+fail rotundo. No medallas por "casi".
+
+### Token Cost @ K (round 13 #5 + 10)
+
+γ both reportados:
+
+- **α Output tokens delivered (HEADLINE)** — Economía Agente.
+  Tokens en NREKI's MCP response (lo que agente real recibiría).
+- **β Compute tokens (SECONDARY)** — Eficiencia Técnica.
+  Tokens NREKI procesa internamente para producir output.
+
+Delta entre α y β = prueba física de compresión semántica.
+
+### Anti-Tests Filter Ground Truth (round 13 #8 NEW MORTAL)
+
+Pipeline ground truth EXCLUIR ESTRICTAMENTE:
+
+- `*.test.ts`
+- `*.spec.ts`
+- `test/` folders
+
+Razón: PRs de fix incluyen tests añadidos para prevenir
+regresión. Recuperar test del FUTURO = trampa temporal
+(agente NO tiene tests del futuro al resolver bug original).
+
+Solo código fuente de producción donde residía defecto cuenta
+para Recall.
 
 ### Baselines
 
-Internal validation:
+Internal validation (consistency v11.0.0 sin vectors):
 
 - ripgrep
 - BM25
 
 Pre-paper submission obligatorio:
 
-- Dense retrieval (voyage-code-3 o BGE-large via API, $10-50 budget)
+- Dense retrieval (voyage-code-3 o BGE-large API, $50-150 budget)
 - Aider repo-map (open-source comparable)
-- Cursor/Copilot/Cody como Limitations section explícito
+- Cursor/Copilot/Cody en Limitations section explicit
   (closed-source, no fair benchmark possible)
 
-### Ablation Study Completa
+### Ablation Study Completa (round 11 + Phase 4 awareness)
 
 - (a) NREKI search alone
-- (b) NREKI fast_grep alone
-- (c) NREKI type_graph alone (post-Phase 4)
+- (b) NREKI fast_grep alone (DOMINATING latency 5.5x-13.5x
+  vs ripgrep per benchmark-fastgrep-vs-rg)
+- (b') ripgrep alone (validates fast_grep optimization claim)
+- (c) NREKI type_graph alone (Phase 3 SEALED commit 436a1e1)
+- (c') NREKI compressor-foveal cross-file (Phase 4 SEALED
+  commit f6bf2ee)
 - (d) NREKI search + type_graph combined
-- (e) NREKI all-in
-- (f) ripgrep
-- (g) BM25
-- (h) Dense retrieval (pre-paper)
+- (e) NREKI all-in (Phase 3 + Phase 4 productive)
+- (f) BM25 alone
+- (g) Dense retrieval (pre-paper)
+- (h) Aider repo-map (pre-paper)
 
-### Curation
+### Pre/Post Phase 4 Ablation OBLIGATORIO (round 13 #7)
 
-Scripted (filter PRs by labels: bug, regression, fix) +
-INDEPENDENT reviewer (NO auditor self-review). Criteria
-declarados upfront en commit + frozen randomness seed +
-reproducible script.
+Corazón del paper. Mide delta empírico Phase 4 contribution:
 
-### Edge Cases Obligatorios (UNION rounds 10+11)
+- Corrida A: `git checkout f6bf2ee~1` (pre-Phase 4)
+  NREKI con regex single-file parafovea
+- Corrida B: `git checkout HEAD` (post-Phase 4)
+  NREKI con cross-file Type Ledger injection
+
+Si Phase 4 NO levanta Recall NI mejora token efficiency,
+fracasamos en diseño (honest disclosure obligatoria).
+
+### Edge Cases Obligatorios (UNION rounds 10+11+13)
 
 **Round 11 (rigor experimental):**
 
-1. **Time-Travel Data Leakage Guard:** Eval script DEBE hacer
-   `git checkout HEAD~1` (commit anterior al fix del PR) ANTES
-   de indexar el Type Ledger. Si indexa en master, grafo ya
-   tiene la solución inyectada → resultados inválidos.
+1. **Time-Travel Data Leakage Guard:** git checkout HEAD~1
+   antes de indexar (per-task per round 13 #3)
 
-2. **Chunk-Level Mapping vs File-Level:** SWE-bench tradicional
-   mide file-level. NREKI es chunk-level (start_line/end_line).
-   Reportar AMBOS niveles separados. Si NREKI devuelve archivo
-   correcto pero apunta función equivocada, file-level=match
-   pero NREKI-level=fail.
+2. **Chunk-Level Mapping vs File-Level:** multi-level reporting
+   + headline α strict
 
-3. **TokenCost@K obligatorio:** Recall sin cost es inútil. Si
-   BM25 logra 80% Recall con 60K tokens y NREKI 85% con 4K
-   tokens, esa compresión 93% es el descubrimiento real.
+3. **TokenCost@K:** γ both reportados (α headline + β secondary)
 
 **Round 10 (rigor metodológico):**
 
-4. **Ground truth 3-niveles reportados separadamente:**
-   - (a) src-only strict
-   - (b) src + tests permissive
-   - (c) all-patch maximal
+4. Ground truth 3-niveles separados (CON anti-tests filter
+   mortal del round 13)
 
-   Reportar los TRES — no esconder elección en footnote.
+5. Issue text quality stratification:
+   - High (10%): stack trace + repro
+   - Medium (40%): narrative
+   - Low (50%): "fix #1234"
 
-5. **Issue text quality stratification:**
-   - High (10%): stack trace + repro code + expected/actual
-   - Medium (40%): narrative + reference
-   - Low (50%): "fix #1234" oneliner
+6. Static + Multi-turn modes ambos (Multi-turn = β real o γ skip)
 
-   Reportar stratified per quality tier.
+7. Training data leakage check post-cutoff per modelo evaluador
 
-6. **Static + Multi-turn modes ambos:**
-   - Static: single query → single response
-   - Multi-turn: 3 queries permitidas (representativo de
-     deployment real Cursor/Copilot)
+8. Missing baselines disclosure: Cursor/Copilot/Cody en
+   Limitations section
 
-   Reportar ambos modos.
+**Round 13 (NEW MORTAL):**
 
-7. **Training data leakage check:** Repos POST knowledge cutoff
-   del modelo evaluador. Documentación obligatoria del cutoff.
+9. **Anti-tests filter ground truth.** *.test.ts / *.spec.ts /
+   test/ excluidos de Recall validation. Solo src/ producción.
 
-8. **Missing baselines disclosure:** Cursor/Copilot/Cody en
-   Limitations section explícito + Aider repo-map incluido
-   (open-source). Sin esto, paper sufre "missing baseline"
-   critical objection.
+### Fail-mode (round 10 + 13)
 
-### Fail-mode
+- Strict binary Recall@K + MRR + Precision@K + nDCG@K paralelos
+- Stratified per issue quality (high/medium/low)
+- Stratified per repo size (small/medium/large)
+- Modes: static + multi-turn (si API budget)
+- Headline metric chunk-level α strict containment
 
-Strict binary Recall@K + MRR + Precision@K + nDCG@K reportados
-paralelos para triangulación honesta del lector.
+### Dogfooding Pre-Execution (round 13 final note)
+
+Mandatory ANTES de codear pipeline:
+
+- Probar fast_grep contra bugs reales de NREKI codebase
+- Usar herramienta en crudo
+- Validar empíricamente intuición fast_grep latency-fast vs
+  recall-quality en bug-localization
+- Confirma o refuta hipótesis "léxico falla donde topología
+  sobrevive"
 
 ### Framing
 
 Section 4 Empirical Evaluation de paper larger
-("NREKI: Topology-Aware Context Delivery for Coding Agents"
-o similar). NO standalone paper.
+("NREKI: Topology-Aware Context Delivery for Coding Agents").
+NO standalone paper.
 
 ### Estimación scope
 
-- Dataset curation: 4-8h manual + ~150 LOC scripts
-- Eval pipeline: ~900-1100 LOC + 12-15 unit tests
-- Baselines: ~200-400 LOC
-- Analysis + report: ~100 LOC + manual write-up
-- **Total**: 1300-1700 LOC + 100-150 tasks, 4-8 sesiones (~12-25h)
+- Dataset curation: 4-8h manual + ~400 LOC scripts (round 13 expanded)
+- Eval pipeline: ~580 LOC + 12-15 unit tests
+- Baselines: ~450 LOC
+- Analysis + report: ~150 LOC + manual write-up
+- **Total**: ~1580 LOC + 100-150 tasks, 6-10 sesiones (~14-25h)
 
-### Decisión Furia rounds 10+11
+### Furia Track Record en Phase 5 Design
 
-Latigazos producidos:
+- **Round 10**: Paradigma Δ + dataset bias warning + 5 edge cases
+  metodológicos
+- **Round 11**: Spec consolidation + 3 edge cases experimentales
+  (Time-Travel + Chunk-Level + TokenCost@K)
+- **Round 13**: Mock template fraud rejection + anti-tests filter
+  mortal + dogfooding pre-ejecución mandate
 
-- Auditor #45: aceptar Phase 4/5 como intercambiables sin
-  precedence arquitectónica
-- Auditor #46: dense retrieval baseline exclusion = fraude
-  metodológico (engineering decision interna ≠ scientific
-  decision evaluativa)
-- Auditor #47 (round 10): Paradigma A vs B framing missear USP
-  real (token cost)
-- Pipipi Code #47 (round 11): proponer Opción I (corpus/zod,
-  astro, prisma) = data leakage / overfitting con Sub-sprint
-  2.2.2.x tuning data
+Latigazos auditor producidos rounds 10+11+13:
 
-Furia 11/11 rounds adversariales ratificados.
+- #45 sequencing Phase 4/5 interchangeability
+- #46 dense retrieval baseline exclusion = fraude metodológico
+- #47 Paradigma A vs B framing missear USP real
+- #54 spec consolidation rounds 10+11 incompleta (5 gaps)
+- #56 mock template determinístico academic fraud
+- #58 anti-tests filter mortal blindspot
 
-- **Registered**: Sub-sprint 2.3 follow-up (Phase 5 spec persistence,
-  this commit)
-- **Planned execution**: post-Phase 4 sealed
-- **Estimated effort**: 12-25h ejecución en 4-8 sesiones
+Pipipi Code latigazos:
+
+- #47 round 11 corpus overfitting Opción I
+
+Furia 13/13 rounds adversariales ratificados (PERFECT RECORD).
+
+- **Registered**: Phase 5 spec UPDATED rounds 10+11+13 (this commit,
+  replaces previous spec rounds 10+11 in commit 3f41d80)
+- **Planned execution**: post-Phase 4 sealed (UNBLOCKED) +
+  pre-execution dogfooding mandatory
+- **Estimated effort**: ~1580 LOC + 100-150 tasks, 6-10 sesiones
+  (~14-25h)
 
 ---
 
