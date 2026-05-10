@@ -169,6 +169,52 @@ describe("Sub-sprint 2.2.2.2: inline object literal handling (structural fix)", 
         expect(result.produces).toContain("Result");
     });
 
+    describe("Sub-sprint 2.2.3: type predicate detection", () => {
+        it("zod isPlainObject — does not capture 'o' as produces", () => {
+            const result = extractTypeIO(
+                "function isPlainObject(o: unknown): o is Record<string, unknown> { return true; }"
+            );
+            expect(result.produces).not.toContain("o");
+            expect(result.produces).not.toContain("Record");
+        });
+
+        it("type predicate with single-param subject 'children'", () => {
+            const result = extractTypeIO(
+                "function isReactNode(children: unknown): children is ReactNode { return true; }"
+            );
+            expect(result.produces).not.toContain("children");
+            expect(result.produces).not.toContain("ReactNode");
+        });
+
+        it("preserves regular boolean return type (not predicate)", () => {
+            const result = extractTypeIO(
+                "function check(x: number): boolean { return x > 0; }"
+            );
+            // boolean is in DISCARD_NAMES, so produces is empty.
+            expect(result.produces).toEqual([]);
+        });
+
+        it("preserves type-real return when no predicate", () => {
+            const result = extractTypeIO(
+                "function getUser(): User { return {} as User; }"
+            );
+            expect(result.produces).toContain("User");
+        });
+
+        it("complex predicate with namespaced type", () => {
+            const result = extractTypeIO(
+                "function isUser(x: unknown): x is models.User { return true; }"
+            );
+            // Per Furia regla sagrada Under-Unwrap > Over-Unwrap:
+            // even though models.User is a real type, when entire return
+            // clause is predicate we discard everything to avoid emitting
+            // "x" lowercase as produces.
+            expect(result.produces).not.toContain("x");
+            expect(result.produces).not.toContain("models");
+            expect(result.produces).not.toContain("User");
+        });
+    });
+
     describe("Sub-sprint 2.2.2.4: utility types semantic unwrap", () => {
         describe("Tier A: oracle keeps first arg", () => {
             it("Partial<Model> → unwraps to Model", () => {

@@ -263,8 +263,18 @@ export function extractParamTypes(code: string): string[] {
     return result;
 }
 
+// Sub-sprint 2.2.3: type predicate guard.
+// Matches "<paramName> is " in returnStr. Anchored at start because
+// splitSignatureIO produces returnStr beginning with ": " (the closing
+// `)` is consumed during params→return mode transition).
+// For predicates, the leading capture would be the parameter NAME
+// (e.g. "o" in "o is Record<...>"), which is a runtime identifier
+// not a type. Heurístico privilegia Under-Unwrap → return [].
+const TYPE_PREDICATE_RX = /^\s*:\s*[a-zA-Z_$][a-zA-Z0-9_$]*\s+is\s+/;
+
 export function extractReturnType(code: string): string[] {
     const { returnStr } = splitSignatureIO(code);
+    if (TYPE_PREDICATE_RX.test(returnStr)) return [];
     const RETURN_RX = new RegExp(`:\\s*(${TYPE_TOKEN.source})`, "g");
     const result: string[] = [];
     let match: RegExpExecArray | null;
