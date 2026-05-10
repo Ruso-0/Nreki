@@ -329,6 +329,28 @@ export class NrekiEngine {
         this.db.deleteEngram(filePath, symbolName);
     }
 
+    // ─── Type Ledger facade (Phase 3 type_graph) ─────────────────
+
+    getChunksByConsumedType(typeName: string): number[] {
+        return this.db.getChunksByConsumedType(typeName);
+    }
+
+    getChunksByProducedType(typeName: string): number[] {
+        return this.db.getChunksByProducedType(typeName);
+    }
+
+    getSymbolIOByChunkId(chunkId: number): { consumes: string[]; produces: string[] } {
+        return this.db.getSymbolIOByChunkId(chunkId);
+    }
+
+    getChunksByIds(ids: number[]) {
+        return this.db.getChunksByIds(ids);
+    }
+
+    getAllTypeNames(): string[] {
+        return this.db.getAllTypeNames();
+    }
+
     /** Increment the auto-context injection counter */
     incrementAutoContext(): void {
         this.sessionTracker.incrementAutoContext();

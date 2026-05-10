@@ -932,6 +932,25 @@ export class NrekiDB {
     }
 
     /**
+     * Returns all distinct type names in the symbol_io ledger.
+     * Used by Phase 3 type_graph NOCASE fallback for educating
+     * agent LLMs about case mismatch in seed_type queries.
+     */
+    getAllTypeNames(): string[] {
+        const stmt = this.db.prepare("SELECT DISTINCT type_name FROM symbol_io");
+        const out: string[] = [];
+        try {
+            while (stmt.step()) {
+                const row = stmt.getAsObject() as { type_name: string };
+                out.push(row.type_name);
+            }
+        } finally {
+            stmt.free();
+        }
+        return out;
+    }
+
+    /**
      * Public batch chunk hydration. Wraps the private fetchChunksBatch.
      * Returns chunks in the order requested (missing ids skipped).
      */

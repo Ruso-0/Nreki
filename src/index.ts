@@ -482,7 +482,7 @@ server.tool(
     "AST-powered code navigation and semantic search. Use for finding code, understanding project structure, and locating symbols.",
     {
         action: z
-            .enum(["search", "definition", "references", "outline", "map", "prepare_refactor", "orphan_oracle", "type_shape", "fast_grep"])
+            .enum(["search", "definition", "references", "outline", "map", "prepare_refactor", "orphan_oracle", "type_shape", "fast_grep", "type_graph"])
             .describe(
                 "search: hybrid semantic+keyword search across codebase. " +
                 "definition: go-to-definition by symbol name. " +
@@ -492,7 +492,8 @@ server.tool(
                 "prepare_refactor: analyze a symbol for safe renaming (classifies each occurrence as high-confidence or needs-review). " +
                 "orphan_oracle: identify files with zero static reachability (candidates for dead code review). " +
                 "type_shape: invoke TS compiler for exact resolved type shape without reading file (requires TypeScript project with tsconfig.json). " +
-                "fast_grep: ultra-fast exact substring match returning AST-aware topological coordinates (replaces native grep). Best for finding hardcoded strings or exact syntax.",
+                "fast_grep: ultra-fast exact substring match returning AST-aware topological coordinates (replaces native grep). Best for finding hardcoded strings or exact syntax. " +
+                "type_graph: walk the Type Ledger graph from a seed type (chunks that consume/produce it). Pure semantic walker, no BM25/RRF fallback. Requires type_name param.",
             ),
         query: z
             .string()
@@ -534,9 +535,29 @@ server.tool(
             .enum(["skeleton", "full"])
             .optional()
             .describe("For map: 'skeleton' (default) shows only CORE/BRIDGE files with top exports. 'full' shows all files with topology metrics."),
+        type_name: z
+            .string()
+            .optional()
+            .describe("For type_graph: the seed type name to walk from (case-sensitive, must exist in Type Ledger)."),
+        walk_depth: z
+            .number()
+            .optional()
+            .describe("For type_graph: BFS depth, 1 (default) or 2 (max). K=1 returns chunks directly related to seed_type; K=2 expands one more hop via their other types."),
+        direction: z
+            .enum(["bidirectional", "consumers", "producers"])
+            .optional()
+            .describe("For type_graph: 'bidirectional' (default) returns both consumers and producers; 'consumers' only chunks that consume seed_type; 'producers' only chunks that produce it."),
+        max_nodes: z
+            .number()
+            .optional()
+            .describe("For type_graph: BFS hard cap, default 50, max 100. Anti-hub ordering applied before truncation."),
+        token_budget: z
+            .number()
+            .optional()
+            .describe("For type_graph: Knapsack rendering budget in estimated tokens, default 3000. Chunks beyond budget listed as shorthand-only overflow."),
     },
-    async ({ action, query, symbol, path: navPath, limit, include_raw, kind, signatures, refresh, auto_context, depth }) => {
-        const params: NavigateParams = { action, query, symbol, path: navPath, limit, include_raw, kind, signatures, refresh, auto_context, depth };
+    async ({ action, query, symbol, path: navPath, limit, include_raw, kind, signatures, refresh, auto_context, depth, type_name, walk_depth, direction, max_nodes, token_budget }) => {
+        const params: NavigateParams = { action, query, symbol, path: navPath, limit, include_raw, kind, signatures, refresh, auto_context, depth, type_name, walk_depth, direction, max_nodes, token_budget };
         return wrapWithCircuitBreaker(
             circuitBreaker,
             "nreki_navigate",

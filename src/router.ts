@@ -33,6 +33,7 @@ import type { ChronosMemory } from "./chronos-memory.js";
 
 // 1. IMPORT HANDLERS (Unidirectional)
 import * as nav from "./handlers/navigate.js";
+import { handleTypeGraph } from "./handlers/type-graph.js";
 import * as code from "./handlers/code.js";
 import * as guard from "./handlers/guard.js";
 
@@ -74,6 +75,12 @@ export interface NavigateParams {
     refresh?: boolean;
     auto_context?: boolean;
     depth?: string;
+    // Phase 3 type_graph (Sub-sprint C.3):
+    type_name?: string;
+    walk_depth?: number;
+    direction?: string;
+    max_nodes?: number;
+    token_budget?: number;
 }
 
 /** Flat params for nreki_code (replaces path + options bag). */
@@ -351,11 +358,12 @@ export async function handleNavigate(
         case "orphan_oracle": response = await nav.handleOrphanOracle(params, deps); break;
         case "type_shape": response = await nav.handleTypeShape(params, deps); break;
         case "fast_grep": response = await nav.handleFastGrep(params, deps); break;
+        case "type_graph": response = await handleTypeGraph(params, deps); break;
         default:
             return {
                 content: [{
                     type: "text" as const,
-                    text: `Unknown nreki_navigate action: "${action}". Valid actions: search, definition, references, outline, map, prepare_refactor, orphan_oracle, type_shape, fast_grep.`,
+                    text: `Unknown nreki_navigate action: "${action}". Valid actions: search, definition, references, outline, map, prepare_refactor, orphan_oracle, type_shape, fast_grep, type_graph.`,
                 }],
                 isError: true,
             };

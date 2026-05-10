@@ -16,7 +16,15 @@
  * avgConsumersPerType) — bounded by maxNodes spec.
  */
 
-import type { NrekiDB } from "../database.js";
+/**
+ * Minimal type ledger query surface required by inDegree scoring.
+ * Both NrekiDB (direct) and NrekiEngine (facade) satisfy this
+ * structurally — handler code passes the engine, tests pass the db.
+ */
+export interface TypeLedgerSource {
+    getSymbolIOByChunkId(chunkId: number): { consumes: string[]; produces: string[] };
+    getChunksByConsumedType(typeName: string): number[];
+}
 
 /**
  * Compute in-degree per chunk in the given subset.
@@ -29,14 +37,14 @@ import type { NrekiDB } from "../database.js";
  * the subset. This measures architectural importance across the
  * entire codebase, which is what "anti-hub ordering" requires.
  *
- * @param db        Database with populated symbol_io.
+ * @param db        Type ledger source with symbol_io queries.
  * @param subset    Chunk IDs to score. Empty input → empty map.
  * @returns         Map<chunkId, inDegree>. Every input id appears
  *                  in result (with value 0 if no produces or no
  *                  consumers exist globally).
  */
 export function computeInDegrees(
-    db: NrekiDB,
+    db: TypeLedgerSource,
     subset: number[],
 ): Map<number, number> {
     const result = new Map<number, number>();
@@ -63,7 +71,7 @@ export function computeInDegrees(
  * stable tiebreaker by ascending chunk_id (deterministic across runs).
  */
 export function rankByInDegree(
-    db: NrekiDB,
+    db: TypeLedgerSource,
     subset: number[],
 ): number[] {
     const scores = computeInDegrees(db, subset);
