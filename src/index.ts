@@ -663,9 +663,17 @@ server.tool(
             .string()
             .optional()
             .describe("INTERNAL SYSTEM STATE TOKEN. DO NOT USE. Triggers context penalties."),
+        walk_depth: z
+            .number()
+            .optional()
+            .describe("For compress: Phase 4 cross-file Type Ledger walk depth. Furia round 12 spec: K=1 ESTRICTO, max=1 (K=2 RECHAZADO). Default 1."),
+        max_cross_file: z
+            .number()
+            .optional()
+            .describe("For compress: Phase 4 hard cap on UNIQUE cross-file chunks injected via Type Ledger parafovea. Default 10, max 50, set to 0 to disable cross-file injection."),
     },
-    async ({ action, path: filePath, symbol, new_code, compress, level, focus, tier, output, max_lines, mode, edits, auto_context, compute_diff, search_text, replace_text, _nreki_bypass }) => {
-        const params: CodeParams = { action, path: filePath, symbol, new_code, compress, level, focus, tier, output, max_lines, mode, edits, auto_context, compute_diff, search_text, replace_text, _nreki_bypass };
+    async ({ action, path: filePath, symbol, new_code, compress, level, focus, tier, output, max_lines, mode, edits, auto_context, compute_diff, search_text, replace_text, _nreki_bypass, walk_depth, max_cross_file }) => {
+        const params: CodeParams = { action, path: filePath, symbol, new_code, compress, level, focus, tier, output, max_lines, mode, edits, auto_context, compute_diff, search_text, replace_text, _nreki_bypass, walk_depth, max_cross_file };
         return wrapWithCircuitBreaker(
             circuitBreaker,
             "nreki_code",

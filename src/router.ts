@@ -102,6 +102,9 @@ export interface CodeParams {
     replace_text?: string;
     _nreki_bypass?: string;
     edits?: Array<{ path: string; symbol: string; new_code?: string; mode?: string; search_text?: string; replace_text?: string }>;
+    // Phase 4 Markov Blanket Foveal cross-file injection (Furia round 12):
+    walk_depth?: number;
+    max_cross_file?: number;
 }
 
 /** Flat params for nreki_guard (replaces options bag). */

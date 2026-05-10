@@ -191,4 +191,55 @@ describe("symbol_io ledger (v10.20.0)", () => {
             expect(io.produces).toEqual([]);
         });
     });
+
+    // ─── Phase 4: getChunkIdByPathAndSymbol (Markov Blanket Foveal) ──
+
+    // Helper: bypasses insertFakeChunk legacy embedding bug to control
+    // symbol_name precisely (Sub-sprint C.1 P2 documented).
+    function mkChunk(filePath: string, symbolName: string): number {
+        return db.insertChunk(
+            filePath, `[func] ${symbolName}()`, `function ${symbolName}(){}`,
+            "func", 1, 1, 0, 10, symbolName,
+        );
+    }
+
+    describe("Phase 4: getChunkIdByPathAndSymbol", () => {
+        it("returns chunkId for exact path + symbol match", () => {
+            const id = mkChunk("/fake/p4-a.ts", "exactSymbol");
+            const found = db.getChunkIdByPathAndSymbol("/fake/p4-a.ts", "exactSymbol");
+            expect(found).toBe(id);
+        });
+
+        it("returns null when path mismatch (defensive ignore)", () => {
+            mkChunk("/fake/p4-b.ts", "sym");
+            const found = db.getChunkIdByPathAndSymbol("/fake/different.ts", "sym");
+            expect(found).toBeNull();
+        });
+
+        it("returns null when symbol mismatch (defensive ignore)", () => {
+            mkChunk("/fake/p4-c.ts", "realSym");
+            const found = db.getChunkIdByPathAndSymbol("/fake/p4-c.ts", "fakeSym");
+            expect(found).toBeNull();
+        });
+
+        it("returns null when chunk not indexed (Type Ledger sync gap fail-open)", () => {
+            const found = db.getChunkIdByPathAndSymbol("/never/indexed.ts", "ghost");
+            expect(found).toBeNull();
+        });
+
+        it("multiple chunks same path: returns first match (LIMIT 1)", () => {
+            // Helper insertFakeChunk uses "10" as symbol_name (legacy bug),
+            // so we insert directly to control symbol_name.
+            const idA = db.insertChunk(
+                "/fake/p4-multi.ts", "[func] a()", "function a(){}",
+                "func", 1, 1, 0, 10, "shared",
+            );
+            db.insertChunk(
+                "/fake/p4-multi.ts", "[func] b()", "function b(){}",
+                "func", 5, 5, 0, 10, "different",
+            );
+            const found = db.getChunkIdByPathAndSymbol("/fake/p4-multi.ts", "shared");
+            expect(found).toBe(idA);
+        });
+    });
 });

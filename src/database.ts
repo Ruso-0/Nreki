@@ -932,6 +932,31 @@ export class NrekiDB {
     }
 
     /**
+     * Phase 4: O(1) lookup chunk_id by exact (path, symbol_name).
+     * Used by compressor-foveal cross-file Type Ledger injection
+     * to bridge from in-memory ParsedChunk (no DB id) to symbol_io
+     * queries. Defensive fail-open: returns null if no match (e.g.,
+     * Type Ledger sync gap during watcher debounce).
+     *
+     * Index used: idx_chunks_symbol_name (existing).
+     */
+    getChunkIdByPathAndSymbol(path: string, symbolName: string): number | null {
+        const stmt = this.db.prepare(
+            "SELECT id FROM chunks WHERE path = ? AND symbol_name = ? LIMIT 1"
+        );
+        try {
+            stmt.bind([path, symbolName]);
+            if (stmt.step()) {
+                const row = stmt.getAsObject() as { id: number };
+                return row.id;
+            }
+            return null;
+        } finally {
+            stmt.free();
+        }
+    }
+
+    /**
      * Returns all distinct type names in the symbol_io ledger.
      * Used by Phase 3 type_graph NOCASE fallback for educating
      * agent LLMs about case mismatch in seed_type queries.

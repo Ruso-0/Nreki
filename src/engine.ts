@@ -351,6 +351,11 @@ export class NrekiEngine {
         return this.db.getAllTypeNames();
     }
 
+    /** Phase 4: O(1) lookup chunk_id by exact (path, symbol_name). */
+    getChunkIdByPathAndSymbol(path: string, symbolName: string): number | null {
+        return this.db.getChunkIdByPathAndSymbol(path, symbolName);
+    }
+
     /** Increment the auto-context injection counter */
     incrementAutoContext(): void {
         this.sessionTracker.incrementAutoContext();

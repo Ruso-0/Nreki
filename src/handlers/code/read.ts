@@ -253,7 +253,11 @@ export async function handleCompress(
             }
 
             const content = readSource(resolvedPath);
-            const tfcPayload = await tfcCompress(resolvedPath, content, focus, engine);
+            // Phase 4 Markov Blanket Foveal cross-file params (Furia round 12).
+            const tfcPayload = await tfcCompress(resolvedPath, content, focus, engine, {
+                walkDepth: params.walk_depth,
+                maxCrossFile: params.max_cross_file,
+            });
 
             if (tfcPayload.kind === "success") {
                 const tfcResult = tfcPayload.data;

@@ -26,6 +26,14 @@ import { type ParsedChunk, type ParseResult, normalizeWebSymbol } from "./parser
 import { extractDependencies, cleanSignature } from "./utils/imports.js";
 import { estimateTokens } from "./utils/token-estimator.js";
 import type { NrekiEngine } from "./engine.js";
+import {
+    extractTypeLedgerParafovea,
+    countTotalCrossFileBeforeTruncation,
+    renderCrossFileUpstream,
+    renderCrossFileDownstream,
+    renderTruncationAdvisory,
+    computeCrossFileBytes,
+} from "./compressor-foveal-cross-file.js";
 
 // 🔥 TFC v2: TRUE LRU AST CACHE 🔥
 // Prevents re-parsing Tree-sitter when content hasn't mutated.
@@ -45,6 +53,10 @@ export interface TfcResult {
         externalParafovea: number;
         upstream: number;
         darkMatterLines: number;
+        // Phase 4 cross-file Type Ledger metrics
+        crossFileUpstream: number;
+        crossFileDownstream: number;
+        crossFileTruncated: number;
     };
 }
 
@@ -73,11 +85,19 @@ function extractCausalRefs(code: string): Set<string> {
     return refs;
 }
 
+export interface TfcCrossFileOptions {
+    /** Phase 4: K-hop expansion. Furia round 12: K=1 ESTRICTO, max=1. */
+    walkDepth?: number;
+    /** Phase 4: hard cap on UNIQUE cross-file chunks. Default 10. */
+    maxCrossFile?: number;
+}
+
 export async function tfcCompress(
     filePath: string,
     content: string,
     focusInput: string,
-    engine: NrekiEngine
+    engine: NrekiEngine,
+    crossFileOpts?: TfcCrossFileOptions,
 ): Promise<TfcResultPayload> {
     const originalSize = content.length;
 
@@ -165,9 +185,32 @@ export async function tfcCompress(
         }
     }
 
-    // 3. CAUSAL PAST (External Imports)
+    // 3. PHASE 4: CROSS-FILE TYPE LEDGER PARAFOVEA (Furia round 12)
+    // K=1 strict (walkDepth clamped to max 1). Anti-hub via rankByInDegree.
+    // Fail-open if Type Ledger lookup misses (defensive).
+    const _walkDepth = Math.max(0, Math.min(1, crossFileOpts?.walkDepth ?? 1));
+    const maxCrossFile = Math.max(0, Math.min(50, crossFileOpts?.maxCrossFile ?? 10));
+    const foveaPaths = new Set([filePath]);
+    const foveaCrossFileInputs = Array.from(foveas).map(f => ({
+        path: filePath,
+        symbolName: f.symbolName,
+    }));
+    const crossFileChunks = (_walkDepth >= 1 && maxCrossFile > 0)
+        ? extractTypeLedgerParafovea(foveaCrossFileInputs, engine, maxCrossFile)
+        : [];
+    const crossFileTotalPre = crossFileChunks.length > 0
+        ? countTotalCrossFileBeforeTruncation(foveaCrossFileInputs, engine)
+        : 0;
+
+    // FURIA #51: Type Ledger symbols PRECEDE BM25 lexical (dedup).
+    // External Parafovea via BM25 operates on residual after Ledger filter.
+    const ledgerResolvedSymbols = new Set(crossFileChunks.map(c => c.symbolName));
+
+    // 4. CAUSAL PAST (External Imports — BM25 over residual post-dedup)
     const allImports = extractDependencies(content, ext);
     const usedImports = allImports.filter(imp => {
+        // FURIA #51 dedup: skip imports already resolved by Type Ledger.
+        if (ledgerResolvedSymbols.has(imp.localName)) return false;
         const safeName = imp.localName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
         const regex = new RegExp(`(^|[^a-zA-Z0-9_$])${safeName}(?=[^a-zA-Z0-9_$]|$)`);
         for (const f of foveas) {
@@ -188,6 +231,21 @@ export async function tfcCompress(
             engine.incrementAutoContext();
         }
     }
+
+    // PHASE 4: Pre-render cross-file blocks for output assembly + bytes accounting.
+    const projectRootForRel = engine.getProjectRoot();
+    const relPathFn = (p: string): string =>
+        path.relative(projectRootForRel, p).replace(/\\/g, "/");
+    const crossFileUpstreamText = renderCrossFileUpstream(crossFileChunks, relPathFn);
+    const crossFileDownstreamText = renderCrossFileDownstream(crossFileChunks, relPathFn);
+    const crossFileAdvisoryText = renderTruncationAdvisory(
+        crossFileTotalPre,
+        new Set(crossFileChunks.map(c => c.chunkId)).size,
+    );
+    const crossFileBytesTotal = computeCrossFileBytes(
+        crossFileUpstreamText, crossFileDownstreamText, crossFileAdvisoryText,
+    );
+    void foveaPaths;
 
     // 4. CAUSAL FUTURE (Blast Radius)
     const relPath = path.relative(engine.getProjectRoot(), filePath).replace(/\\/g, "/");
@@ -238,6 +296,13 @@ export async function tfcCompress(
         parts.push(`// ${shown}${extra} → calls target\n`);
     }
 
+    // PHASE 4: cross-file UPSTREAM (Type Ledger consumers). Inserted right
+    // after single-file upstream so agent sees both layers contiguously.
+    if (crossFileUpstreamText) {
+        parts.push(crossFileUpstreamText);
+        parts.push("");
+    }
+
     // 🔥 O(1) DOWNSTREAM EVENT HORIZON 🔥
     // Top 10 local deps, cleanSignature strips JSDocs and whitespace waste.
     if (downstream.size > 0) {
@@ -246,6 +311,16 @@ export async function tfcCompress(
         const topDownstream = sortedDownstream.slice(0, 10);
         for (const c of topDownstream) parts.push(cleanSignature(c.shorthand));
         if (downstream.size > 10) parts.push(`// ... and ${downstream.size - 10} more omitted`);
+        parts.push("");
+    }
+
+    // PHASE 4: cross-file DOWNSTREAM (Type Ledger producers).
+    if (crossFileDownstreamText) {
+        parts.push(crossFileDownstreamText);
+        parts.push("");
+    }
+    if (crossFileAdvisoryText) {
+        parts.push(crossFileAdvisoryText);
         parts.push("");
     }
 
@@ -274,10 +349,16 @@ export async function tfcCompress(
     //  - God Class focus (fovea = entire file, metadata overhead wins)
     //  - Marginal compression cases where the agent's choice of focus is
     //    barely useful (better to give them the full aggressive summary)
-    if (compressedSize >= originalSize * 0.85) {
+    // FURIA #50 Density Shield exemption: cross-file bytes are EXCLUDED
+    // from the compressedSize used for the shield ratio. Razón: shield
+    // evalúa compresión del archivo principal, NO el contexto externo
+    // injection. Sumar cross-file invierte la semántica del shield
+    // (penalizaría contexto útil).
+    const compressedSizeForShield = Math.max(0, compressedSize - crossFileBytesTotal);
+    if (compressedSizeForShield >= originalSize * 0.85) {
         return {
             kind: "shield_tripped",
-            ratio: 1 - (compressedSize / originalSize),
+            ratio: 1 - (compressedSizeForShield / originalSize),
             originalSize,
             compressedSize
         };
@@ -296,7 +377,10 @@ export async function tfcCompress(
                 localParafovea: downstream.size,
                 externalParafovea: externalCount,
                 upstream: upstreamNames.size,
-                darkMatterLines
+                darkMatterLines,
+                crossFileUpstream: crossFileChunks.filter(c => c.relation === "upstream").length,
+                crossFileDownstream: crossFileChunks.filter(c => c.relation === "downstream").length,
+                crossFileTruncated: Math.max(0, crossFileTotalPre - new Set(crossFileChunks.map(c => c.chunkId)).size),
             }
         }
     };
