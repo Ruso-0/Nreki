@@ -180,3 +180,162 @@ empíricamente verificado en `src/semantic-edit.ts:713-774`.
   refactor con scope.
 
 ---
+
+## Phase 5 SWE-bench TS Validation — Spec firmada (Furia rounds 10+11)
+
+**Status:** Designed, frozen, deferred to post-Phase 4 sealed.
+
+### Sequencing
+
+Phase 4 (Markov Blanket Compression) PRIMERO. Phase 5 después.
+Razón: Phase 5 mide producto, NREKI sin Phase 4 mide producto
+incompleto. Resultados pre-Phase 4 obsoletos al sealing Phase 4.
+
+### Paradigma
+
+Δ — Token Cost to Recall (Furia round 10 dominant metric).
+
+- Métrica primaria: median tokens_to_recall@K per task
+- Métricas secundarias: Recall@K + Precision@K + MRR + nDCG@K
+- USP defendido: "less tokens to reach correct context"
+
+### Dataset
+
+Repos vírgenes post-training-cutoff, stratified por escala:
+
+- Small library (<5K LOC): date-fns, ts-pattern
+- Medium framework (5K-50K): trpc, next-auth
+- Large framework (>50K): typescript, nest.js
+
+Verificación obligatoria: repos POST-Claude knowledge cutoff
+documentado per modelo evaluador.
+
+### Task Count
+
+N=100-150 committed upfront. NO MVP-then-expand (early-stopping
+bias / p-hacking proxy). Statistical significance ±8-10% CI 95%.
+
+### Baselines
+
+Internal validation:
+
+- ripgrep
+- BM25
+
+Pre-paper submission obligatorio:
+
+- Dense retrieval (voyage-code-3 o BGE-large via API, $10-50 budget)
+- Aider repo-map (open-source comparable)
+- Cursor/Copilot/Cody como Limitations section explícito
+  (closed-source, no fair benchmark possible)
+
+### Ablation Study Completa
+
+- (a) NREKI search alone
+- (b) NREKI fast_grep alone
+- (c) NREKI type_graph alone (post-Phase 4)
+- (d) NREKI search + type_graph combined
+- (e) NREKI all-in
+- (f) ripgrep
+- (g) BM25
+- (h) Dense retrieval (pre-paper)
+
+### Curation
+
+Scripted (filter PRs by labels: bug, regression, fix) +
+INDEPENDENT reviewer (NO auditor self-review). Criteria
+declarados upfront en commit + frozen randomness seed +
+reproducible script.
+
+### Edge Cases Obligatorios (UNION rounds 10+11)
+
+**Round 11 (rigor experimental):**
+
+1. **Time-Travel Data Leakage Guard:** Eval script DEBE hacer
+   `git checkout HEAD~1` (commit anterior al fix del PR) ANTES
+   de indexar el Type Ledger. Si indexa en master, grafo ya
+   tiene la solución inyectada → resultados inválidos.
+
+2. **Chunk-Level Mapping vs File-Level:** SWE-bench tradicional
+   mide file-level. NREKI es chunk-level (start_line/end_line).
+   Reportar AMBOS niveles separados. Si NREKI devuelve archivo
+   correcto pero apunta función equivocada, file-level=match
+   pero NREKI-level=fail.
+
+3. **TokenCost@K obligatorio:** Recall sin cost es inútil. Si
+   BM25 logra 80% Recall con 60K tokens y NREKI 85% con 4K
+   tokens, esa compresión 93% es el descubrimiento real.
+
+**Round 10 (rigor metodológico):**
+
+4. **Ground truth 3-niveles reportados separadamente:**
+   - (a) src-only strict
+   - (b) src + tests permissive
+   - (c) all-patch maximal
+
+   Reportar los TRES — no esconder elección en footnote.
+
+5. **Issue text quality stratification:**
+   - High (10%): stack trace + repro code + expected/actual
+   - Medium (40%): narrative + reference
+   - Low (50%): "fix #1234" oneliner
+
+   Reportar stratified per quality tier.
+
+6. **Static + Multi-turn modes ambos:**
+   - Static: single query → single response
+   - Multi-turn: 3 queries permitidas (representativo de
+     deployment real Cursor/Copilot)
+
+   Reportar ambos modos.
+
+7. **Training data leakage check:** Repos POST knowledge cutoff
+   del modelo evaluador. Documentación obligatoria del cutoff.
+
+8. **Missing baselines disclosure:** Cursor/Copilot/Cody en
+   Limitations section explícito + Aider repo-map incluido
+   (open-source). Sin esto, paper sufre "missing baseline"
+   critical objection.
+
+### Fail-mode
+
+Strict binary Recall@K + MRR + Precision@K + nDCG@K reportados
+paralelos para triangulación honesta del lector.
+
+### Framing
+
+Section 4 Empirical Evaluation de paper larger
+("NREKI: Topology-Aware Context Delivery for Coding Agents"
+o similar). NO standalone paper.
+
+### Estimación scope
+
+- Dataset curation: 4-8h manual + ~150 LOC scripts
+- Eval pipeline: ~900-1100 LOC + 12-15 unit tests
+- Baselines: ~200-400 LOC
+- Analysis + report: ~100 LOC + manual write-up
+- **Total**: 1300-1700 LOC + 100-150 tasks, 4-8 sesiones (~12-25h)
+
+### Decisión Furia rounds 10+11
+
+Latigazos producidos:
+
+- Auditor #45: aceptar Phase 4/5 como intercambiables sin
+  precedence arquitectónica
+- Auditor #46: dense retrieval baseline exclusion = fraude
+  metodológico (engineering decision interna ≠ scientific
+  decision evaluativa)
+- Auditor #47 (round 10): Paradigma A vs B framing missear USP
+  real (token cost)
+- Pipipi Code #47 (round 11): proponer Opción I (corpus/zod,
+  astro, prisma) = data leakage / overfitting con Sub-sprint
+  2.2.2.x tuning data
+
+Furia 11/11 rounds adversariales ratificados.
+
+- **Registered**: Sub-sprint 2.3 follow-up (Phase 5 spec persistence,
+  this commit)
+- **Planned execution**: post-Phase 4 sealed
+- **Estimated effort**: 12-25h ejecución en 4-8 sesiones
+
+---
