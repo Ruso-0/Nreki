@@ -26,6 +26,9 @@
 export const UNWRAP_GENERICS = new Set([
     "Promise", "Awaitable", "Array", "ReadonlyArray",
     "Result", "Option", "Maybe",
+    // Sub-sprint 2.2.2.4 Tier A: oracle keeps first arg
+    "Partial", "Required", "Readonly",
+    "NonNullable", "Exclude", "Extract", "Awaited",
 ]);
 
 export const DISCARD_NAMES = new Set([
@@ -38,6 +41,16 @@ export const DISCARD_NAMES = new Set([
     "typeof", "asserts", "keyof", "infer",
     "extends", "is", "in", "as",
     "satisfies", "readonly",
+    // Utility types Tier B (Sub-sprint 2.2.2.4):
+    // oracle drops entirely (mapped types resolve to anonymous)
+    "Pick", "Omit", "Record",
+    // Utility types Tier C (Sub-sprint 2.2.2.4):
+    // type-level operations, oracle resolves typeof X semantically
+    "ReturnType", "Parameters", "InstanceType",
+    "ConstructorParameters", "ThisType", "ThisParameterType",
+    "OmitThisParameter",
+    // String manipulation utilities Tier C:
+    "Uppercase", "Lowercase", "Capitalize", "Uncapitalize",
 ]);
 
 export function isDiscarded(name: string): boolean {

@@ -169,6 +169,116 @@ describe("Sub-sprint 2.2.2.2: inline object literal handling (structural fix)", 
         expect(result.produces).toContain("Result");
     });
 
+    describe("Sub-sprint 2.2.2.4: utility types semantic unwrap", () => {
+        describe("Tier A: oracle keeps first arg", () => {
+            it("Partial<Model> → unwraps to Model", () => {
+                const result = extractTypeIO("function f(): Partial<Model> { return null as any; }");
+                expect(result.produces).toContain("Model");
+                expect(result.produces).not.toContain("Partial");
+            });
+
+            it("Required<AstroSettings> → unwraps", () => {
+                const result = extractTypeIO("function f(): Required<AstroSettings> { return null as any; }");
+                expect(result.produces).toContain("AstroSettings");
+            });
+
+            it("Readonly<Config> → unwraps to Config", () => {
+                const result = extractTypeIO("function f(x: Readonly<Config>): void {}");
+                expect(result.consumes).toContain("Config");
+            });
+
+            it("NonNullable<RouteData> → unwraps", () => {
+                const result = extractTypeIO("function f(): NonNullable<RouteData> { return null as any; }");
+                expect(result.produces).toContain("RouteData");
+                expect(result.produces).not.toContain("NonNullable");
+            });
+
+            it("Exclude<SSRResult, X> → unwraps to first arg", () => {
+                const result = extractTypeIO("function f(): Exclude<SSRResult, string> { return null as any; }");
+                expect(result.produces).toContain("SSRResult");
+            });
+
+            it("Extract<T, U> → unwraps to first arg", () => {
+                const result = extractTypeIO("function f(): Extract<UnionType, BaseType> { return null as any; }");
+                expect(result.produces).toContain("UnionType");
+            });
+
+            it("Awaited<UserType> → unwraps to UserType (single-level)", () => {
+                const result = extractTypeIO("function f(): Awaited<UserType> { return null as any; }");
+                expect(result.produces).toContain("UserType");
+                expect(result.produces).not.toContain("Awaited");
+            });
+
+            it("Awaited<Promise<User>> stops at Promise (documented regex gap 2.2.2.2)", () => {
+                // Same regex gap as Promise<Result<User>> below: TYPE_TOKEN's
+                // `<[^>]+>` captures one '>' short of full nested closure,
+                // so cascade stops at the second level. 2.2.2.4 preserves
+                // baseline; nested generic depth is a separate concern.
+                const result = extractTypeIO("function f(): Awaited<Promise<User>> { return null as any; }");
+                expect(result.produces).toContain("Promise");
+            });
+        });
+
+        describe("Tier B: oracle drops entirely (mapped types)", () => {
+            it("Pick<User, 'id'> → discards entirely", () => {
+                const result = extractTypeIO("function f(x: Pick<User, 'id'>): void {}");
+                expect(result.consumes).not.toContain("Pick");
+            });
+
+            it("Omit<Config, 'secret'> → discards", () => {
+                const result = extractTypeIO("function f(): Omit<Config, 'secret'> { return null as any; }");
+                expect(result.produces).not.toContain("Omit");
+            });
+
+            it("Record<string, Plugin> → discards", () => {
+                const result = extractTypeIO("function f(): Record<string, Plugin> { return null as any; }");
+                expect(result.produces).not.toContain("Record");
+            });
+        });
+
+        describe("Tier C: type-level operations (inalcanzable)", () => {
+            it("ReturnType<typeof func> → discards", () => {
+                const result = extractTypeIO("function f(): ReturnType<typeof getUser> { return null as any; }");
+                expect(result.produces).not.toContain("ReturnType");
+            });
+
+            it("Parameters<typeof func> → discards", () => {
+                const result = extractTypeIO("function f(x: Parameters<typeof handle>): void {}");
+                expect(result.consumes).not.toContain("Parameters");
+            });
+
+            it("InstanceType<typeof Class> → discards", () => {
+                const result = extractTypeIO("function f(): InstanceType<typeof MyClass> { return null as any; }");
+                expect(result.produces).not.toContain("InstanceType");
+            });
+
+            it("Uppercase<S> string manipulation → discards", () => {
+                const result = extractTypeIO("function f(): Uppercase<EventName> { return null as any; }");
+                expect(result.produces).not.toContain("Uppercase");
+            });
+        });
+
+        describe("Edge cases: domain entity collision (accepted casualty)", () => {
+            it("user-defined type Record entity is masacred (per Furia)", () => {
+                // Caso: usuario define type Record = {...}
+                // Trade-off firmado: 60.1% recovery del bucket C
+                // justifica masacre de domain entities mal-nombrados.
+                // Heurístico DISCARD → [], oracle probable ["Record"]
+                // [] ⊆ ["Record"] → Under-Unwrap impecable, NO regresión.
+                const result = extractTypeIO("function f(): Record { return null as any; }");
+                expect(result.produces).not.toContain("Record");
+            });
+        });
+
+        describe("Compatibility con Sub-sprint 2.2.2.3 qualified namespace", () => {
+            it("t.Pick<X, K> qualified prefix → discards", () => {
+                const result = extractTypeIO("function f(): t.Pick<X, 'id'> { return null as any; }");
+                expect(result.produces).not.toContain("Pick");
+                expect(result.produces).not.toContain("t");
+            });
+        });
+    });
+
     describe("Sub-sprint 2.2.2.3: qualified namespace F1", () => {
         it("strips namespace prefix in non-generic types", () => {
             const result = extractTypeIO("function f(x: core.Invoice): void {}");
