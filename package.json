@@ -79,6 +79,7 @@
     }
   },
   "devDependencies": {
+    "@octokit/rest": "^22.0.1",
     "@types/node": "^22.13.10",
     "@types/picomatch": "^4.0.2",
     "tsx": "^4.19.3",

@@ -66,3 +66,7 @@ prisma-test/
 
 # Benchmark outputs (ephemeral, regenerable)
 scripts/benchmark-*.json
+
+# Phase 5 SWE-Bench-TS-Lite generated dataset (contains GitHub data,
+# manual blind review state — do NOT commit per Furia round 13 spec).
+scripts/eval-phase5/data/
