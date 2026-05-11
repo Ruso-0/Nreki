@@ -60,6 +60,7 @@
     "@modelcontextprotocol/sdk": "1.23.1",
     "@typescript-eslint/parser": "8.59.0",
     "chokidar": "4.0.3",
+    "csv-parse": "^6.2.1",
     "eslint": "9.39.4",
     "eslint-plugin-jsx-a11y": "6.10.2",
     "eslint-plugin-react": "7.37.5",
