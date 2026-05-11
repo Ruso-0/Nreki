@@ -31,6 +31,13 @@ desktop.ini
 # Python venvs (e.g. .venv-aider/ for the Aider baseline in Phase 5 C.3.D)
 .venv*/
 
+# Phase 5 C.4.A orchestrator artefacts (cloned task workspaces +
+# JSON output files). All ephemeral / regenerable.
+.eval-phase5-cache/
+results-dryrun.json
+results-full.json
+results-*.json
+
 # Coverage
 coverage/
 
