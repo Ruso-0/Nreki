@@ -2,37 +2,76 @@
  * scripts/eval-phase5/types.ts
  *
  * Phase 5 SWE-Bench-TS-Lite shared interfaces.
- * Spec firmada UNION rounds 10+11+13 (commit c625345 TECH_DEBT.md).
+ *
+ * Source-of-truth schema aligned with SWE-PolyBench Verified TS
+ * (AmazonScience/SWE-PolyBench_Verified, arXiv:2504.08703, MIT).
+ *
+ * Spec firmada: TECH_DEBT.md — section "PHASE 5 SEALED — SWE-PolyBench
+ * Verified TS (post Furia round 17)" (commit 46bfb52).
+ * Schema migration: Furia round 18 (PolyBenchTask sovereign).
  */
 
-export interface BugCandidate {
-    /** "owner/repo" GitHub coordinate (e.g. "trpc/trpc"). */
+/**
+ * Parsed AST node from PolyBench `modified_nodes` column.
+ *
+ * Raw format example:
+ *   "src/vs/editor/contrib/suggest/suggestModel.ts->program->
+ *    class_declaration:SuggestModel->method_definition:trigger"
+ *
+ * Parsing strategy: fail-fast at load time with a warning if a segment
+ * is malformed, then fall back to `terminal_kind: "unknown"` /
+ * `terminal_name: ""` rather than throw — preserves strict typing
+ * downstream and lets evaluation continue on best-effort retrieval.
+ */
+export interface ModifiedNode {
+    /** Original PolyBench string, kept verbatim for audit trail. */
+    raw_path: string;
+    /** First segment before "->" (always a relative file path). */
+    file_path: string;
+    /** Intermediate segments (zero or more), e.g. ["program", "class_declaration:X"]. */
+    ast_path: string[];
+    /** Last-segment node kind before ":" (or "unknown" if unparseable). */
+    terminal_kind: string;
+    /** Last-segment node name after ":" (or "" if absent). */
+    terminal_name: string;
+}
+
+/**
+ * SWE-PolyBench Verified TS task instance.
+ * Schema matches the columns of PolyBench `test.csv` that NREKI
+ * evaluation consumes. Fields are normalized at load time:
+ *   - JSON-encoded arrays (F2P, P2P, issue_numbers) parsed
+ *   - `modified_nodes` raw strings parsed into ModifiedNode objects
+ */
+export interface PolyBenchTask {
+    /** "owner/repo" coordinate (e.g. "mui/material-ui"). */
     repo: string;
-    /** Pull request number. */
+    /** GitHub PR number (== pull_number in PolyBench). */
     pr_number: number;
-    /** PR title (used by blind reviewer). */
-    pr_title: string;
-    /** Linked issue URL (null si no hay issue). */
-    issue_url: string | null;
-    /** Issue body — what blind reviewer reads. NEVER include PR diff. */
-    issue_text: string | null;
-    /** SHA of base commit (PRE-fix). Time-Travel guard target. */
+    /** Formatted identifier "<owner>__<repo>-<pr_number>". */
+    instance_id: string;
+    /** 40-char SHA of base commit (PRE-fix). Time-Travel guard target. */
     base_commit: string;
-    /** SHA of merge commit (POST-fix). For ground truth diff extraction. */
-    merge_commit: string;
-    /** Files modified by the PR diff. Used to compute ground truth. */
-    modified_files: string[];
-    /** Labels applied to the PR (e.g. ["bug", "regression"]). */
-    pr_labels: string[];
-    /** ISO timestamp of when the candidate was fetched. */
-    curated_at: string;
-    /** Optional notes from blind reviewer. */
-    reviewer_notes?: string;
-    /**
-     * Blind review verdict: null = not reviewed, true = approved
-     * (issue text sufficient for retrieval task), false = rejected.
-     */
-    blind_approved: boolean | null;
+    /** Gold fix patch (unified diff). Ground truth source for modified files. */
+    patch: string;
+    /** Test-only diff (separate from fix patch). NOT used for Recall. */
+    test_patch: string;
+    /** Issue title + body — the query the agent sees. */
+    problem_statement: string;
+    /** AST nodes modified by the patch (tree-sitter resolved at curation). */
+    modified_nodes: ModifiedNode[];
+    /** Classification assigned by PolyBench annotators. */
+    task_category: "Bug Fix" | "Feature" | "Refactoring";
+    /** Tests resolved by the PR (fail-before, pass-after). */
+    F2P: string[];
+    /** Tests that pass before and after PR application. */
+    P2P: string[];
+    /** Per-instance Dockerfile content for reproducible execution. */
+    dockerfile: string;
+    /** Shell command to run F2P/P2P inside the Docker container. */
+    test_command: string;
+    /** Always "TypeScript" for the TS subset; kept explicit for filtering. */
+    language: "TypeScript";
 }
 
 /**
@@ -59,4 +98,3 @@ export interface GroundTruth {
     /** Audit flag confirming anti-tests filter was applied. */
     anti_tests_filter_applied: boolean;
 }
-

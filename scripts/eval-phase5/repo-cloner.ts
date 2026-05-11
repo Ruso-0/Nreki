@@ -1,21 +1,24 @@
 /**
  * scripts/eval-phase5/repo-cloner.ts
  *
- * Phase 5 SWE-Bench-TS-Lite C.1: Per-task individual clone @ base_commit.
+ * Phase 5 SWE-Bench-TS-Lite: Per-task individual clone @ base_commit.
  *
  * Furia round 13 #3: pureza del entorno NO se negocia.
  *   - Fresh clone per task (no shared workspace state)
- *   - Time-Travel guard: checkout BASE commit (pre-fix), NOT merge_commit
+ *   - Time-Travel guard: checkout BASE commit (pre-fix)
  *   - Optional fresh npm install per task (paralelizable via CI)
  *
  * Mantra: NREKI debe indexar el codebase BEFORE the fix existed.
- * Si indexa @ merge_commit, el grafo ya tiene la solución → leakage.
+ * Si indexa @ commit post-fix, el grafo ya tiene la solución → leakage.
+ *
+ * Furia round 18: schema migrated to PolyBenchTask. base_commit
+ * semantics unchanged (40-char SHA, pre-fix).
  */
 
 import { execSync } from "node:child_process";
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
-import type { BugCandidate } from "./types.js";
+import type { PolyBenchTask } from "./types.js";
 
 /**
  * Injectable command runner for testability. Default uses execSync;
@@ -39,7 +42,7 @@ const defaultRunner: CommandRunner = {
 /**
  * Clone a repo to a task-specific directory and checkout the BASE commit.
  *
- * @param candidate       BugCandidate (provides repo + base_commit).
+ * @param task            PolyBenchTask (provides repo + base_commit).
  * @param workspaceRoot   Parent directory for task-* subdirs.
  * @param runner          Optional injected CommandRunner (for tests).
  * @returns               Absolute path to the cloned task directory.
@@ -47,14 +50,14 @@ const defaultRunner: CommandRunner = {
  * @throws if Time-Travel guard sanity check fails (HEAD SHA mismatch).
  */
 export async function cloneTaskRepo(
-    candidate: BugCandidate,
+    task: PolyBenchTask,
     workspaceRoot: string,
     runner: CommandRunner = defaultRunner,
 ): Promise<string> {
-    const safeName = candidate.repo.replace("/", "-");
+    const safeName = task.repo.replace("/", "-");
     const taskDir = path.join(
         workspaceRoot,
-        `task-${safeName}-pr${candidate.pr_number}`,
+        `task-${safeName}-pr${task.pr_number}`,
     );
 
     // 1. Idempotent clean (rm -rf if exists).
@@ -65,20 +68,20 @@ export async function cloneTaskRepo(
     }
 
     // 2. Fresh clone.
-    const repoUrl = `https://github.com/${candidate.repo}.git`;
+    const repoUrl = `https://github.com/${task.repo}.git`;
     runner.run(`git clone --quiet "${repoUrl}" "${taskDir}"`);
 
     // 3. Time-Travel guard: checkout BASE commit (pre-fix state).
     runner.run(
-        `git -C "${taskDir}" checkout --quiet ${candidate.base_commit}`,
+        `git -C "${taskDir}" checkout --quiet ${task.base_commit}`,
     );
 
     // 4. Sanity check: verify HEAD matches expected base_commit.
     const headSha = runner.run(`git -C "${taskDir}" rev-parse HEAD`).trim();
-    if (headSha !== candidate.base_commit) {
+    if (headSha !== task.base_commit) {
         throw new Error(
-            `Time-Travel guard failed for ${candidate.repo}#${candidate.pr_number}: ` +
-            `expected ${candidate.base_commit}, got ${headSha}`,
+            `Time-Travel guard failed for ${task.repo}#${task.pr_number}: ` +
+            `expected ${task.base_commit}, got ${headSha}`,
         );
     }
 

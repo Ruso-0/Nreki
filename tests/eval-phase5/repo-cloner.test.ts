@@ -1,6 +1,7 @@
 /**
- * Phase 5 C.1 repo-cloner tests — mocked CommandRunner.
+ * Phase 5 repo-cloner tests — mocked CommandRunner.
  * NO real git operations.
+ * Furia round 18: schema migrated to PolyBenchTask.
  */
 
 import { describe, it, expect, beforeEach } from "vitest";
@@ -8,21 +9,24 @@ import * as path from "node:path";
 import * as os from "node:os";
 import * as fs from "node:fs/promises";
 import { cloneTaskRepo, installTaskDeps, type CommandRunner } from "../../scripts/eval-phase5/repo-cloner.js";
-import type { BugCandidate } from "../../scripts/eval-phase5/types.js";
+import type { PolyBenchTask } from "../../scripts/eval-phase5/types.js";
 
-function mkCandidate(overrides: Partial<BugCandidate> = {}): BugCandidate {
+function mkTask(overrides: Partial<PolyBenchTask> = {}): PolyBenchTask {
     return {
         repo: "owner/repo",
         pr_number: 42,
-        pr_title: "Fix",
-        issue_url: null,
-        issue_text: "Bug X",
+        instance_id: "owner__repo-42",
         base_commit: "deadbeefcafe",
-        merge_commit: "fedcba987654",
-        modified_files: ["src/foo.ts"],
-        pr_labels: ["bug"],
-        curated_at: new Date().toISOString(),
-        blind_approved: null,
+        patch: "",
+        test_patch: "",
+        problem_statement: "Bug X",
+        modified_nodes: [],
+        task_category: "Bug Fix",
+        F2P: [],
+        P2P: [],
+        dockerfile: "",
+        test_command: "",
+        language: "TypeScript",
         ...overrides,
     };
 }
@@ -44,7 +48,7 @@ function makeMockRunner(behavior: { headSha?: string } = {}): {
     return { runner, invocations };
 }
 
-describe("Phase 5 C.1: repo-cloner", () => {
+describe("Phase 5: repo-cloner", () => {
     let tmpRoot: string;
 
     beforeEach(async () => {
@@ -53,43 +57,33 @@ describe("Phase 5 C.1: repo-cloner", () => {
 
     it("clones repo to task-specific directory naming convention", async () => {
         const { runner, invocations } = makeMockRunner();
-        const candidate = mkCandidate({ repo: "trpc/trpc", pr_number: 1234 });
-        const taskDir = await cloneTaskRepo(candidate, tmpRoot, runner);
+        const task = mkTask({ repo: "trpc/trpc", pr_number: 1234 });
+        const taskDir = await cloneTaskRepo(task, tmpRoot, runner);
 
         expect(taskDir).toContain("task-trpc-trpc-pr1234");
         expect(invocations.some(c => c.startsWith("git clone"))).toBe(true);
     });
 
-    it("checks out BASE commit (pre-fix), not merge_commit", async () => {
-        const { runner, invocations } = makeMockRunner();
-        const candidate = mkCandidate({
-            base_commit: "BASE_SHA_123",
-            merge_commit: "MERGE_SHA_999",
-        });
-        // Mock will return "deadbeefcafe" by default → mismatch trigger
-        // but for this test we adjust mock to match
+    it("checks out BASE commit (pre-fix)", async () => {
+        const task = mkTask({ base_commit: "BASE_SHA_123" });
         const matched = makeMockRunner({ headSha: "BASE_SHA_123" });
-        await cloneTaskRepo(candidate, tmpRoot, matched.runner);
+        await cloneTaskRepo(task, tmpRoot, matched.runner);
 
         const checkoutCmd = matched.invocations.find(c => c.includes("checkout"));
         expect(checkoutCmd).toContain("BASE_SHA_123");
-        expect(checkoutCmd).not.toContain("MERGE_SHA_999");
-        // Suppress unused warning
-        void runner;
-        void invocations;
     });
 
     it("throws if checkout SHA mismatches expected (Time-Travel guard sanity)", async () => {
         const { runner } = makeMockRunner({ headSha: "WRONG_SHA" });
-        const candidate = mkCandidate({ base_commit: "EXPECTED_SHA" });
-        await expect(cloneTaskRepo(candidate, tmpRoot, runner)).rejects.toThrow(
+        const task = mkTask({ base_commit: "EXPECTED_SHA" });
+        await expect(cloneTaskRepo(task, tmpRoot, runner)).rejects.toThrow(
             /Time-Travel guard failed/,
         );
     });
 
     it("cleans existing task dir before clone (idempotent)", async () => {
         const { runner } = makeMockRunner({ headSha: "BASE_SHA_123" });
-        const candidate = mkCandidate({
+        const task = mkTask({
             base_commit: "BASE_SHA_123",
             repo: "x/y",
             pr_number: 7,
@@ -98,7 +92,7 @@ describe("Phase 5 C.1: repo-cloner", () => {
         await fs.mkdir(taskDir, { recursive: true });
         await fs.writeFile(path.join(taskDir, "stale.txt"), "old");
 
-        await cloneTaskRepo(candidate, tmpRoot, runner);
+        await cloneTaskRepo(task, tmpRoot, runner);
 
         // Stale file removed (taskDir was rm'd before mock clone).
         await expect(fs.access(path.join(taskDir, "stale.txt"))).rejects.toThrow();
@@ -106,7 +100,7 @@ describe("Phase 5 C.1: repo-cloner", () => {
 
     it("uses git clone --quiet flag", async () => {
         const { runner, invocations } = makeMockRunner();
-        await cloneTaskRepo(mkCandidate(), tmpRoot, runner);
+        await cloneTaskRepo(mkTask(), tmpRoot, runner);
         const cloneCmd = invocations.find(c => c.startsWith("git clone"));
         expect(cloneCmd).toContain("--quiet");
     });

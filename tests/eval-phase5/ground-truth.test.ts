@@ -1,29 +1,53 @@
 /**
- * Phase 5 C.1 ground-truth + anti-tests filter mortal tests.
+ * Phase 5 ground-truth + anti-tests filter mortal tests.
  * Furia round 13 #8: tests del FUTURO = trampa temporal.
+ * Furia round 18: schema migrated to PolyBenchTask (patch-derived
+ * modified files).
  */
 
 import { describe, it, expect } from "vitest";
-import { isTestFile, computeGroundTruth } from "../../scripts/eval-phase5/ground-truth.js";
-import type { BugCandidate } from "../../scripts/eval-phase5/types.js";
+import {
+    isTestFile,
+    computeGroundTruth,
+    extractModifiedFiles,
+} from "../../scripts/eval-phase5/ground-truth.js";
+import type { PolyBenchTask } from "../../scripts/eval-phase5/types.js";
 
-function mkCandidate(modified_files: string[]): BugCandidate {
+/**
+ * Build a minimal unified-diff patch that mentions each file in
+ * `files` exactly once. Sufficient for ground-truth extraction tests
+ * since `extractModifiedFiles` only inspects `diff --git a/X b/Y`
+ * headers.
+ */
+function buildPatch(files: string[]): string {
+    return files
+        .map(
+            f =>
+                `diff --git a/${f} b/${f}\n--- a/${f}\n+++ b/${f}\n@@ -1 +1 @@\n-old\n+new\n`,
+        )
+        .join("");
+}
+
+function mkTask(files: string[]): PolyBenchTask {
     return {
         repo: "owner/repo",
         pr_number: 1,
-        pr_title: "Test fixture",
-        issue_url: null,
-        issue_text: null,
+        instance_id: "owner__repo-1",
         base_commit: "a",
-        merge_commit: "b",
-        modified_files,
-        pr_labels: ["bug"],
-        curated_at: new Date().toISOString(),
-        blind_approved: null,
+        patch: buildPatch(files),
+        test_patch: "",
+        problem_statement: "fixture",
+        modified_nodes: [],
+        task_category: "Bug Fix",
+        F2P: [],
+        P2P: [],
+        dockerfile: "",
+        test_command: "",
+        language: "TypeScript",
     };
 }
 
-describe("Phase 5 C.1: isTestFile (anti-tests filter mortal)", () => {
+describe("Phase 5: isTestFile (anti-tests filter mortal)", () => {
     it("detects *.test.ts", () => {
         expect(isTestFile("src/foo.test.ts")).toBe(true);
         expect(isTestFile("packages/lib/x.test.tsx")).toBe(true);
@@ -66,9 +90,55 @@ describe("Phase 5 C.1: isTestFile (anti-tests filter mortal)", () => {
     });
 });
 
-describe("Phase 5 C.1: computeGroundTruth (3-niveles)", () => {
+describe("Phase 5: extractModifiedFiles (patch parser)", () => {
+    it("extracts paths from diff --git headers", () => {
+        const patch = `diff --git a/src/foo.ts b/src/foo.ts
+--- a/src/foo.ts
++++ b/src/foo.ts
+@@ -1 +1 @@
+-x
++y
+diff --git a/src/bar.ts b/src/bar.ts
+--- a/src/bar.ts
++++ b/src/bar.ts
+@@ -1 +1 @@
+-x
++y
+`;
+        expect(extractModifiedFiles(patch).sort()).toEqual([
+            "src/bar.ts",
+            "src/foo.ts",
+        ]);
+    });
+
+    it("returns [] for empty patch", () => {
+        expect(extractModifiedFiles("")).toEqual([]);
+    });
+
+    it("deduplicates files mentioned in multiple hunks", () => {
+        const patch = `diff --git a/src/foo.ts b/src/foo.ts
+@@ -1 +1 @@
+diff --git a/src/foo.ts b/src/foo.ts
+@@ -10 +10 @@
+`;
+        expect(extractModifiedFiles(patch)).toEqual(["src/foo.ts"]);
+    });
+
+    it("captures pre-image path for renames (documented limitation)", () => {
+        // Furia round 18 spec: regex minimo extrae a/X (pre-image).
+        // For renames the post-image is intentionally NOT captured here.
+        const patch = `diff --git a/old.ts b/new.ts
+similarity index 90%
+rename from old.ts
+rename to new.ts
+`;
+        expect(extractModifiedFiles(patch)).toEqual(["old.ts"]);
+    });
+});
+
+describe("Phase 5: computeGroundTruth (3-niveles)", () => {
     it("strict_src includes src/ files, excludes tests + non-src", () => {
-        const c = mkCandidate([
+        const t = mkTask([
             "src/index.ts",
             "src/handlers/code.ts",
             "src/foo.test.ts",
@@ -76,7 +146,7 @@ describe("Phase 5 C.1: computeGroundTruth (3-niveles)", () => {
             "docs/README.md",
             "package.json",
         ]);
-        const gt = computeGroundTruth(c);
+        const gt = computeGroundTruth(t);
         expect(gt.strict_src.sort()).toEqual([
             "src/handlers/code.ts",
             "src/index.ts",
@@ -84,14 +154,14 @@ describe("Phase 5 C.1: computeGroundTruth (3-niveles)", () => {
     });
 
     it("permissive includes non-test files (src + docs + config)", () => {
-        const c = mkCandidate([
+        const t = mkTask([
             "src/index.ts",
             "src/foo.test.ts",
             "test/integration.ts",
             "docs/README.md",
             "package.json",
         ]);
-        const gt = computeGroundTruth(c);
+        const gt = computeGroundTruth(t);
         expect(gt.permissive.sort()).toEqual([
             "docs/README.md",
             "package.json",
@@ -106,29 +176,29 @@ describe("Phase 5 C.1: computeGroundTruth (3-niveles)", () => {
             "test/integration.ts",
             "docs/README.md",
         ];
-        const gt = computeGroundTruth(mkCandidate(files));
+        const gt = computeGroundTruth(mkTask(files));
         expect(gt.maximal.sort()).toEqual([...files].sort());
     });
 
     it("anti_tests_filter_applied flag set true (audit)", () => {
-        const gt = computeGroundTruth(mkCandidate(["src/x.ts"]));
+        const gt = computeGroundTruth(mkTask(["src/x.ts"]));
         expect(gt.anti_tests_filter_applied).toBe(true);
     });
 
-    it("empty modified_files produces all empty arrays", () => {
-        const gt = computeGroundTruth(mkCandidate([]));
+    it("empty patch produces all empty arrays", () => {
+        const gt = computeGroundTruth(mkTask([]));
         expect(gt.strict_src).toEqual([]);
         expect(gt.permissive).toEqual([]);
         expect(gt.maximal).toEqual([]);
     });
 
     it("test-only PR produces empty strict_src (anti-tests mortal)", () => {
-        const c = mkCandidate([
+        const t = mkTask([
             "src/foo.test.ts",
             "src/bar.spec.ts",
             "test/x.ts",
         ]);
-        const gt = computeGroundTruth(c);
+        const gt = computeGroundTruth(t);
         expect(gt.strict_src).toEqual([]);
         expect(gt.permissive).toEqual([]);
         expect(gt.maximal).toHaveLength(3);
@@ -137,11 +207,11 @@ describe("Phase 5 C.1: computeGroundTruth (3-niveles)", () => {
     it("packages/* monorepo paths NOT counted as src/ unless src/ prefix", () => {
         // Monorepo edge case: "packages/foo/src/x.ts" does NOT start with "src/"
         // strict_src filter is intentionally repo-shape-agnostic per spec.
-        const c = mkCandidate([
+        const t = mkTask([
             "packages/foo/src/x.ts",
             "src/y.ts",
         ]);
-        const gt = computeGroundTruth(c);
+        const gt = computeGroundTruth(t);
         expect(gt.strict_src).toEqual(["src/y.ts"]);
     });
 });
