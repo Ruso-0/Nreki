@@ -22,10 +22,12 @@
 
 import * as path from "node:path";
 import type { PolyBenchTask } from "../types.js";
-import type { RetrievalResult } from "../types-runners.js";
+import type { ChunkResult, RetrievalResult } from "../types-runners.js";
 import { isTestFile } from "../ground-truth.js";
 import { constructQuery } from "./query-construction.js";
 import { NrekiEngine } from "../../../src/engine.js";
+import { payloadTokens } from "../utils/tokenizer.js";
+import { readFileChunk } from "../utils/chunks.js";
 
 export const FAST_GREP_DEFAULT_LIMIT = 50;
 
@@ -110,20 +112,36 @@ export async function runFastGrep(
         }
 
         const ranked = [...fileScore.entries()].sort((a, b) => b[1] - a[1]);
-        const retrieved_files = ranked.slice(0, topK).map(([f]) => f);
+        const top = ranked.slice(0, topK);
+        const retrieved_files = top.map(([f]) => f);
+
+        // File-level chunks: fast_grep returns AST hits internally but
+        // the driver interface erases line ranges. Aggregating to whole
+        // files keeps the retrofit consistent with BM25/ripgrep and
+        // matches Furia round 20's "Archivo completo" case for runners
+        // without retained chunk granularity.
+        const chunkPayloads = await Promise.all(
+            top.map(([f, score]) => readFileChunk(repoRoot, f, score)),
+        );
+        const retrieved_chunks: ChunkResult[] = chunkPayloads.map(p => p.chunk);
+        const token_cost = payloadTokens(chunkPayloads.map(p => p.text));
 
         return {
             instance_id: task.instance_id,
             retriever: "fast_grep",
             retrieved_files,
+            retrieved_chunks,
             latency_ms: Date.now() - startedAt,
+            token_cost,
         };
     } catch (e) {
         return {
             instance_id: task.instance_id,
             retriever: "fast_grep",
             retrieved_files: [],
+            retrieved_chunks: [],
             latency_ms: Date.now() - startedAt,
+            token_cost: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
             error: (e as Error).message,
         };
     } finally {

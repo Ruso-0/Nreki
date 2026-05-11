@@ -31,9 +31,10 @@
 import { spawn } from "node:child_process";
 import * as path from "node:path";
 import type { PolyBenchTask } from "../types.js";
-import type { RetrievalResult } from "../types-runners.js";
+import type { ChunkResult, RetrievalResult } from "../types-runners.js";
 import { isTestFile } from "../ground-truth.js";
 import { constructQuery } from "./query-construction.js";
+import { payloadTokens } from "../utils/tokenizer.js";
 
 export const DEFAULT_AIDER_BINARY = path.join(
     ".venv-aider",
@@ -116,14 +117,21 @@ const FILE_HEADER_RE = new RegExp(
  *
  * Returns Map<rel_forward_slash_path, score>.
  */
-export function parseAiderRepoMap(
-    stdout: string,
-    queryKeywords: string[],
-    _repoRoot: string,
-): Map<string, number> {
+export interface AiderSection {
+    path: string;
+    body: string[];
+}
+
+/**
+ * Split Aider's stdout into sections keyed by file path. Each section's
+ * body is the raw lines between its header and the next header (with
+ * empty leading/trailing lines preserved -- they cost nothing extra in
+ * memory and keep line ranges honest).
+ */
+export function parseAiderRepoMapSections(stdout: string): AiderSection[] {
     const lines = stdout.split(/\r?\n/);
-    const sections: Array<{ path: string; body: string[] }> = [];
-    let current: { path: string; body: string[] } | null = null;
+    const sections: AiderSection[] = [];
+    let current: AiderSection | null = null;
 
     for (const line of lines) {
         const m = line.match(FILE_HEADER_RE);
@@ -135,7 +143,15 @@ export function parseAiderRepoMap(
         if (current) current.body.push(line);
     }
     if (current) sections.push(current);
+    return sections;
+}
 
+export function parseAiderRepoMap(
+    stdout: string,
+    queryKeywords: string[],
+    _repoRoot: string,
+): Map<string, number> {
+    const sections = parseAiderRepoMapSections(stdout);
     const lowerKeywords = queryKeywords.map(k => k.toLowerCase());
     const out = new Map<string, number>();
     for (let i = 0; i < sections.length; i++) {
@@ -192,7 +208,9 @@ export async function runAider(
                 instance_id: task.instance_id,
                 retriever: "aider",
                 retrieved_files: [],
+                retrieved_chunks: [],
                 latency_ms: Date.now() - startedAt,
+                token_cost: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
                 error: `Aider binary not found at ${resolveAiderBinary()}. Check AIDER_BINARY env or .venv-aider/ install. (${stderr})`,
             };
         }
@@ -202,29 +220,53 @@ export async function runAider(
                 instance_id: task.instance_id,
                 retriever: "aider",
                 retrieved_files: [],
+                retrieved_chunks: [],
                 latency_ms: Date.now() - startedAt,
+                token_cost: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
                 error: `Aider exited ${code}: ${tail}`,
             };
         }
 
+        const sections = parseAiderRepoMapSections(stdout);
         const scores = parseAiderRepoMap(stdout, keywords, repoRoot);
+        const sectionByPath = new Map(sections.map(s => [s.path, s]));
+
         const ranked = [...scores.entries()]
             .filter(([p]) => !isTestFile(p))
             .sort((a, b) => b[1] - a[1]);
-        const retrieved_files = ranked.slice(0, topK).map(([f]) => f);
+        const top = ranked.slice(0, topK);
+        const retrieved_files = top.map(([f]) => f);
+
+        // Section-body chunks: Aider doesn't emit precise line numbers
+        // for its definition snippets, so start_line stays at 1 and
+        // end_line uses the body-line count as an upper-bound estimate
+        // for the contiguous range covering the printed definitions.
+        // Documented caveat: this is an approximation, not AST-exact.
+        const retrieved_chunks: ChunkResult[] = top.map(([f, score]) => {
+            const sec = sectionByPath.get(f);
+            const lineCount = sec ? Math.max(sec.body.length, 1) : 1;
+            return { file_path: f, start_line: 1, end_line: lineCount, score };
+        });
+        const token_cost = payloadTokens(
+            top.map(([f]) => sectionByPath.get(f)?.body.join("\n") ?? ""),
+        );
 
         return {
             instance_id: task.instance_id,
             retriever: "aider",
             retrieved_files,
+            retrieved_chunks,
             latency_ms: Date.now() - startedAt,
+            token_cost,
         };
     } catch (e) {
         return {
             instance_id: task.instance_id,
             retriever: "aider",
             retrieved_files: [],
+            retrieved_chunks: [],
             latency_ms: Date.now() - startedAt,
+            token_cost: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
             error: (e as Error).message,
         };
     }

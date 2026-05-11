@@ -215,7 +215,19 @@ describe("Phase 5 C.3.A: runVoyage", () => {
         // Top must be a.ts (perfect match), then c.ts, then anything.
         expect(result.retrieved_files[0]).toBe("src/a.ts");
         expect(result.retrieved_files[1]).toBe("src/c.ts");
-        expect(result.token_cost?.total_tokens).toBe(60);
+        // C.3.E.1 retrofit: token_cost now reflects the universal
+        // tiktoken cl100k_base count of the chunk payload delivered
+        // downstream, NOT the Voyage API's embedding-tokens billing.
+        // The two are different quantities by design (Furia round 20).
+        expect(result.token_cost.total_tokens).toBeGreaterThan(0);
+        expect(result.token_cost.output_tokens).toBe(0);
+        // One ChunkResult per top-K file, with line range derived from
+        // the winning chunk's offsets in the source file.
+        expect(result.retrieved_chunks).toHaveLength(3);
+        for (const c of result.retrieved_chunks) {
+            expect(c.start_line).toBeGreaterThanOrEqual(1);
+            expect(c.end_line).toBeGreaterThanOrEqual(c.start_line);
+        }
         expect(result.latency_ms).toBeGreaterThanOrEqual(0);
     });
 

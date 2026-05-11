@@ -14,11 +14,12 @@
  */
 
 import { spawn } from "node:child_process";
-import * as path from "node:path";
 import type { PolyBenchTask } from "../types.js";
-import type { RetrievalResult } from "../types-runners.js";
+import type { ChunkResult, RetrievalResult } from "../types-runners.js";
 import { isTestFile } from "../ground-truth.js";
 import { constructQuery } from "./query-construction.js";
+import { payloadTokens } from "../utils/tokenizer.js";
+import { readFileChunk } from "../utils/chunks.js";
 
 /**
  * rg --type filters scoping search to JS/TS source. Note: ripgrep's
@@ -157,28 +158,47 @@ export async function runRipgrep(
                 instance_id: task.instance_id,
                 retriever: "ripgrep",
                 retrieved_files: [],
+                retrieved_chunks: [],
                 latency_ms: Date.now() - startedAt,
+                token_cost: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
                 error: `ripgrep binary not available: ${firstSpawnError}`,
             };
         }
 
         const ranked = [...fileScore.entries()].sort((a, b) => b[1] - a[1]);
-        const retrieved_files = ranked
+        const top = ranked
             .slice(0, topK)
-            .map(([f]) => f.replace(/^\.\//, "").replace(/^\.\\/, ""));
+            .map(([f, score]) => ({
+                file: f.replace(/^\.\//, "").replace(/^\.\\/, ""),
+                score,
+            }));
+        const retrieved_files = top.map(t => t.file);
+
+        // File-level chunks (Furia round 20: ripgrep file-mode = full file).
+        // This is the deliberate "trampa matematica" that lets us plot
+        // Recall vs token_cost as a Pareto curve in the paper.
+        const chunkPayloads = await Promise.all(
+            top.map(t => readFileChunk(repoRoot, t.file, t.score)),
+        );
+        const retrieved_chunks: ChunkResult[] = chunkPayloads.map(p => p.chunk);
+        const token_cost = payloadTokens(chunkPayloads.map(p => p.text));
 
         return {
             instance_id: task.instance_id,
             retriever: "ripgrep",
             retrieved_files,
+            retrieved_chunks,
             latency_ms: Date.now() - startedAt,
+            token_cost,
         };
     } catch (e) {
         return {
             instance_id: task.instance_id,
             retriever: "ripgrep",
             retrieved_files: [],
+            retrieved_chunks: [],
             latency_ms: Date.now() - startedAt,
+            token_cost: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
             error: (e as Error).message,
         };
     }

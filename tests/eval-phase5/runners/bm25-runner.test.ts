@@ -277,12 +277,19 @@ describe("runBM25 end-to-end", () => {
         expect(res.retrieved_files).not.toContain("tests/foo.test.ts");
     });
 
-    it("RetrievalResult shape: no token_cost (local algorithm), retriever=bm25", async () => {
+    it("RetrievalResult shape: token_cost populated via universal tokenizer, retriever=bm25", async () => {
         await writeFile("src/a.ts", "alpha beta");
         const task = mkTask("alpha");
         const res = await runBM25(task, ws, 3);
         expect(res.retriever).toBe("bm25");
-        expect(res.token_cost).toBeUndefined();
+        // C.3.E.1 retrofit: token_cost is now mandatory and counts the
+        // payload tiktoken cl100k_base.
+        expect(res.token_cost.total_tokens).toBeGreaterThan(0);
+        expect(res.token_cost.output_tokens).toBe(0);
+        // File-level chunk for the single retrieved file.
+        expect(res.retrieved_chunks).toHaveLength(1);
+        expect(res.retrieved_chunks[0].file_path).toBe("src/a.ts");
+        expect(res.retrieved_chunks[0].start_line).toBe(1);
         expect(typeof res.latency_ms).toBe("number");
         expect(res.instance_id).toBe("owner__repo-1");
     });

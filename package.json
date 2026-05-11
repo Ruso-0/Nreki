@@ -67,6 +67,7 @@
     "eslint-plugin-react-hooks": "7.1.1",
     "picomatch": "4.0.3",
     "sql.js": "1.14.1",
+    "tiktoken": "^1.0.22",
     "tree-sitter-wasms": "0.1.13",
     "web-tree-sitter": "0.24.7",
     "zod": "3.25.76"

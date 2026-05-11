@@ -33,9 +33,11 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { PolyBenchTask } from "../types.js";
-import type { RetrievalResult } from "../types-runners.js";
+import type { ChunkResult, RetrievalResult } from "../types-runners.js";
 import { isTestFile } from "../ground-truth.js";
 import { constructQuery } from "./query-construction.js";
+import { payloadTokens } from "../utils/tokenizer.js";
+import { readFileChunk } from "../utils/chunks.js";
 
 export const BM25_K1 = 1.5;
 export const BM25_B = 0.75;
@@ -252,20 +254,34 @@ export async function runBM25(
             if (s > 0) scored.push([doc.path, s]);
         }
         scored.sort((a, b2) => b2[1] - a[1]);
-        const retrieved_files = scored.slice(0, topK).map(([f]) => f);
+        const top = scored.slice(0, topK);
+        const retrieved_files = top.map(([f]) => f);
+
+        // File-level chunks (Furia round 20: BM25 = full file). This is
+        // the deliberate token-cost ceiling that exposes the Pareto
+        // frontier vs. AST-granular retrievers.
+        const chunkPayloads = await Promise.all(
+            top.map(([f, score]) => readFileChunk(repoRoot, f, score)),
+        );
+        const retrieved_chunks: ChunkResult[] = chunkPayloads.map(p => p.chunk);
+        const token_cost = payloadTokens(chunkPayloads.map(p => p.text));
 
         return {
             instance_id: task.instance_id,
             retriever: "bm25",
             retrieved_files,
+            retrieved_chunks,
             latency_ms: Date.now() - startedAt,
+            token_cost,
         };
     } catch (e) {
         return {
             instance_id: task.instance_id,
             retriever: "bm25",
             retrieved_files: [],
+            retrieved_chunks: [],
             latency_ms: Date.now() - startedAt,
+            token_cost: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
             error: (e as Error).message,
         };
     }

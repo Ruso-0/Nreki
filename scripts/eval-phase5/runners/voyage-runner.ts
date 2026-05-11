@@ -23,8 +23,10 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { PolyBenchTask } from "../types.js";
-import type { RetrievalResult, TokenCost } from "../types-runners.js";
+import type { ChunkResult, RetrievalResult } from "../types-runners.js";
 import { isTestFile } from "../ground-truth.js";
+import { payloadTokens } from "../utils/tokenizer.js";
+import { lineAtOffset } from "../utils/chunks.js";
 
 export const VOYAGE_MODEL = "voyage-code-3";
 export const VOYAGE_API_URL = "https://api.voyageai.com/v1/embeddings";
@@ -220,6 +222,27 @@ function chunkText(content: string): string[] {
 }
 
 /**
+ * Same sliding-window decomposition as chunkText, but emits the
+ * character offsets of each chunk so callers can map back to
+ * source line ranges for ChunkResult emission.
+ */
+function chunkTextWithOffsets(
+    content: string,
+): Array<{ text: string; start_char: number; end_char: number }> {
+    if (content.length <= CHUNK_SIZE) {
+        return [{ text: content, start_char: 0, end_char: content.length }];
+    }
+    const out: Array<{ text: string; start_char: number; end_char: number }> = [];
+    const step = CHUNK_SIZE - CHUNK_OVERLAP;
+    for (let i = 0; i < content.length; i += step) {
+        const end = Math.min(i + CHUNK_SIZE, content.length);
+        out.push({ text: content.slice(i, end), start_char: i, end_char: end });
+        if (end === content.length) break;
+    }
+    return out;
+}
+
+/**
  * Run Voyage dense retrieval for a single PolyBenchTask.
  *
  * Caller is responsible for cloning task.repo at task.base_commit
@@ -238,11 +261,7 @@ export async function runVoyage(
     apiKey: string,
 ): Promise<RetrievalResult> {
     const startedAt = Date.now();
-    const tokenCost: TokenCost = {
-        input_tokens: 0,
-        output_tokens: 0,
-        total_tokens: 0,
-    };
+    const emptyTokenCost = { input_tokens: 0, output_tokens: 0, total_tokens: 0 };
 
     try {
         // 1. Walk source files.
@@ -252,76 +271,94 @@ export async function runVoyage(
                 instance_id: task.instance_id,
                 retriever: "voyage-3",
                 retrieved_files: [],
+                retrieved_chunks: [],
                 latency_ms: Date.now() - startedAt,
-                token_cost: tokenCost,
+                token_cost: emptyTokenCost,
                 error: "No source files found under repoRoot after anti-tests filter",
             };
         }
 
-        // 2. Read + chunk each file. Track which file each chunk came from.
+        // 2. Read + chunk each file. Track file index AND char offsets per chunk
+        //    so we can map a winning chunk back to source line ranges.
         const chunkTexts: string[] = [];
-        const chunkFileIndex: number[] = []; // index into `files`
+        const chunkFileIndex: number[] = [];
+        const chunkStartLine: number[] = [];
+        const chunkEndLine: number[] = [];
+        const fileContents: string[] = new Array(files.length);
         for (let fi = 0; fi < files.length; fi++) {
             const abs = path.join(repoRoot, files[fi]);
             const content = await fs.readFile(abs, "utf-8");
-            const chunks = chunkText(content);
-            for (const c of chunks) {
-                chunkTexts.push(c);
+            fileContents[fi] = content;
+            const pieces = chunkTextWithOffsets(content);
+            for (const p of pieces) {
+                chunkTexts.push(p.text);
                 chunkFileIndex.push(fi);
+                chunkStartLine.push(lineAtOffset(content, p.start_char));
+                // end_line is the line containing the LAST character of the
+                // chunk (inclusive). For an empty trailing slice this still
+                // resolves to a valid line via lineAtOffset's clamping.
+                chunkEndLine.push(lineAtOffset(content, Math.max(p.end_char - 1, p.start_char)));
             }
         }
 
-        // 3. Embed all chunks (documents).
+        // 3. Embed all chunks (documents) + query.
         const docEmbed = await voyageEmbed(chunkTexts, "document", apiKey);
-        tokenCost.input_tokens += docEmbed.totalTokens;
+        const queryEmbed = await voyageEmbed([task.problem_statement], "query", apiKey);
 
-        // 4. Embed the query.
-        const queryEmbed = await voyageEmbed(
-            [task.problem_statement],
-            "query",
-            apiKey,
-        );
-        tokenCost.input_tokens += queryEmbed.totalTokens;
-        tokenCost.total_tokens = tokenCost.input_tokens + tokenCost.output_tokens;
-
-        // 5. Cosine similarity query vs each chunk.
+        // 4. Cosine similarity query vs each chunk.
         const q = queryEmbed.embeddings[0];
         const chunkScores: number[] = docEmbed.embeddings.map(e =>
             cosineSimilarity(q, e),
         );
 
-        // 6. Max-pool per file.
-        const fileScore = new Map<number, number>();
+        // 5. Max-pool per file but remember WHICH chunk won so we can emit
+        //    its line range as the file's ChunkResult.
+        const bestChunkPerFile = new Map<number, { ci: number; score: number }>();
         for (let ci = 0; ci < chunkScores.length; ci++) {
             const fi = chunkFileIndex[ci];
-            const prev = fileScore.get(fi);
-            if (prev === undefined || chunkScores[ci] > prev) {
-                fileScore.set(fi, chunkScores[ci]);
+            const prev = bestChunkPerFile.get(fi);
+            if (prev === undefined || chunkScores[ci] > prev.score) {
+                bestChunkPerFile.set(fi, { ci, score: chunkScores[ci] });
             }
         }
 
-        // 7. Sort files by score desc, take top-K.
-        const ranked: Array<[string, number]> = [];
-        for (const [fi, score] of fileScore) {
-            ranked.push([files[fi], score]);
+        // 6. Rank files by their best chunk score, take top-K.
+        const ranked: Array<{ fi: number; ci: number; score: number }> = [];
+        for (const [fi, info] of bestChunkPerFile) {
+            ranked.push({ fi, ci: info.ci, score: info.score });
         }
-        ranked.sort((a, b) => b[1] - a[1]);
-        const retrieved_files = ranked.slice(0, topK).map(([f]) => f);
+        ranked.sort((a, b) => b.score - a.score);
+        const top = ranked.slice(0, topK);
+
+        const retrieved_files = top.map(t => files[t.fi]);
+        const retrieved_chunks: ChunkResult[] = top.map(t => ({
+            file_path: files[t.fi],
+            start_line: chunkStartLine[t.ci],
+            end_line: chunkEndLine[t.ci],
+            score: t.score,
+        }));
+
+        // 7. Universal token_cost over the chunk texts actually delivered
+        //    to the downstream agent. This is the Furia round 20 currency,
+        //    not the Voyage API billing -- those are different concepts.
+        const token_cost = payloadTokens(top.map(t => chunkTexts[t.ci]));
 
         return {
             instance_id: task.instance_id,
             retriever: "voyage-3",
             retrieved_files,
+            retrieved_chunks,
             latency_ms: Date.now() - startedAt,
-            token_cost: tokenCost,
+            token_cost,
         };
     } catch (e) {
         return {
             instance_id: task.instance_id,
             retriever: "voyage-3",
             retrieved_files: [],
+            retrieved_chunks: [],
             latency_ms: Date.now() - startedAt,
-            token_cost: tokenCost,
+            token_cost: emptyTokenCost,
             error: (e as Error).message,
         };
     }
