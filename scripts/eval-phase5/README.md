@@ -1,84 +1,58 @@
 # Phase 5 SWE-Bench-TS-Lite — Evaluation Module
 
-NREKI Phase 5 dataset curation + eval pipeline infrastructure.
+NREKI Phase 5 evaluation infrastructure for the paper **"Topological
+Retrieval in Massive-Scale TypeScript Codebases"**.
 
-**Spec firmada:** UNION rounds 10+11+13 — see [TECH_DEBT.md "Phase 5"](../../TECH_DEBT.md#phase-5-swe-bench-ts-lite--spec-firmada-union-rounds-101113).
+**Spec firmada:** TECH_DEBT.md — section *"PHASE 5 SEALED — SWE-PolyBench
+Verified TS (post Furia round 17)"* (commit 46bfb52).
 
-**Sub-fase actual:** C.1 dataset curation infrastructure (this commit).
+## Pivot post-Furia round 17
 
-## Module structure
+The original C.1 GitHub-API curation pipeline (`dataset-fetcher` +
+`reviewer-harness` + `curate`) was retired after empirical Path E/F
+inspection (rounds 15–17) confirmed that:
+
+- No public academic TS dataset (Multi-SWE-bench, SWE-PolyBench,
+  SWE-bench Multilingual) includes Backend/ORM/Compiler/Linter/Library
+  repos — 0 of 7 TS repos total across probed datasets.
+- SWE-PolyBench Verified TS (100 instances, 5 repos, MIT license) ships
+  with pre-validated F2P/P2P tests, tree-sitter AST `modified_nodes`,
+  and per-instance Dockerfiles — eliminating the GitHub-API curation
+  surface entirely.
+
+Dataset adopted: **AmazonScience/SWE-PolyBench_Verified**
+(arXiv:2504.08703, MIT).
+
+## Surviving modules
 
 ```
 scripts/eval-phase5/
-├── README.md             — this file
-├── types.ts              — shared interfaces (BugCandidate, GroundTruth, etc.)
-├── dataset-fetcher.ts    — GitHub API filter (closed PRs + bug labels)
-├── repo-cloner.ts        — Per-task clone @ base_commit (Time-Travel guard)
-├── ground-truth.ts       — 3-niveles + anti-tests filter mortal
-├── reviewer-harness.ts   — Blind review CLI (anti-confirmation-bias)
-├── curate.ts             — Orchestrator (NOT executed in C.1 commit)
-└── data/                 — Output JSONs (gitignored, generated locally)
-    ├── candidates-raw.json       (post-fetch, pre-review)
-    ├── candidates-approved.json  (post-review, incremental save)
-    └── dataset-final.json        (post-ground-truth, final dataset)
+├── README.md         — this file
+├── types.ts          — schema interno (BugCandidate, GroundTruth)
+├── ground-truth.ts   — anti-tests filter MORTAL (round 13 #8)
+├── repo-cloner.ts    — Time-Travel guard via base_commit
+└── data/             — output dir (gitignored)
 ```
 
 Tests at [tests/eval-phase5/](../../tests/eval-phase5/).
 
-## Architectural decisions enforced
+### Roles in upcoming sub-fases
 
-- **Time-Travel Guard** (Furia round 13 #3): per-task `git checkout base_commit`
-  ANTES de indexar. Pureza del entorno NO se negocia.
-- **Anti-tests filter MORTAL** (Furia round 13 #8): `*.test.ts`, `*.spec.ts`,
-  `test/` folders excluded from Recall ground truth. Tests del FUTURO =
-  trampa temporal.
-- **Blind reviewer constraint** (Furia round 13 #1): reviewer reads ONLY
-  PR title + Issue text + repo metadata. NEVER PR diff or modified_files.
-- **3-level ground truth** (Furia round 10 #4): strict_src (HEADLINE),
-  permissive (anexo), maximal (anexo). Strict_src = src/ ONLY post-anti-tests.
-- **Stratified target repos** (Furia round 11): small (date-fns), medium
-  (trpc), large (microsoft/TypeScript). All cutoff `2026-01-31`.
+- **types.ts** — schema base; will be extended in C.2 to accommodate
+  PolyBench fields (`patch`, `test_patch`, `task_category`,
+  `modified_nodes`, `F2P`, `P2P`, `Dockerfile`, `test_command`).
+- **ground-truth.ts** — anti-tests filter still applicable post-pivot;
+  consumes PolyBench `patch` (gold fix patch) and rejects modifications
+  to test files. Architectural invariant preserved.
+- **repo-cloner.ts** — Time-Travel guard now targets PolyBench
+  `base_commit` (40-char SHA) directly. No GitHub API roundtrip needed.
 
-## Usage (manual curation step, post-C.1 commit)
+## Architectural invariants enforced (unchanged)
 
-### 1. Set GitHub token
-
-```bash
-export GITHUB_TOKEN="ghp_..."   # read scope sufficient
-```
-
-The token is needed for GitHub Search API rate limits (60 req/hr unauth →
-5000 req/hr auth). NEVER commit `.env` to git (already in `.gitignore`).
-
-### 2. Run curation orchestrator
-
-```bash
-npx tsx scripts/eval-phase5/curate.ts
-```
-
-Pipeline:
-1. Fetch raw candidates from each target repo (saved to `data/candidates-raw.json`)
-2. Interactive blind review — for each candidate:
-   - Reviewer sees: PR title, Issue text, repo+PR# metadata
-   - Reviewer DOES NOT see: PR diff, modified_files, merge_commit
-   - Decision: `y` approve / `n` reject / `s` skip
-   - Incremental save to `data/candidates-approved.json` after each decision
-3. Ground truth computation for approved candidates
-4. Final dataset saved to `data/dataset-final.json`
-
-Estimated reviewer time: ~15-30 sec per candidate × 100-150 candidates =
-**25-75 min** focused review session.
-
-### 3. Output validation
-
-```bash
-# Count approved tasks per tier
-cat scripts/eval-phase5/data/dataset-final.json | jq 'group_by(.tier) | map({tier: .[0].tier, count: length})'
-
-# Verify anti-tests filter applied to all
-cat scripts/eval-phase5/data/dataset-final.json | jq '[.[] | select(.ground_truth.anti_tests_filter_applied == false)] | length'
-# Expected: 0 (all tasks must have filter applied)
-```
+- **Time-Travel Guard** (Furia round 13 #3): per-task `git checkout
+  base_commit` BEFORE indexing.
+- **Anti-tests filter MORTAL** (Furia round 13 #8): `*.test.ts`,
+  `*.spec.ts`, `test/` folders excluded from Recall ground truth.
 
 ## Tests
 
@@ -86,14 +60,28 @@ cat scripts/eval-phase5/data/dataset-final.json | jq '[.[] | select(.ground_trut
 npm test -- tests/eval-phase5/
 ```
 
-Tests use mocked Octokit + mocked CommandRunner + mocked ReviewerIO.
-**NO real GitHub API calls. NO real git operations.** Run-to-run deterministic.
+Tests use mocked `CommandRunner` for `repo-cloner` and pure unit
+coverage for `ground-truth`. **No real git operations.**
 
 ## Next sub-fases
 
-- **C.2** Eval pipeline core: indexer adapter, query extractor,
-  TokenCost@K instrumentation, result aggregator
-- **C.3** Baselines implementations: ripgrep, BM25, dense retrieval,
-  Aider repo-map
-- **C.4** Execution + analysis: Pre/Post Phase 4 ablation, paper-grade
-  markdown report
+- **C.2** PolyBench dataset loader (`polybench-loader.ts`) — reads
+  `test.csv`, maps to internal `BugCandidate` + extended schema,
+  applies anti-tests filter via `ground-truth.ts`.
+- **C.3** Baselines: fast_grep, ripgrep, BM25, Voyage-3 dense
+  retrieval, Aider repo-map.
+- **C.4** Execution + Pre/Post Phase 4 ablation + paper write-up.
+
+## Citation
+
+```
+@misc{rashid2025swepolybench,
+  title  = {SWE-PolyBench: A multi-language benchmark for repository
+            level evaluation of coding agents},
+  author = {Rashid, Muhammad Shihab and others},
+  year   = {2025},
+  eprint = {2504.08703},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.SE}
+}
+```

@@ -60,28 +60,3 @@ export interface GroundTruth {
     anti_tests_filter_applied: boolean;
 }
 
-/**
- * Repository metadata for stratified analysis (Furia round 11 + 13).
- */
-export interface RepoMetadata {
-    /** "owner/repo" GitHub coordinate. */
-    name: string;
-    /** Stratification tier per LOC count. */
-    tier: "small" | "medium" | "large";
-    /**
-     * Claude knowledge cutoff date (ISO format).
-     * Per Furia round 13 #7: SHA target POST-cutoff per modelo
-     * evaluador, documentado per task.
-     */
-    cutoff_date: string;
-    /** Number of commits POST cutoff (audit metric). */
-    commits_post_cutoff: number;
-}
-
-/**
- * Final dataset row: candidate + computed ground truth.
- * Persisted in scripts/eval-phase5/data/dataset-final.json.
- */
-export interface CuratedTask extends BugCandidate {
-    ground_truth: GroundTruth;
-}
