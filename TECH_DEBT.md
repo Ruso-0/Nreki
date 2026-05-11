@@ -605,3 +605,109 @@ Furia 12/12 rounds adversariales ratificados.
 - **Estimated effort**: ~300-410 LOC, 4-7h, 1-2 sesiones
 
 ---
+
+═══════════════════════════════════════════════════════════════════
+PHASE 5 SEALED — SWE-PolyBench Verified TS (post Furia round 17)
+═══════════════════════════════════════════════════════════════════
+
+**Status:** SEALED 2026-05-10
+**Decisión auditoría adversarial:** Furia rounds 13+15+16+17
+**Audit trail Path E/F:** scripts/eval-phase5/data/*-probe/ (borrables)
+
+## Dataset primary
+
+SWE-PolyBench Verified TS (n=100, license MIT)
+- Citation: arXiv:2504.08703 (Amazon Science, 2025)
+- HuggingFace: AmazonScience/SWE-PolyBench_Verified
+- Distribución por repo:
+  - mui/material-ui:           70 instances  (Large ~500k LOC)
+  - microsoft/vscode:           23 instances  (Huge  ~2M LOC)
+  - tailwindlabs/tailwindcss:    3 instances  (Medium ~50k LOC)
+  - coder/code-server:           3 instances  (Medium fork-vscode)
+  - angular/angular:             1 instance   (Large ~600k LOC)
+
+## Claim del paper
+
+**"Topological Retrieval in Massive-Scale TypeScript Codebases"**
+
+Hipótesis Furia round 14: NREKI v11 mantiene Fix Accuracy y
+First-Hit Recall en monolitos 50k–2M LOC donde BM25 y Dense
+Retrieval degradan por ruido combinatorio.
+
+## Limitación reportada (Furia round 17 #2)
+
+> La evaluación rigurosa de agentes en repositorios puros de
+> Backend TS está bloqueada por la intratabilidad del sandboxing
+> en la literatura académica actual, sesgando el estado del arte
+> hacia frameworks UI/IDE. Hallazgo empírico: ningún dataset TS
+> académico public-grade (Multi-SWE-bench, SWE-PolyBench,
+> SWE-bench Multilingual) incluye repos Backend/ORM/Compiler/
+> Linter/Library — 0 de 7 repos TS totales en el universo
+> probado.
+
+## Métricas reportadas (7 totales)
+
+### Component-level (fast_grep vs ripgrep)
+
+1. **Recall paridad funcional** — fast_grep vs ripgrep encuentran
+   los mismos modified_nodes. Target: ≥99% paridad sin regresión.
+2. **Latency p50/p95/p99** — speedup verificado en repos del
+   subset (mui 500k, vscode 2M). Baseline: fast_grep p50 1.7ms,
+   ripgrep p50 22-24ms (NREKI scale). Hipótesis paper-scale:
+   speedup ~5-8x mantenido.
+3. **Memory footprint** — fast_grep SQLite indexed vs ripgrep
+   streaming.
+
+### System-level (NREKI completo vs baselines)
+
+4. **First-Hit Recall** (retrieval-only, NREKI ZERO leakage)
+5. **Strict Chunk-Level Containment** vía AST modified_nodes
+   match (campo PolyBench)
+6. **Fix Accuracy E2E Dual:**
+   - Headline: Claude Opus 4.7 (moderno, leakage aceptado)
+   - Robustness: modelo pre-2024 (GPT-4 original o Claude 2.1)
+7. **TokenCost@K** (Output α HEADLINE + Compute β SECONDARY)
+
+## Stratification revisada (Furia round 17 #5)
+
+**Por tamaño real:**
+- Medium (50–100k LOC): tailwindcss + code-server = 6 instances
+- Large (500–600k LOC): mui + angular = 71 instances
+- Huge (~2M LOC): vscode = 23 instances
+
+**Cruzada con task_category (PolyBench campo nativo):**
+- Bug Fix (77%)
+- Feature (22%)
+- Refactoring (1%)
+
+Matriz 3×3 (tier × category) reportada en paper.
+
+## Baselines firmados (round 13 #5 + extensión fast_grep)
+
+- fast_grep (componente propio)
+- ripgrep (sanity check + paridad con fast_grep)
+- BM25 standalone
+- Voyage-3 dense retrieval (budget $50-150 pendiente firma)
+- Aider repo-map (LLM-backed)
+
+## Pre/Post Phase 4 ablation (corazón del paper)
+
+git checkout f6bf2ee~1 (pre-Markov Blanket Foveal) vs HEAD
+post-Phase 4. Demuestra contribución arquitectónica específica.
+
+## Schema de ground truth (Furia round 17 #3)
+
+Campo PolyBench `modified_nodes` con paths AST tree-sitter:
+  "src/vs/editor/contrib/suggest/suggestModel.ts->...->trigger"
+
+Match arquitectónico AST↔AST con NREKI. Cero adivinanza léxica.
+
+## Decisiones diferidas (no bloquean C.2)
+
+- Voyage-3 budget ($50-150): firma Jherson en C.3
+- Pre-2024 evaluator concreto (GPT-4 vs Claude 2.1): firma en C.3
+- Push 33 commits ahead a origin: sesión separada
+- AGENTS.md retrieval decision tree update: post-C.4 sealed
+- Symbol Cohesion Graph paper material: post-Phase 5
+
+═══════════════════════════════════════════════════════════════════
