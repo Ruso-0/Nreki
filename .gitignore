@@ -28,6 +28,9 @@ desktop.ini
 .env.local
 .mcp.json
 
+# Python venvs (e.g. .venv-aider/ for the Aider baseline in Phase 5 C.3.D)
+.venv*/
+
 # Coverage
 coverage/
 
