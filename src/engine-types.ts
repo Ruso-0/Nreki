@@ -37,6 +37,21 @@ export interface EngineConfig {
     extensions?: string[];
     ignorePaths?: string[];
     wasmDir?: string;
+    /**
+     * Phase 4 Markov Blanket Foveal cross-file Type Ledger injection.
+     * When false, tfcCompress callers should pass maxCrossFile: 0 to
+     * skip the cross-file parafovea section (equivalent to passing
+     * walk_depth=0 on every call).
+     *
+     * Default: true (preserves v11+ public behaviour).
+     * Phase 5 C.3.E ablation toggles this per-cell (Furia round 19 P1).
+     *
+     * Note: this flag is read by external consumers (e.g. Phase 5
+     * runners). The MCP handler in src/handlers/code/ intentionally
+     * does NOT consult this flag -- it preserves legacy walk_depth /
+     * max_cross_file MCP param semantics for weekly npm consumers.
+     */
+    enableMarkovBlanket?: boolean;
 }
 
 export interface SessionReport {

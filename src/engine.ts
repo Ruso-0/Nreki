@@ -154,6 +154,11 @@ export class NrekiEngine {
             extensions: config.extensions ?? DEFAULT_EXTENSIONS,
             ignorePaths: config.ignorePaths ?? DEFAULT_IGNORE,
             wasmDir: config.wasmDir ?? "",
+            // Phase 4 MBF is enabled by default for backwards
+            // compatibility with v11+ npm consumers. Phase 5 ablation
+            // sets this to false on a per-runner basis (Furia round
+            // 19 P1) without affecting MCP-handler call paths.
+            enableMarkovBlanket: config.enableMarkovBlanket ?? true,
         };
 
         // Defensive: empty watchPaths is a programmer error
@@ -387,6 +392,21 @@ export class NrekiEngine {
     /** Get the project root directory. */
     getProjectRoot(): string {
         return this.config.watchPaths[0] || process.cwd();
+    }
+
+    /**
+     * Returns true if Markov Blanket Foveal cross-file injection
+     * (Phase 4 Type Ledger parafovea) is enabled for this engine
+     * instance. Default: true.
+     *
+     * External consumers (e.g. Phase 5 ablation runners) read this
+     * to decide whether to pass `maxCrossFile: 0` when invoking
+     * `tfcCompress` directly. The MCP handler does NOT consult this
+     * value -- it preserves legacy walk_depth / max_cross_file
+     * MCP param semantics for weekly npm consumers.
+     */
+    isMarkovBlanketEnabled(): boolean {
+        return this.config.enableMarkovBlanket ?? true;
     }
 
     // ─── DB Delegation Wrappers (Facade) ───────────────────────────
