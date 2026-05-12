@@ -33,6 +33,66 @@ export const VOYAGE_MODEL = "voyage-code-3";
 export const VOYAGE_API_URL = "https://api.voyageai.com/v1/embeddings";
 export const DEFAULT_TOP_K = 10;
 
+/**
+ * Sentinel prefix used on the RetrievalResult.error field when a task
+ * is intentionally excluded from the Voyage subset (Phase 5 C.4.B.1).
+ * The orchestrator / reporting layer pattern-matches on this to keep
+ * subset SKIPs visually distinct from "VOYAGE_API_KEY missing" or
+ * genuine API failures.
+ */
+export const VOYAGE_SUBSET_SKIP_PREFIX = "Voyage SKIPPED (not in subset)";
+
+/**
+ * Furia round 25 stratified Voyage subsampling + Sprint 4 partial state.
+ *
+ * Original Furia composition: 5 vscode + 12 mui + 3 mixed = N=20
+ * Empirical adjustment: Sprint 4 completed 6 vscode tasks before Ctrl+C
+ *   (token budget consumed already). Preserving completed data:
+ *   6 vscode (ya done) + 0 vscode nuevos + 12 mui + 3 mixed = N=21
+ *
+ * Auditor decision: +1 vscode over Furia plan acceptable for paper
+ * claim integrity (stratification spirit preserved at 6±1).
+ *
+ * Tasks NOT in this set: runVoyage returns SKIPPED sentinel via
+ * RetrievalResult.error. Other runners (NREKI, Aider, BM25,
+ * fast_grep, ripgrep) run N=100 normal.
+ *
+ * Mui task selection is deterministic: all 70 mui instance_ids
+ * sorted lexicographically, indices [0, 6, 12, 18, 24, 30, 36, 42,
+ * 48, 54, 60, 69] span the era spectrum (PR 11k..42k).
+ *
+ * Mixed selection picks the lexicographic-first task per remaining
+ * repo (deterministic, reproducible).
+ */
+export const VOYAGE_SUBSET_TASKS: Set<string> = new Set([
+    // 6 vscode tasks ALREADY COMPLETED in Sprint 4 (preserve data):
+    "microsoft__vscode-106767",
+    "microsoft__vscode-108964",
+    "microsoft__vscode-109750",
+    "microsoft__vscode-110094",
+    "microsoft__vscode-113837",
+    "microsoft__vscode-122991",
+
+    // 12 mui tasks (alphabetical-sorted indices [0,6,12,18,24,30,36,42,48,54,60,69]):
+    "mui__material-ui-11451",
+    "mui__material-ui-12968",
+    "mui__material-ui-14364",
+    "mui__material-ui-15526",
+    "mui__material-ui-18257",
+    "mui__material-ui-19257",
+    "mui__material-ui-20252",
+    "mui__material-ui-22696",
+    "mui__material-ui-25072",
+    "mui__material-ui-26746",
+    "mui__material-ui-29023",
+    "mui__material-ui-42412",
+
+    // 3 mixed (lexicographic-first per remaining repo):
+    "tailwindlabs__tailwindcss-116",
+    "coder__code-server-3277",
+    "angular__angular-37561",
+]);
+
 /** Voyage API item-count cap per request. */
 const MAX_BATCH = 128;
 /**
@@ -330,6 +390,23 @@ export async function runVoyage(
 ): Promise<RetrievalResult> {
     const startedAt = Date.now();
     const emptyTokenCost = { input_tokens: 0, output_tokens: 0, total_tokens: 0 };
+
+    // Phase 5 C.4.B.1 (Furia round 25): stratified Voyage subsampling.
+    // Tasks outside VOYAGE_SUBSET_TASKS short-circuit immediately with
+    // a distinguishable error sentinel. Wall-clock cost ~0; preserves
+    // the apples-to-apples ground truth and metric pipeline so the
+    // aggregate report still has a 100-row per-task table.
+    if (!VOYAGE_SUBSET_TASKS.has(task.instance_id)) {
+        return {
+            instance_id: task.instance_id,
+            retriever: "voyage-3",
+            retrieved_files: [],
+            retrieved_chunks: [],
+            latency_ms: Date.now() - startedAt,
+            token_cost: emptyTokenCost,
+            error: `${VOYAGE_SUBSET_SKIP_PREFIX} ${VOYAGE_SUBSET_TASKS.size}`,
+        };
+    }
 
     try {
         // 1. Walk source files.

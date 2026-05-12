@@ -16,6 +16,8 @@ import {
     runVoyage,
     VOYAGE_MODEL,
     batchChunksByTokens,
+    VOYAGE_SUBSET_TASKS,
+    VOYAGE_SUBSET_SKIP_PREFIX,
 } from "../../../scripts/eval-phase5/runners/voyage-runner.js";
 import type { PolyBenchTask } from "../../../scripts/eval-phase5/types.js";
 
@@ -44,11 +46,14 @@ function makeUnitVec(dim: number, idx: number): number[] {
     return v;
 }
 
+// Phase 5 C.4.B.1: default to a task already in VOYAGE_SUBSET_TASKS so
+// existing tests exercise the actual API path instead of short-circuiting
+// on the new subset gate. Tests for the gate itself override this.
 function mkTask(overrides: Partial<PolyBenchTask> = {}): PolyBenchTask {
     return {
-        repo: "owner/repo",
-        pr_number: 1,
-        instance_id: "owner__repo-1",
+        repo: "microsoft/vscode",
+        pr_number: 106767,
+        instance_id: "microsoft__vscode-106767",
         base_commit: "abc",
         patch: "",
         test_patch: "",
@@ -270,6 +275,92 @@ describe("Phase 5 C.3.A: runVoyage", () => {
         expect(result.error).toBeDefined();
         expect(result.error).toMatch(/Voyage API/);
         expect(result.retriever).toBe("voyage-3");
+    });
+});
+
+// Phase 5 C.4.B.1 (Furia round 25): stratified Voyage subsampling. Tasks
+// outside VOYAGE_SUBSET_TASKS short-circuit with a distinguishable error
+// sentinel; tasks inside the subset proceed to the real API path.
+describe("Phase 5 C.4.B.1: Voyage subset gate", () => {
+    let tmpRoot: string;
+    beforeEach(async () => {
+        tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "voyage-subset-"));
+        vi.unstubAllGlobals();
+    });
+    afterEach(async () => {
+        await fs.rm(tmpRoot, { recursive: true, force: true });
+        vi.unstubAllGlobals();
+    });
+
+    async function writeFile(rel: string, content: string): Promise<void> {
+        const abs = path.join(tmpRoot, rel);
+        await fs.mkdir(path.dirname(abs), { recursive: true });
+        await fs.writeFile(abs, content, "utf-8");
+    }
+
+    it("subset composition: N=21 (6 vscode + 12 mui + 3 mixed)", () => {
+        expect(VOYAGE_SUBSET_TASKS.size).toBe(21);
+        // 6 vscode tasks from Sprint 4
+        const vscode = [...VOYAGE_SUBSET_TASKS].filter(id => id.startsWith("microsoft__vscode-"));
+        expect(vscode).toHaveLength(6);
+        // 12 mui tasks
+        const mui = [...VOYAGE_SUBSET_TASKS].filter(id => id.startsWith("mui__material-ui-"));
+        expect(mui).toHaveLength(12);
+        // 3 mixed (1 each from tailwindlabs, coder, angular)
+        const tailwind = [...VOYAGE_SUBSET_TASKS].filter(id => id.startsWith("tailwindlabs__"));
+        const codeServer = [...VOYAGE_SUBSET_TASKS].filter(id => id.startsWith("coder__"));
+        const angular = [...VOYAGE_SUBSET_TASKS].filter(id => id.startsWith("angular__"));
+        expect(tailwind).toHaveLength(1);
+        expect(codeServer).toHaveLength(1);
+        expect(angular).toHaveLength(1);
+    });
+
+    it("task NOT in subset -> SKIPPED sentinel, no API call", async () => {
+        await writeFile("src/a.ts", "production code");
+        const fetchMock = vi.fn();
+        vi.stubGlobal("fetch", fetchMock);
+
+        const skipTask = mkTask({ instance_id: "not_in_subset__task-999" });
+        const result = await runVoyage(skipTask, tmpRoot, 10, DUMMY_KEY);
+
+        expect(result.retriever).toBe("voyage-3");
+        expect(result.retrieved_files).toEqual([]);
+        expect(result.retrieved_chunks).toEqual([]);
+        expect(result.error).toBeDefined();
+        expect(result.error?.startsWith(VOYAGE_SUBSET_SKIP_PREFIX)).toBe(true);
+        expect(result.token_cost.total_tokens).toBe(0);
+        // Crucial: fetch was never called -- subset gate short-circuits
+        // BEFORE the file walk so we don't waste Voyage tokens.
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("subset SKIPs are latency-cheap (no API roundtrip)", async () => {
+        const fetchMock = vi.fn();
+        vi.stubGlobal("fetch", fetchMock);
+        const skipTask = mkTask({ instance_id: "definitely_not_in_subset" });
+        const result = await runVoyage(skipTask, tmpRoot, 10, DUMMY_KEY);
+        // 100ms is generous for an in-memory return path; in practice
+        // the SKIP overhead is sub-millisecond.
+        expect(result.latency_ms).toBeLessThan(100);
+    });
+
+    it("task IN subset proceeds to API path (not skipped)", async () => {
+        await writeFile("src/a.ts", "export const x = 1;");
+        const docVecs = [[1, 0, 0, 0]];
+        const queryVec = [[1, 0, 0, 0]];
+        const fetchMock = vi.fn()
+            .mockResolvedValueOnce(makeOkResponse(docVecs, 5))
+            .mockResolvedValueOnce(makeOkResponse(queryVec, 3));
+        vi.stubGlobal("fetch", fetchMock);
+
+        // mkTask default IS in the subset; sanity-check the test fixture
+        // didn't drift away from a real subset member.
+        const task = mkTask();
+        expect(VOYAGE_SUBSET_TASKS.has(task.instance_id)).toBe(true);
+
+        const result = await runVoyage(task, tmpRoot, 1, DUMMY_KEY);
+        expect(result.error).toBeUndefined();
+        expect(fetchMock).toHaveBeenCalled();
     });
 });
 
