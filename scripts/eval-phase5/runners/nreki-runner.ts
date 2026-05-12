@@ -34,6 +34,7 @@ import type { PolyBenchTask } from "../types.js";
 import type { ChunkResult, RetrievalResult } from "../types-runners.js";
 import { isTestFile } from "../ground-truth.js";
 import { payloadTokens } from "../utils/tokenizer.js";
+import { computeNrekiDensity } from "./nreki-density.js";
 
 /** Default maxCrossFile passed to tfcCompress when MBF is on. */
 export const NREKI_TOP_MAX_CROSS_FILE = 10;
@@ -207,6 +208,18 @@ export async function runNREKI(
 
         const token_cost = payloadTokens(compressedTexts);
 
+        // Phase 5 C.4.B.0c: Type Ledger density for post-hoc
+        // stratification (Furia round 24 latigazo #82). Computed
+        // strictly from public engine API + workspace walk; failure
+        // is non-fatal (metadata stays undefined) since retrieval
+        // itself already succeeded.
+        let density: Record<string, number> | undefined;
+        try {
+            density = await computeNrekiDensity(repoRoot, engine);
+        } catch {
+            /* metadata is best-effort; retrieval result is the headline */
+        }
+
         return {
             instance_id: task.instance_id,
             retriever: "nreki",
@@ -214,6 +227,7 @@ export async function runNREKI(
             retrieved_chunks,
             latency_ms: Date.now() - startedAt,
             token_cost,
+            ...(density ? { metadata: density } : {}),
         };
     } catch (e) {
         return {

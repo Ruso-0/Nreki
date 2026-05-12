@@ -69,4 +69,19 @@ export interface RetrievalResult {
     token_cost: TokenCost;
     /** Populated when the runner failed mid-task; retrieved_files may be []. */
     error?: string;
+    /**
+     * Runner-specific metadata for post-hoc stratification (Phase 5
+     * C.4.B.0c, Furia round 24 latigazo #82). Currently NREKI populates
+     * Type Ledger density signals here; other runners leave it unset.
+     *
+     * NREKI fields:
+     *   ts_files_count    -- distinct .ts/.tsx files in the workspace
+     *   ts_edges_count    -- total symbol_io rows (consumes + produces)
+     *   ts_density        -- edges/file ratio (0 when ts_files_count=0)
+     *   ts_isolated_pct   -- fraction of TS files with zero Type Ledger
+     *                        edges (0..1)
+     *   era_pct_ts_files  -- (.ts + .tsx) / (.ts + .tsx + .js + .jsx)
+     *                        fraction in the workspace (0..1)
+     */
+    metadata?: Record<string, number | string | null>;
 }

@@ -285,4 +285,130 @@ describe("orchestrate", () => {
         expect(report.total_tasks_attempted).toBe(2);
         expect(report.total_tasks_completed).toBe(1);
     });
+
+    // Phase 5 C.4.B.0c -- Furia round 24 P0: incremental state + resume.
+    describe("JSONL incremental state + resume (C.4.B.0c)", () => {
+        it("outputJsonlPath: appends one line per task as the loop progresses", async () => {
+            process.env.VOYAGE_API_KEY = "test-key";
+            m(loadPolyBenchVerified).mockResolvedValue([fakeTask("t1"), fakeTask("t2")]);
+            // Re-seed NREKI for 2 tasks * 2 cells.
+            m(runNREKI).mockReset();
+            for (let i = 0; i < 4; i++) {
+                m(runNREKI).mockResolvedValueOnce(fakeResult("nreki", true, 40, 100 + i));
+            }
+            const jsonlPath = path.join(WORKSPACE, "results.jsonl");
+            await orchestrate({
+                workspaceRoot: WORKSPACE,
+                outputPath: OUTPUT,
+                outputJsonlPath: jsonlPath,
+                taskIds: ["t1", "t2"],
+            });
+
+            const content = await fs.readFile(jsonlPath, "utf-8");
+            const lines = content.trim().split("\n");
+            expect(lines).toHaveLength(2);
+            const parsed = lines.map(l => JSON.parse(l));
+            expect(parsed[0].instance_id).toBe("t1");
+            expect(parsed[1].instance_id).toBe("t2");
+            // Per-task PerTaskResult shape preserved (runners populated).
+            expect(Object.keys(parsed[0].runners).length).toBeGreaterThan(0);
+        });
+
+        it("resume: pre-existing JSONL line for t1 -> only t2 is executed", async () => {
+            process.env.VOYAGE_API_KEY = "test-key";
+            m(loadPolyBenchVerified).mockResolvedValue([fakeTask("t1"), fakeTask("t2")]);
+            // Pre-seed JSONL with a completed t1.
+            const jsonlPath = path.join(WORKSPACE, "results.jsonl");
+            const preCompleted = {
+                instance_id: "t1",
+                repo: "owner/repo",
+                base_commit: "0".repeat(40),
+                task_category: "Bug Fix",
+                ground_truth: { strict_src: ["src/a.ts"], modified_nodes: [] },
+                runners: {
+                    "voyage-3": {
+                        result: fakeResult("voyage-3", true, 200, 80),
+                        metrics: { first_hit_recall: 1, strict_chunk_containment: 1, token_cost: 200, latency_ms: 80 },
+                    },
+                },
+            };
+            await fs.writeFile(jsonlPath, JSON.stringify(preCompleted) + "\n", "utf-8");
+
+            // Re-seed NREKI for just t2 (2 cells).
+            m(runNREKI).mockReset();
+            m(runNREKI)
+                .mockResolvedValueOnce(fakeResult("nreki", true, 30, 200))
+                .mockResolvedValueOnce(fakeResult("nreki", true, 50, 300));
+
+            const report = await orchestrate({
+                workspaceRoot: WORKSPACE,
+                outputPath: OUTPUT,
+                outputJsonlPath: jsonlPath,
+                taskIds: ["t1", "t2"],
+            });
+
+            // t1 came from JSONL (not re-cloned, not re-runner-invoked).
+            expect(m(cloneTaskRepo)).toHaveBeenCalledTimes(1);
+            expect(m(cloneTaskRepo).mock.calls[0][0].instance_id).toBe("t2");
+            expect(m(runVoyage)).toHaveBeenCalledTimes(1);
+            // Aggregate spans both tasks.
+            expect(report.total_tasks_attempted).toBe(2);
+            const ids = report.per_task.map(t => t.instance_id).sort();
+            expect(ids).toEqual(["t1", "t2"]);
+        });
+
+        it("resume=false: even with existing JSONL, all tasks re-execute", async () => {
+            process.env.VOYAGE_API_KEY = "test-key";
+            m(loadPolyBenchVerified).mockResolvedValue([fakeTask("t1")]);
+            const jsonlPath = path.join(WORKSPACE, "results.jsonl");
+            // Pre-seed with t1 -- but resume:false should ignore it.
+            await fs.writeFile(
+                jsonlPath,
+                JSON.stringify({ instance_id: "t1", repo: "owner/repo", runners: {} }) + "\n",
+                "utf-8",
+            );
+            await orchestrate({
+                workspaceRoot: WORKSPACE,
+                outputPath: OUTPUT,
+                outputJsonlPath: jsonlPath,
+                resume: false,
+                taskIds: ["t1"],
+            });
+            // t1 cloned despite pre-existing JSONL row.
+            expect(m(cloneTaskRepo)).toHaveBeenCalledTimes(1);
+            expect(m(cloneTaskRepo).mock.calls[0][0].instance_id).toBe("t1");
+        });
+
+        it("clone failure also appends a state line (so resume skips it next run)", async () => {
+            process.env.VOYAGE_API_KEY = "test-key";
+            m(loadPolyBenchVerified).mockResolvedValue([fakeTask("t1")]);
+            m(cloneTaskRepo).mockRejectedValueOnce(new Error("Time-Travel guard"));
+            const jsonlPath = path.join(WORKSPACE, "results.jsonl");
+            await orchestrate({
+                workspaceRoot: WORKSPACE,
+                outputPath: OUTPUT,
+                outputJsonlPath: jsonlPath,
+                taskIds: ["t1"],
+            });
+            const content = await fs.readFile(jsonlPath, "utf-8");
+            const parsed = JSON.parse(content.trim());
+            expect(parsed.instance_id).toBe("t1");
+            expect(parsed.error).toMatch(/clone failed/);
+        });
+
+        it("malformed JSONL line: warned, skipped, run proceeds", async () => {
+            process.env.VOYAGE_API_KEY = "test-key";
+            m(loadPolyBenchVerified).mockResolvedValue([fakeTask("t1")]);
+            const jsonlPath = path.join(WORKSPACE, "results.jsonl");
+            // First line is garbage; we expect the run to proceed and t1 to execute.
+            await fs.writeFile(jsonlPath, "{ NOT JSON ;;;\n", "utf-8");
+            await orchestrate({
+                workspaceRoot: WORKSPACE,
+                outputPath: OUTPUT,
+                outputJsonlPath: jsonlPath,
+                taskIds: ["t1"],
+            });
+            expect(m(cloneTaskRepo)).toHaveBeenCalledTimes(1);
+        });
+    });
 });

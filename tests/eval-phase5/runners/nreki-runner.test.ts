@@ -356,4 +356,45 @@ describe("runNREKI", () => {
         expect(res.retrieved_chunks[0].file_path).toBe("src/nested/dir/file.ts");
         expect(res.retrieved_chunks[0].file_path).not.toContain("\\");
     });
+
+    // Phase 5 C.4.B.0c -- Type Ledger density attached to the result metadata.
+    it("density metadata is populated when the engine exposes Type Ledger API", async () => {
+        await seed("src/foo.ts", "export class Foo {}");
+        await seed("src/bar.ts", "export class Bar {}");
+        const engine = makeStubEngine({
+            mbf: true,
+            hits: [mkSearchResult("src/foo.ts", "export class Foo {}")],
+        });
+        const stubEngine = engine as unknown as Record<string, unknown>;
+        stubEngine.getAllTypeNames = vi.fn().mockReturnValue(["Foo"]);
+        stubEngine.getChunksByConsumedType = vi.fn().mockReturnValue([]);
+        stubEngine.getChunksByProducedType = vi.fn().mockReturnValue([1]);
+        stubEngine.getChunksByIds = vi.fn().mockImplementation(
+            (ids: number[]) => ids.map(() => ({ path: path.join(REPO_ROOT, "src/foo.ts") })),
+        );
+        const res = await runNREKI(mkTask("Foo"), REPO_ROOT, 1, { engine });
+        expect(res.metadata).toBeDefined();
+        expect(res.metadata?.ts_files_count).toBe(2);
+        expect(res.metadata?.ts_edges_count).toBe(1);
+        expect(res.metadata?.era_pct_ts_files).toBe(1);
+        expect(res.metadata?.ts_density).toBeCloseTo(0.5);
+        // foo.ts has the edge, bar.ts is isolated -> 0.5
+        expect(res.metadata?.ts_isolated_pct).toBeCloseTo(0.5);
+    });
+
+    it("density compute failure is non-fatal: result returned without metadata", async () => {
+        await seed("src/foo.ts", "export class Foo {}");
+        const engine = makeStubEngine({
+            mbf: true,
+            hits: [mkSearchResult("src/foo.ts", "export class Foo {}")],
+        });
+        const stubEngine = engine as unknown as Record<string, unknown>;
+        stubEngine.getAllTypeNames = vi.fn(() => { throw new Error("ledger blew up"); });
+        const res = await runNREKI(mkTask("Foo"), REPO_ROOT, 1, { engine });
+        // Retrieval still succeeds.
+        expect(res.error).toBeUndefined();
+        expect(res.retrieved_files).toEqual(["src/foo.ts"]);
+        // Metadata is omitted when density compute throws.
+        expect(res.metadata).toBeUndefined();
+    });
 });

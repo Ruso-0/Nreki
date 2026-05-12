@@ -35,9 +35,11 @@
  */
 
 import * as fs from "node:fs/promises";
-import { statfsSync, existsSync } from "node:fs";
+import { statfsSync, existsSync, appendFileSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import * as readline from "node:readline";
+import { createReadStream } from "node:fs";
 import { loadPolyBenchVerified, DEFAULT_CSV_PATH } from "./polybench-loader.js";
 import { computeGroundTruth } from "./ground-truth.js";
 import { cloneTaskRepo } from "./repo-cloner.js";
@@ -90,6 +92,23 @@ export interface OrchestrateOptions {
     taskDelayMs?: number;
     /** Abort orchestration if free disk on workspaceRoot drive < minDiskGB. Default 5. */
     minDiskGB?: number;
+    /**
+     * Phase 5 C.4.B.0c (Furia round 24 P0): JSON-Lines path for
+     * incremental, append-only per-task results. Each completed
+     * task (success or per-runner failure) appends a single line
+     * with the PerTaskResult shape. Default: undefined (disabled).
+     *
+     * Pair with `resume` to recover from interruptions during the
+     * 2-3h C.4.B run without re-executing already-completed tasks.
+     */
+    outputJsonlPath?: string;
+    /**
+     * If true and `outputJsonlPath` exists, parse it and skip any
+     * task whose instance_id is already in the file. Default true.
+     * Set to false to force a clean restart even when prior state
+     * is present.
+     */
+    resume?: boolean;
 }
 
 export interface PerRunnerMetrics {
@@ -201,6 +220,46 @@ function sleep(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+/**
+ * Parse an existing JSONL state file and return the set of
+ * instance_ids that already have a recorded outcome. Malformed
+ * lines are skipped (warned to stderr) rather than fatal -- the
+ * worst case is we re-execute a task whose JSONL line was
+ * truncated by a crash mid-write.
+ */
+export async function readCompletedTaskIds(jsonlPath: string): Promise<Set<string>> {
+    const done = new Set<string>();
+    if (!existsSync(jsonlPath)) return done;
+    const rl = readline.createInterface({
+        input: createReadStream(jsonlPath, { encoding: "utf-8" }),
+        crlfDelay: Infinity,
+    });
+    for await (const line of rl) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        try {
+            const parsed = JSON.parse(trimmed) as { instance_id?: string };
+            if (parsed.instance_id) done.add(parsed.instance_id);
+        } catch {
+            process.stderr.write(
+                `[orchestrate] WARN: skipping malformed JSONL line in ${jsonlPath}\n`,
+            );
+        }
+    }
+    return done;
+}
+
+/**
+ * Append a per-task result line atomically. We use sync append so
+ * the OS gives us the strongest "either the whole line or nothing"
+ * guarantee available without an fsync (good enough: the worst
+ * case is a partial line on hard crash, which readCompletedTaskIds
+ * tolerates).
+ */
+export function appendTaskResultJsonl(jsonlPath: string, result: PerTaskResult): void {
+    appendFileSync(jsonlPath, JSON.stringify(result) + "\n", { encoding: "utf-8" });
+}
+
 function emptyMetrics(): PerRunnerMetrics {
     return { first_hit_recall: 0, strict_chunk_containment: 0, token_cost: 0, latency_ms: 0 };
 }
@@ -283,6 +342,8 @@ export async function orchestrate(options: OrchestrateOptions): Promise<Aggregat
     const taskDelayMs = options.taskDelayMs ?? 0;
     const minDiskGB = options.minDiskGB ?? 5;
     const runnersList = options.runners ?? ALL_REPORT_RUNNERS;
+    const resume = options.resume ?? true;
+    const jsonlPath = options.outputJsonlPath;
 
     await preflightDisk(options.workspaceRoot, minDiskGB);
     maybeSeedRgBinary();
@@ -290,18 +351,52 @@ export async function orchestrate(options: OrchestrateOptions): Promise<Aggregat
 
     const allTasks = await loadPolyBenchVerified(csvPath);
     const taskFilter = new Set(options.taskIds ?? []);
-    const tasks = taskFilter.size > 0
+    const filteredTasks = taskFilter.size > 0
         ? allTasks.filter(t => taskFilter.has(t.instance_id))
         : allTasks;
 
-    if (tasks.length === 0) {
+    if (filteredTasks.length === 0) {
         throw new Error(
             `No tasks matched filter [${[...taskFilter].join(", ")}] from ${allTasks.length} total`,
         );
     }
 
-    const voyageKey = process.env.VOYAGE_API_KEY || "";
+    // Phase 5 C.4.B.0c resume detection. If a JSONL state file exists
+    // and resume is on, hydrate previously-completed PerTaskResult rows
+    // and skip those instance_ids in the loop below.
     const perTask: PerTaskResult[] = [];
+    const completedIds = new Set<string>();
+    if (jsonlPath && resume && existsSync(jsonlPath)) {
+        const rl = readline.createInterface({
+            input: createReadStream(jsonlPath, { encoding: "utf-8" }),
+            crlfDelay: Infinity,
+        });
+        for await (const line of rl) {
+            const trimmed = line.trim();
+            if (!trimmed) continue;
+            try {
+                const parsed = JSON.parse(trimmed) as PerTaskResult;
+                if (parsed.instance_id && !completedIds.has(parsed.instance_id)) {
+                    completedIds.add(parsed.instance_id);
+                    perTask.push(parsed);
+                }
+            } catch {
+                process.stderr.write(
+                    `[orchestrate] WARN: malformed JSONL line skipped\n`,
+                );
+            }
+        }
+        if (completedIds.size > 0) {
+            process.stdout.write(
+                `[orchestrate] Resuming from ${jsonlPath}: ${completedIds.size} task(s) already complete\n`,
+            );
+        }
+    }
+
+    // Tasks remaining = filtered minus already-completed (when resuming).
+    const tasks = filteredTasks.filter(t => !completedIds.has(t.instance_id));
+
+    const voyageKey = process.env.VOYAGE_API_KEY || "";
 
     for (let i = 0; i < tasks.length; i++) {
         const task = tasks[i];
@@ -313,7 +408,7 @@ export async function orchestrate(options: OrchestrateOptions): Promise<Aggregat
         try {
             taskDir = await cloneTaskRepo(task, options.workspaceRoot);
         } catch (e) {
-            perTask.push({
+            const cloneFailResult: PerTaskResult = {
                 instance_id: task.instance_id,
                 repo: task.repo,
                 base_commit: task.base_commit,
@@ -321,7 +416,9 @@ export async function orchestrate(options: OrchestrateOptions): Promise<Aggregat
                 ground_truth: computeGroundTruth(task),
                 runners: {},
                 error: `clone failed: ${(e as Error).message}`,
-            });
+            };
+            perTask.push(cloneFailResult);
+            if (jsonlPath) appendTaskResultJsonl(jsonlPath, cloneFailResult);
             if (taskDelayMs > 0) await sleep(taskDelayMs);
             continue;
         }
@@ -366,6 +463,7 @@ export async function orchestrate(options: OrchestrateOptions): Promise<Aggregat
         }
 
         perTask.push(taskResult);
+        if (jsonlPath) appendTaskResultJsonl(jsonlPath, taskResult);
 
         if (cleanupClones) {
             try {
@@ -407,7 +505,10 @@ export async function orchestrate(options: OrchestrateOptions): Promise<Aggregat
     const report: AggregateReport = {
         timestamp_utc: new Date().toISOString(),
         options,
-        total_tasks_attempted: tasks.length,
+        // Resume: aggregate over the FULL filtered task set (including
+        // resumed-from-JSONL rows) so the headline counts a 100-task
+        // run as 100, not "100 minus what we already had".
+        total_tasks_attempted: filteredTasks.length,
         total_tasks_completed: perTask.filter(t => !t.error).length,
         per_runner,
         per_task: perTask,
@@ -440,8 +541,10 @@ function parseArgv(argv: string[]): OrchestrateOptions {
             case "--task-delay-ms": opts.taskDelayMs = parseInt(next(), 10); break;
             case "--no-cleanup": opts.cleanupClones = false; break;
             case "--min-disk-gb": opts.minDiskGB = parseFloat(next()); break;
+            case "--output-jsonl": opts.outputJsonlPath = next(); break;
+            case "--no-resume": opts.resume = false; break;
             case "--help":
-                console.log(`Usage: orchestrate.ts [--dry-run] [--task-ids id1,id2] [--top-k 10] [--workspace dir] [--output file] [--csv path] [--task-delay-ms 0] [--no-cleanup] [--min-disk-gb 5]`);
+                console.log(`Usage: orchestrate.ts [--dry-run] [--task-ids id1,id2] [--top-k 10] [--workspace dir] [--output file] [--output-jsonl file] [--no-resume] [--csv path] [--task-delay-ms 0] [--no-cleanup] [--min-disk-gb 5]`);
                 process.exit(0);
         }
     }

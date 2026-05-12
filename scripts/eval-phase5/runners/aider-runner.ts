@@ -42,8 +42,16 @@ export const DEFAULT_AIDER_BINARY = path.join(
     "aider.exe",
 );
 
-/** Hard cap so a runaway Aider call cannot wedge the eval run. */
-export const AIDER_TIMEOUT_MS = 30_000;
+/**
+ * Hard cap so a runaway Aider call cannot wedge the eval run.
+ *
+ * Phase 5 C.4.B.0c (Furia round 24 latigazo #81): bumped 30s → 120s
+ * for fair-play vs Voyage. Voyage on mui takes ~71s per task; the
+ * pre-bump 30s cap killed Aider on the same monorepo before the
+ * repo-map walk completed, biasing the benchmark. 120s gives Aider
+ * an apples-to-apples chance on the heaviest workspaces.
+ */
+export const AIDER_TIMEOUT_MS = 120_000;
 
 /**
  * Prefix used on the `error` field of the RetrievalResult when the
