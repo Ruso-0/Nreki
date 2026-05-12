@@ -72,14 +72,23 @@ describe("parser type I/O extraction (sub-sprint 2.2)", () => {
         expect(chunk.produces).toEqual(["User"]);
     });
 
-    it("(g) non-callable nodes (class) leave consumes/produces undefined", async () => {
+    it("(g) Phase 5 C.4.A.9: class chunks now route through extractTypeIO (empty arrays when no constructor)", async () => {
+        // Pre-Phase-5 C.4.A.9 the parser gate skipped classes entirely
+        // and left consumes/produces undefined. That left modern TS
+        // codebases (mui packages, code-server, etc.) under-connected
+        // in the Type Ledger -- see C.4.A.8 reality probe (52.9%
+        // isolated TS files in code-server). The gate now extracts
+        // Type IO from class chunks via the constructor signature
+        // walker (splitSignatureIO). An empty class body has no
+        // parens -> the walker returns empty arrays rather than
+        // undefined.
         const chunk = await parseChunkBySymbol(
             "class MyClass { }",
             "MyClass",
         );
         expect(chunk.nodeType).toBe("class");
-        expect(chunk.consumes).toBeUndefined();
-        expect(chunk.produces).toBeUndefined();
+        expect(chunk.consumes).toEqual([]);
+        expect(chunk.produces).toEqual([]);
     });
 });
 

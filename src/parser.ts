@@ -456,10 +456,35 @@ export class ASTParser {
 
                 let consumes: string[] | undefined;
                 let produces: string[] | undefined;
-                if (nodeType === "func" || nodeType === "method") {
+                // Phase 5 C.4.A.9 (Furia round 22 follow-up): widened from
+                // the original func/method gate to cover modern TS idioms.
+                //
+                // Arrow-const (normalised to "var") + class declarations
+                // are signature-bearing chunks; extractTypeIO's
+                // splitSignatureIO walker is signature-agnostic (looks
+                // for the first `(...)` then `: T` return) so it works
+                // on `const foo = (x: A): B => {...}` and `class C(...)`
+                // alike with no changes to the extractor.
+                //
+                // Interface and type-alias declarations DECLARE the type
+                // they name: their produces = [symbol_name]. Consumes
+                // would require structural analysis of the body
+                // (out-of-scope for this gate widening) -- left for a
+                // separate sprint if needed.
+                if (
+                    nodeType === "func" ||
+                    nodeType === "method" ||
+                    nodeType === "var" ||
+                    nodeType === "class"
+                ) {
                     const io = extractTypeIO(rawCode);
                     consumes = io.consumes;
                     produces = io.produces;
+                } else if (
+                    (nodeType === "interface" || nodeType === "type") &&
+                    symbolName.length > 0
+                ) {
+                    produces = [symbolName];
                 }
 
                 result.push({
