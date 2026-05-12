@@ -15,6 +15,7 @@ import {
     cosineSimilarity,
     runVoyage,
     VOYAGE_MODEL,
+    batchChunksByTokens,
 } from "../../../scripts/eval-phase5/runners/voyage-runner.js";
 import type { PolyBenchTask } from "../../../scripts/eval-phase5/types.js";
 
@@ -269,5 +270,89 @@ describe("Phase 5 C.3.A: runVoyage", () => {
         expect(result.error).toBeDefined();
         expect(result.error).toMatch(/Voyage API/);
         expect(result.retriever).toBe("voyage-3");
+    });
+});
+
+// Phase 5 C.4.B.0b: token-budgeted batching to avoid Voyage HTTP 400.
+//
+// The thresholds inside voyage-runner.ts are MAX_TOKENS_PER_BATCH=80_000
+// and MAX_BATCH=128. We exercise both caps + the pathological-single
+// path. Token counts are produced by the real cl100k_base singleton --
+// no mock -- so the assertions stay within the same accounting NREKI's
+// token_cost metric uses end-to-end.
+describe("batchChunksByTokens", () => {
+    /** Build a string that tiktokenises to roughly `targetTokens` tokens. */
+    function tokensOf(targetTokens: number): string {
+        // "hello world " is 2 tokens. Repeat to get ~targetTokens.
+        return "hello world ".repeat(Math.ceil(targetTokens / 2));
+    }
+
+    it("returns no batches for an empty input", () => {
+        expect(batchChunksByTokens([])).toEqual([]);
+    });
+
+    it("packs a single small batch when the total fits in one request", () => {
+        const chunks = Array.from({ length: 10 }, () => tokensOf(500));
+        const batches = batchChunksByTokens(chunks);
+        // 10 * 500 = 5000 tokens, well under 80K and 10 < 128.
+        expect(batches).toHaveLength(1);
+        expect(batches[0]).toHaveLength(10);
+    });
+
+    it("splits by token budget when the total exceeds MAX_TOKENS_PER_BATCH", () => {
+        // 100 chunks * ~1000 tokens each = ~100K tokens > 80K budget.
+        const chunks = Array.from({ length: 100 }, () => tokensOf(1000));
+        const batches = batchChunksByTokens(chunks);
+        expect(batches.length).toBeGreaterThanOrEqual(2);
+        // Sanity: all chunks accounted for, in order.
+        const flat = batches.flat();
+        expect(flat).toHaveLength(chunks.length);
+        expect(flat[0]).toBe(chunks[0]);
+        expect(flat[flat.length - 1]).toBe(chunks[chunks.length - 1]);
+    });
+
+    it("splits by item count when many tiny chunks stay under the token budget", () => {
+        // 200 chunks * ~50 tokens = ~10K tokens (well under 80K).
+        // 200 > MAX_BATCH=128, so two batches expected.
+        const chunks = Array.from({ length: 200 }, () => tokensOf(50));
+        const batches = batchChunksByTokens(chunks);
+        expect(batches).toHaveLength(2);
+        expect(batches[0]).toHaveLength(128);
+        expect(batches[1]).toHaveLength(72);
+    });
+
+    it("emits a single pathological chunk as its own batch and continues", () => {
+        const normalA = tokensOf(500);
+        const normalB = tokensOf(500);
+        // ~100K tokens, exceeds 80K budget alone.
+        const pathological = tokensOf(100_000);
+        const batches = batchChunksByTokens([normalA, pathological, normalB]);
+        // Sequence: normalA flushed, pathological singleton, normalB.
+        expect(batches).toHaveLength(3);
+        expect(batches[0]).toEqual([normalA]);
+        expect(batches[1]).toEqual([pathological]);
+        expect(batches[2]).toEqual([normalB]);
+    });
+
+    it("interleaves pathological + normal chunks correctly", () => {
+        // 3 pathological singletons + a tail group of normal chunks.
+        const path1 = tokensOf(100_000);
+        const path2 = tokensOf(100_000);
+        const path3 = tokensOf(100_000);
+        const normals = Array.from({ length: 20 }, () => tokensOf(500));
+        const batches = batchChunksByTokens([path1, path2, path3, ...normals]);
+        // 3 singletons + 1 group of 20 normals = 4 batches.
+        expect(batches).toHaveLength(4);
+        expect(batches[0]).toEqual([path1]);
+        expect(batches[1]).toEqual([path2]);
+        expect(batches[2]).toEqual([path3]);
+        expect(batches[3]).toEqual(normals);
+    });
+
+    it("preserves chunk order across all batches (input order is the order Voyage indexes by)", () => {
+        const chunks = Array.from({ length: 300 }, (_, i) => `chunk-${i}-${tokensOf(200)}`);
+        const batches = batchChunksByTokens(chunks);
+        const flat = batches.flat();
+        expect(flat).toEqual(chunks);
     });
 });

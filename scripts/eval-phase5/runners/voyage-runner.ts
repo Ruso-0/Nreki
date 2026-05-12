@@ -25,15 +25,24 @@ import * as path from "node:path";
 import type { PolyBenchTask } from "../types.js";
 import type { ChunkResult, RetrievalResult } from "../types-runners.js";
 import { isTestFile } from "../ground-truth.js";
-import { payloadTokens } from "../utils/tokenizer.js";
+import { computeTokenCost, payloadTokens } from "../utils/tokenizer.js";
+import { logger } from "../../../src/utils/logger.js";
 import { lineAtOffset } from "../utils/chunks.js";
 
 export const VOYAGE_MODEL = "voyage-code-3";
 export const VOYAGE_API_URL = "https://api.voyageai.com/v1/embeddings";
 export const DEFAULT_TOP_K = 10;
 
-/** Voyage API limit per request. */
+/** Voyage API item-count cap per request. */
 const MAX_BATCH = 128;
+/**
+ * Voyage per-request token ceiling for voyage-code-3. Observed
+ * ~120K hard limit (HTTP 400 above); we keep a 25% safety margin.
+ * Mui-class monorepos (4000+ chunks, mixed .js minified bundles)
+ * blew past the previous count-only batching with HTTP 400 -- see
+ * Phase 5 C.4.B.0a probe.
+ */
+const MAX_TOKENS_PER_BATCH = 80_000;
 /** Char-based chunking parameters (simple sliding window, no AST). */
 const CHUNK_SIZE = 2000;
 const CHUNK_OVERLAP = 200;
@@ -66,6 +75,64 @@ function sleep(ms: number): Promise<void> {
  * @throws on auth failure (401/403), persistent rate limit
  *         (3 retries on 429), or 5xx after one retry.
  */
+/**
+ * Split `texts` into batches that respect BOTH the item-count cap
+ * (MAX_BATCH) and the per-request token ceiling (MAX_TOKENS_PER_BATCH).
+ *
+ * Tokens are counted once via the cl100k_base singleton -- the same
+ * tokenizer used for the universal token_cost metric, so any drift
+ * between batching estimate and Voyage's internal count is bounded
+ * by tokenizer-family differences (Voyage uses its own BPE; cl100k
+ * has been observed ~3-5% off in either direction).
+ *
+ * Pathological chunks whose own token count exceeds the budget are
+ * emitted as singleton batches (server-side truncation may apply --
+ * better to surface the chunk than to drop it). A warning is logged
+ * so post-hoc analysis can flag minified-bundle pollution.
+ *
+ * Exported for unit tests.
+ */
+export function batchChunksByTokens(texts: string[]): string[][] {
+    const batches: string[][] = [];
+    let current: string[] = [];
+    let currentTokens = 0;
+
+    for (const text of texts) {
+        const chunkTokens = computeTokenCost(text);
+
+        if (chunkTokens > MAX_TOKENS_PER_BATCH) {
+            // Flush whatever we were building first.
+            if (current.length > 0) {
+                batches.push(current);
+                current = [];
+                currentTokens = 0;
+            }
+            // Emit the pathological chunk on its own; surface it to the
+            // logs so audits can correlate with minified-bundle paths.
+            batches.push([text]);
+            logger.warn(
+                `[voyage] pathological chunk ${chunkTokens} tokens (> ${MAX_TOKENS_PER_BATCH} budget); emitted as singleton.`,
+            );
+            continue;
+        }
+
+        const wouldExceedTokens = currentTokens + chunkTokens > MAX_TOKENS_PER_BATCH;
+        const wouldExceedCount = current.length >= MAX_BATCH;
+        if (wouldExceedTokens || wouldExceedCount) {
+            batches.push(current);
+            current = [text];
+            currentTokens = chunkTokens;
+            continue;
+        }
+
+        current.push(text);
+        currentTokens += chunkTokens;
+    }
+
+    if (current.length > 0) batches.push(current);
+    return batches;
+}
+
 export async function voyageEmbed(
     texts: string[],
     inputType: "document" | "query",
@@ -74,8 +141,9 @@ export async function voyageEmbed(
     const embeddings: number[][] = [];
     let totalTokens = 0;
 
-    for (let i = 0; i < texts.length; i += MAX_BATCH) {
-        const batch = texts.slice(i, i + MAX_BATCH);
+    const batches = batchChunksByTokens(texts);
+    for (let bi = 0; bi < batches.length; bi++) {
+        const batch = batches[bi];
         const response = await embedBatchWithRetry(batch, inputType, apiKey);
         // Voyage returns data with `index` referring to position in batch;
         // sort by index to preserve input order.
@@ -86,7 +154,7 @@ export async function voyageEmbed(
         totalTokens += response.usage.total_tokens;
 
         // Inter-batch sleep (skip after the final batch).
-        if (i + MAX_BATCH < texts.length) {
+        if (bi < batches.length - 1) {
             await sleep(INTER_BATCH_SLEEP_MS);
         }
     }
@@ -291,6 +359,13 @@ export async function runVoyage(
             fileContents[fi] = content;
             const pieces = chunkTextWithOffsets(content);
             for (const p of pieces) {
+                // Voyage rejects empty / whitespace-only inputs with HTTP
+                // 400 ("Input cannot contain empty strings or empty lists").
+                // Empty .js files and pure-comment files surface here as
+                // zero-length chunks; skip them so chunkFileIndex /
+                // chunkStartLine / chunkEndLine stay aligned with the
+                // embedding output array.
+                if (p.text.length === 0 || /^\s*$/.test(p.text)) continue;
                 chunkTexts.push(p.text);
                 chunkFileIndex.push(fi);
                 chunkStartLine.push(lineAtOffset(content, p.start_char));
