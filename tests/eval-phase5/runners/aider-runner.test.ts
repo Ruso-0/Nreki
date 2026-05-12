@@ -12,6 +12,8 @@ import {
     parseAiderRepoMap,
     resolveAiderBinary,
     DEFAULT_AIDER_BINARY,
+    AIDER_TIMEOUT_MS,
+    AIDER_TIMEOUT_ERROR_PREFIX,
 } from "../../../scripts/eval-phase5/runners/aider-runner.js";
 import type { AiderSpawnFn } from "../../../scripts/eval-phase5/runners/aider-runner.js";
 import type { PolyBenchTask } from "../../../scripts/eval-phase5/types.js";
@@ -180,6 +182,52 @@ describe("runAider", () => {
         expect(capturedEnv.OPENAI_API_KEY).toBeTruthy();
         expect(capturedEnv.PYTHONIOENCODING).toBe("utf-8");
         expect(capturedEnv.AIDER_ANALYTICS).toBe("false");
+    });
+
+    // Phase 5 C.4.A.7 -- timeout error distinguishable from no-results.
+    it("SIGKILL timeout -> result.error starts with AIDER_TIMEOUT_ERROR_PREFIX", async () => {
+        const timedOutSpawn: AiderSpawnFn = async () => ({
+            stdout: "",
+            stderr: "",
+            code: null,
+            timedOut: true,
+        });
+        const res = await runAider(mkTask("anything"), "/tmp/ws", 3, timedOutSpawn);
+        expect(res.error?.startsWith(AIDER_TIMEOUT_ERROR_PREFIX)).toBe(true);
+        expect(res.retrieved_files).toEqual([]);
+        expect(res.retrieved_chunks).toEqual([]);
+        expect(res.token_cost.total_tokens).toBe(0);
+        // The error message references the configured timeout.
+        expect(res.error).toContain(String(AIDER_TIMEOUT_MS));
+    });
+
+    it("natural exit code 0 + empty stdout -> no error, just empty results", async () => {
+        const cleanEmptySpawn: AiderSpawnFn = async () => ({
+            stdout: "",
+            stderr: "",
+            code: 0,
+            timedOut: false,
+        });
+        const res = await runAider(mkTask("anything"), "/tmp/ws", 3, cleanEmptySpawn);
+        expect(res.error).toBeUndefined();
+        expect(res.retrieved_files).toEqual([]);
+    });
+
+    it("natural exit code 0 + valid stdout -> retrieved_files non-empty, no error", async () => {
+        const cleanFullSpawn: AiderSpawnFn = async () => ({
+            stdout: REAL_OUTPUT,
+            stderr: "",
+            code: 0,
+            timedOut: false,
+        });
+        const res = await runAider(
+            mkTask("SuggestModel.triggerWith"),
+            "/tmp/ws",
+            3,
+            cleanFullSpawn,
+        );
+        expect(res.error).toBeUndefined();
+        expect(res.retrieved_files.length).toBeGreaterThan(0);
     });
 });
 

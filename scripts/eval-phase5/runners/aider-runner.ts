@@ -45,6 +45,21 @@ export const DEFAULT_AIDER_BINARY = path.join(
 /** Hard cap so a runaway Aider call cannot wedge the eval run. */
 export const AIDER_TIMEOUT_MS = 30_000;
 
+/**
+ * Prefix used on the `error` field of the RetrievalResult when the
+ * Aider child process was killed by our SIGKILL after exceeding
+ * AIDER_TIMEOUT_MS. Exported so the orchestrator / reporting layer
+ * can pattern-match without re-implementing the heuristic:
+ *
+ *   if (result.error?.startsWith(AIDER_TIMEOUT_ERROR_PREFIX)) {...}
+ *
+ * Phase 5 C.4.A.7: introduced to disambiguate "Aider timed out"
+ * from "Aider exited cleanly with no matches", which the C.4.A
+ * dry-run showed are indistinguishable when only inspecting
+ * retrieved_files=[].
+ */
+export const AIDER_TIMEOUT_ERROR_PREFIX = "Aider timeout: exceeded";
+
 /** Source-file extensions the parser will look at when scanning headers. */
 const SOURCE_EXTENSIONS = ["ts", "tsx", "js", "jsx"];
 
@@ -63,7 +78,13 @@ export type AiderSpawnFn = (
     args: string[],
     cwd: string,
     env: Record<string, string>,
-) => Promise<{ stdout: string; stderr: string; code: number | null }>;
+) => Promise<{
+    stdout: string;
+    stderr: string;
+    code: number | null;
+    /** True iff our SIGKILL fired before the child exited on its own. */
+    timedOut?: boolean;
+}>;
 
 const defaultSpawnFn: AiderSpawnFn = (args, cwd, env) =>
     new Promise(resolve => {
@@ -74,7 +95,9 @@ const defaultSpawnFn: AiderSpawnFn = (args, cwd, env) =>
         });
         let stdout = "";
         let stderr = "";
+        let timedOut = false;
         const timeout = setTimeout(() => {
+            timedOut = true;
             try {
                 child.kill("SIGKILL");
             } catch {
@@ -86,11 +109,11 @@ const defaultSpawnFn: AiderSpawnFn = (args, cwd, env) =>
         child.stderr.on("data", chunk => (stderr += chunk.toString("utf-8")));
         child.on("error", err => {
             clearTimeout(timeout);
-            resolve({ stdout: "", stderr: `spawn error: ${err.message}`, code: null });
+            resolve({ stdout: "", stderr: `spawn error: ${err.message}`, code: null, timedOut });
         });
         child.on("close", code => {
             clearTimeout(timeout);
-            resolve({ stdout, stderr, code });
+            resolve({ stdout, stderr, code, timedOut });
         });
     });
 
@@ -201,7 +224,20 @@ export async function runAider(
     try {
         const keywords = constructQuery(task.problem_statement);
         const args = ["--show-repo-map", "--yes", "--no-auto-commits"];
-        const { stdout, stderr, code } = await spawnFn(args, repoRoot, aiderEnv());
+        const { stdout, stderr, code, timedOut } = await spawnFn(args, repoRoot, aiderEnv());
+
+        if (timedOut) {
+            const elapsed = Date.now() - startedAt;
+            return {
+                instance_id: task.instance_id,
+                retriever: "aider",
+                retrieved_files: [],
+                retrieved_chunks: [],
+                latency_ms: elapsed,
+                token_cost: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+                error: `${AIDER_TIMEOUT_ERROR_PREFIX} ${AIDER_TIMEOUT_MS}ms (elapsed ${elapsed}ms)`,
+            };
+        }
 
         if (code === null && stderr.startsWith("spawn error:")) {
             return {
