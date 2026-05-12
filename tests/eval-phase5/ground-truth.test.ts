@@ -204,14 +204,21 @@ describe("Phase 5: computeGroundTruth (3-niveles)", () => {
         expect(gt.maximal).toHaveLength(3);
     });
 
-    it("packages/* monorepo paths NOT counted as src/ unless src/ prefix", () => {
-        // Monorepo edge case: "packages/foo/src/x.ts" does NOT start with "src/"
-        // strict_src filter is intentionally repo-shape-agnostic per spec.
+    it("packages/<scope>/src/ monorepo paths ARE counted as source (Phase 5 C.4.A.5 widening)", () => {
+        // Phase 5 C.4.A.5 (Furia auditor D1=a): strict_src widened from
+        // bare startsWith("src/") to a whitelist that also covers the
+        // canonical monorepo layout `packages/<scope>/src/...`. This
+        // recovers 167 modified-file matches across mui + angular + ...
+        // that the original filter dropped, fixing the vacuous-Recall
+        // problem on 71 / 100 PolyBench tasks.
         const t = mkTask([
             "packages/foo/src/x.ts",
             "src/y.ts",
         ]);
         const gt = computeGroundTruth(t);
-        expect(gt.strict_src).toEqual(["src/y.ts"]);
+        expect(gt.strict_src.sort()).toEqual([
+            "packages/foo/src/x.ts",
+            "src/y.ts",
+        ]);
     });
 });

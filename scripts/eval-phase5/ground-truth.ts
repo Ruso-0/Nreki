@@ -45,6 +45,55 @@ export function isTestFile(filepath: string): boolean {
 }
 
 /**
+ * Source-path patterns recognised as canonical "src/" locations across
+ * simple projects and TypeScript monorepos.
+ *
+ * Phase 5 C.4.A.5 widening (Furia auditor D1=a):
+ *   The original filter `startsWith("src/")` matched only 49 / 333
+ *   modified non-test files across PolyBench Verified TS (14.7%),
+ *   leaving 71 / 100 tasks with an empty strict_src (vacuous Recall).
+ *   The `packages/<scope>/src/` family alone accounts for 167 files
+ *   (mui-material, mui-base, mui-system, mui-joy, mui-lab, mui-core,
+ *   angular/core, etc.); `src/vs/` adds 34 more for vscode.
+ *
+ * Maintained as an explicit whitelist (rather than implicit heuristic)
+ * for debuggability and easy extension when new monorepo layouts
+ * appear in future PolyBench releases. The `<scope>` placeholder is
+ * substituted with `[^/]+` (any single path segment) at match time.
+ */
+export const SOURCE_PATH_PATTERNS: readonly string[] = [
+    "src/",                              // simple projects + vscode (src/vs/...)
+    "packages/<scope>/src/",             // mui + sibling packages, angular/core, etc.
+];
+
+/**
+ * Returns true if `filePath` matches any SOURCE_PATH_PATTERN. Used to
+ * compute ground_truth.strict_src in a monorepo-aware way.
+ *
+ * Match semantics:
+ *   - Direct prefix match (e.g. `src/...`)
+ *   - `<scope>` placeholder substitutes [^/]+ (exactly one segment)
+ *
+ * Test files are NOT excluded here; callers should compose with
+ * `!isTestFile(p)` per Furia round 13 #8.
+ */
+export function isSourcePath(filePath: string): boolean {
+    for (const pattern of SOURCE_PATH_PATTERNS) {
+        if (pattern.includes("<scope>")) {
+            // Escape regex metachars in the literal parts, then sub
+            // <scope> with [^/]+. Anchored to start (^) only.
+            const escaped = pattern
+                .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+                .replace("<scope>", "[^/]+");
+            if (new RegExp("^" + escaped).test(filePath)) return true;
+            continue;
+        }
+        if (filePath.startsWith(pattern)) return true;
+    }
+    return false;
+}
+
+/**
  * Extract modified file paths from a unified diff (PolyBench `patch`).
  *
  * Strategy per Furia round 18 spec: regex over `diff --git a/X b/Y`
@@ -82,9 +131,11 @@ export function extractModifiedFiles(patch: string): string[] {
 export function computeGroundTruth(task: PolyBenchTask): GroundTruth {
     const allFiles = extractModifiedFiles(task.patch);
 
-    // Strict (HEADLINE): src/ ONLY, no tests.
+    // Strict (HEADLINE): source-tree files only, no tests.
+    // Monorepo-aware as of Phase 5 C.4.A.5 (auditor D1=a): see
+    // SOURCE_PATH_PATTERNS + isSourcePath above for the whitelist.
     const strict_src = allFiles.filter(
-        f => f.startsWith("src/") && !isTestFile(f),
+        f => isSourcePath(f) && !isTestFile(f),
     );
 
     // Permissive: any non-test file (src + docs + config).
