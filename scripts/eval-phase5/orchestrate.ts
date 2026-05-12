@@ -40,39 +40,34 @@ import * as os from "node:os";
 import * as path from "node:path";
 import * as readline from "node:readline";
 import { createReadStream } from "node:fs";
+import { fork } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { loadPolyBenchVerified, DEFAULT_CSV_PATH } from "./polybench-loader.js";
 import { computeGroundTruth } from "./ground-truth.js";
-import { cloneTaskRepo } from "./repo-cloner.js";
-import type { PolyBenchTask, GroundTruth } from "./types.js";
-import type { RetrievalResult, RetrieverName } from "./types-runners.js";
-import { runVoyage } from "./runners/voyage-runner.js";
-import { runFastGrep } from "./runners/fast-grep-runner.js";
-import { runRipgrep } from "./runners/ripgrep-runner.js";
-import { runBM25 } from "./runners/bm25-runner.js";
-import { runAider } from "./runners/aider-runner.js";
-import { runNREKI } from "./runners/nreki-runner.js";
 import {
-    computeFirstHitRecall,
-    computeStrictChunkContainment,
+    executeTaskBody,
+    ALL_REPORT_RUNNERS,
+    type ReportRunnerName,
+    type PerTaskResult,
+    type PerRunnerMetrics,
+    type TaskBodyInput,
+    type TaskBodyOutput,
+} from "./task-worker-body.js";
+import {
     percentile,
     mean,
 } from "./metrics.js";
 import { printConsoleSummary, writeJsonReport } from "./report.js";
 
-/** Runner identifier surfaced in reports (extends RetrieverName with NREKI ablation cells). */
-export type ReportRunnerName =
-    | "voyage-3"
-    | "fast_grep"
-    | "ripgrep"
-    | "bm25"
-    | "aider"
-    | "nreki-mbf-off"
-    | "nreki-mbf-on";
-
-export const ALL_REPORT_RUNNERS: ReportRunnerName[] = [
-    "voyage-3", "fast_grep", "ripgrep", "bm25", "aider",
-    "nreki-mbf-off", "nreki-mbf-on",
-];
+// Re-export for backwards compatibility with downstream tooling (report
+// generators, scripts/analyze-suspects-*.ts) that pulled these types
+// from orchestrate.ts before Sprint 4.9.
+export {
+    ALL_REPORT_RUNNERS,
+    type ReportRunnerName,
+    type PerTaskResult,
+    type PerRunnerMetrics,
+};
 
 export interface OrchestrateOptions {
     csvPath?: string;
@@ -109,27 +104,23 @@ export interface OrchestrateOptions {
      * is present.
      */
     resume?: boolean;
-}
-
-export interface PerRunnerMetrics {
-    first_hit_recall: number;
-    strict_chunk_containment: number;
-    token_cost: number;
-    latency_ms: number;
-}
-
-export interface PerTaskResult {
-    instance_id: string;
-    repo: string;
-    base_commit: string;
-    task_category: string;
-    ground_truth: GroundTruth;
-    runners: Record<string, {
-        result: RetrievalResult;
-        metrics: PerRunnerMetrics;
-    }>;
-    /** Task-level error (clone failed etc.) -- runner-level errors live inside `runners`. */
-    error?: string;
+    /**
+     * Phase 5 C.4.B.2 Sprint 4.9.8 (Furia round 29): isolate each task
+     * in a fresh Node child process so the kernel reclaims every page
+     * the task owned on exit (Sprint 4.9 used worker_threads, which
+     * empirically failed for mui -- V8 retains pages from torn-down
+     * isolates in the parent's address space; Sprint 4.9.5 reduction
+     * factor was 0.9x).
+     *
+     * Default: true in production, false under vitest (a forked child
+     * cannot honor vi.mock across process boundaries). Explicit
+     * `false` keeps the in-process loop for debugging.
+     *
+     * The option name is retained verbatim for backwards compatibility
+     * with downstream tooling -- semantically it now toggles the
+     * child_process transport rather than worker_threads.
+     */
+    useWorker?: boolean;
 }
 
 export interface PerRunnerAggregate {
@@ -260,79 +251,99 @@ export function appendTaskResultJsonl(jsonlPath: string, result: PerTaskResult):
     appendFileSync(jsonlPath, JSON.stringify(result) + "\n", { encoding: "utf-8" });
 }
 
-function emptyMetrics(): PerRunnerMetrics {
-    return { first_hit_recall: 0, strict_chunk_containment: 0, token_cost: 0, latency_ms: 0 };
-}
+/**
+ * Phase 5 C.4.B.2 Sprint 4.9.8 (Furia round 29): spawn an isolated
+ * Node child process that imports the runner code, executes the task
+ * body, posts the result over IPC, and exits. The kernel reclaims all
+ * pages the child owned on exit, so the parent's RSS stays flat
+ * regardless of how memory-hungry an individual task was.
+ *
+ * Sprint 4.9 used `worker_threads` which empirically failed to
+ * isolate mui tasks (V8 page allocator retains pages from torn-down
+ * isolates inside the parent's address space; Sprint 4.9.5 measured
+ * a 0.9x reduction -- effectively zero). child_process restores true
+ * OS-level isolation at the cost of ~50-200 ms startup per task.
+ *
+ * Resolves with the TaskBodyOutput observed on the parent. Never
+ * rejects -- child startup failures / unexpected exits are funneled
+ * into a synthetic TaskBodyOutput with a task-level error so the
+ * orchestrator's outer loop can keep going (single bad task does not
+ * abort the run).
+ */
+function runTaskInChild(input: TaskBodyInput): Promise<TaskBodyOutput> {
+    return new Promise(resolve => {
+        // Bootstrap is a .mjs shim that registers tsx/esm in the
+        // child, then dynamic-imports the .ts task-worker entry. The
+        // task-worker waits for an IPC message on process.on("message"),
+        // executes it, posts the result, and exits.
+        const bootstrapPath = fileURLToPath(
+            new URL("./task-worker-bootstrap.mjs", import.meta.url),
+        );
+        const child = fork(bootstrapPath, [], {
+            // stdio: ipc channel + inherit stdout/stderr so per-runner
+            // progress lines surface in the orchestrator console.
+            stdio: ["ignore", "inherit", "inherit", "ipc"],
+            // Inherit env (RG_BINARY / AIDER_BINARY seeded by the
+            // orchestrator pre-flight) without exposing the parent's
+            // arg array to the child.
+            env: process.env,
+        });
 
-function computeMetrics(
-    result: RetrievalResult,
-    task: PolyBenchTask,
-    ground_truth: GroundTruth,
-    topK: number,
-): PerRunnerMetrics {
-    if (result.error) return emptyMetrics();
-    return {
-        first_hit_recall: computeFirstHitRecall(
-            result.retrieved_files,
-            ground_truth.strict_src,
-            topK,
-        ),
-        strict_chunk_containment: computeStrictChunkContainment(
-            result.retrieved_chunks,
-            task.modified_nodes,
-        ),
-        token_cost: result.token_cost.total_tokens,
-        latency_ms: result.latency_ms,
-    };
+        let captured: TaskBodyOutput | undefined;
+        let childError: Error | undefined;
+
+        child.once("message", (msg: unknown) => {
+            captured = msg as TaskBodyOutput;
+        });
+        child.once("error", (err: Error) => {
+            childError = err;
+        });
+        child.once("exit", (code: number | null, signal: NodeJS.Signals | null) => {
+            if (captured) {
+                resolve(captured);
+                return;
+            }
+            const reason = childError
+                ? `child error: ${childError.message}`
+                : signal
+                    ? `child killed by signal ${signal}`
+                    : `child exited code=${code} without posting a message`;
+            resolve({
+                result: {
+                    instance_id: input.task.instance_id,
+                    repo: input.task.repo,
+                    base_commit: input.task.base_commit,
+                    task_category: input.task.task_category,
+                    ground_truth: computeGroundTruth(input.task),
+                    runners: {},
+                    error: reason,
+                },
+                taskDir: null,
+            });
+        });
+
+        // Send the task input over IPC after listeners are wired so
+        // a fast child cannot post-message before we are listening.
+        child.send({ input }, (sendErr: Error | null) => {
+            if (sendErr) childError = sendErr;
+        });
+    });
 }
 
 /**
- * Per-task runner dispatch table. Each entry returns a Promise of a
- * RetrievalResult tagged with its ReportRunnerName. The orchestrator
- * awaits these sequentially with per-runner try/catch so a single
- * failure cannot abort the task (D2 firmed).
- *
- * Aider and Voyage have skip-conditions evaluated in the caller.
+ * Dispatch a single task. In worker mode the WASM-heavy runner code
+ * runs inside a fresh child Node process (Sprint 4.9.8); the kernel
+ * disposes all pages on exit. Inline mode reuses the parent's module
+ * graph -- used by vitest so vi.mock interception works across runner
+ * invocations. (The option name `useWorker` is preserved for backward
+ * compatibility with downstream tooling; semantically it now toggles
+ * the child_process transport.)
  */
-async function invokeRunner(
-    name: ReportRunnerName,
-    task: PolyBenchTask,
-    repoRoot: string,
-    topK: number,
-    voyageKey: string | undefined,
-): Promise<RetrievalResult> {
-    switch (name) {
-        case "voyage-3":
-            if (!voyageKey) {
-                return {
-                    instance_id: task.instance_id,
-                    retriever: "voyage-3",
-                    retrieved_files: [], retrieved_chunks: [],
-                    latency_ms: 0,
-                    token_cost: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
-                    error: "VOYAGE_API_KEY missing in env",
-                };
-            }
-            return runVoyage(task, repoRoot, topK, voyageKey);
-        case "fast_grep":
-            return runFastGrep(task, repoRoot, topK);
-        case "ripgrep":
-            return runRipgrep(task, repoRoot, topK);
-        case "bm25":
-            return runBM25(task, repoRoot, topK);
-        case "aider":
-            return runAider(task, repoRoot, topK);
-        case "nreki-mbf-off":
-            return runNREKI(task, repoRoot, topK, { enableMarkovBlanket: false });
-        case "nreki-mbf-on":
-            return runNREKI(task, repoRoot, topK, { enableMarkovBlanket: true });
-    }
-}
-
-/** Map a ReportRunnerName back to the canonical RetrieverName for the result. */
-function canonicalRetrieverName(name: ReportRunnerName): RetrieverName {
-    if (name === "nreki-mbf-off" || name === "nreki-mbf-on") return "nreki";
-    return name as RetrieverName;
+async function runTask(
+    input: TaskBodyInput,
+    useWorker: boolean,
+): Promise<TaskBodyOutput> {
+    return useWorker ? runTaskInChild(input) : executeTaskBody(input);
 }
 
 export async function orchestrate(options: OrchestrateOptions): Promise<AggregateReport> {
@@ -397,6 +408,10 @@ export async function orchestrate(options: OrchestrateOptions): Promise<Aggregat
     const tasks = filteredTasks.filter(t => !completedIds.has(t.instance_id));
 
     const voyageKey = process.env.VOYAGE_API_KEY || "";
+    // Sprint 4.9: workers are the production default. Vitest cannot
+    // honor vi.mock across thread boundaries, so suppress workers when
+    // the test runner is active. Explicit options.useWorker overrides.
+    const useWorker = options.useWorker ?? !process.env.VITEST;
 
     for (let i = 0; i < tasks.length; i++) {
         const task = tasks[i];
@@ -404,68 +419,23 @@ export async function orchestrate(options: OrchestrateOptions): Promise<Aggregat
             `\n[${i + 1}/${tasks.length}] ${task.instance_id} (${task.repo})\n`,
         );
 
-        let taskDir = "";
-        try {
-            taskDir = await cloneTaskRepo(task, options.workspaceRoot);
-        } catch (e) {
-            const cloneFailResult: PerTaskResult = {
-                instance_id: task.instance_id,
-                repo: task.repo,
-                base_commit: task.base_commit,
-                task_category: task.task_category,
-                ground_truth: computeGroundTruth(task),
-                runners: {},
-                error: `clone failed: ${(e as Error).message}`,
-            };
-            perTask.push(cloneFailResult);
-            if (jsonlPath) appendTaskResultJsonl(jsonlPath, cloneFailResult);
-            if (taskDelayMs > 0) await sleep(taskDelayMs);
-            continue;
-        }
-
-        const ground_truth = computeGroundTruth(task);
-        const taskResult: PerTaskResult = {
-            instance_id: task.instance_id,
-            repo: task.repo,
-            base_commit: task.base_commit,
-            task_category: task.task_category,
-            ground_truth,
-            runners: {},
-        };
-
-        for (const name of runnersList) {
-            const cellStart = Date.now();
-            process.stdout.write(`  - ${name} ... `);
-            let result: RetrievalResult;
-            try {
-                result = await invokeRunner(name, task, taskDir, topK, voyageKey);
-            } catch (e) {
-                // Runner did not catch internally -- isolate it here so the
-                // task can continue with remaining runners (D2 firmed).
-                result = {
-                    instance_id: task.instance_id,
-                    retriever: canonicalRetrieverName(name),
-                    retrieved_files: [], retrieved_chunks: [],
-                    latency_ms: Date.now() - cellStart,
-                    token_cost: { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
-                    error: `uncaught: ${(e as Error).message}`,
-                };
-            }
-            const metrics = computeMetrics(result, task, ground_truth, topK);
-            taskResult.runners[name] = { result, metrics };
-            if (result.error) {
-                process.stdout.write(`ERROR (${result.error.slice(0, 60)})\n`);
-            } else {
-                process.stdout.write(
-                    `recall=${metrics.first_hit_recall} chunk=${metrics.strict_chunk_containment.toFixed(2)} tok=${metrics.token_cost} lat=${metrics.latency_ms}ms\n`,
-                );
-            }
-        }
+        const { result: taskResult, taskDir } = await runTask(
+            {
+                task,
+                workspaceRoot: options.workspaceRoot,
+                topK,
+                voyageKey,
+                runnersList,
+            },
+            useWorker,
+        );
 
         perTask.push(taskResult);
         if (jsonlPath) appendTaskResultJsonl(jsonlPath, taskResult);
 
-        if (cleanupClones) {
+        // Cleanup runs on the main thread after the worker has exited
+        // so we never race the worker's own filesystem handles.
+        if (cleanupClones && taskDir) {
             try {
                 await fs.rm(taskDir, { recursive: true, force: true });
             } catch {
@@ -543,8 +513,9 @@ function parseArgv(argv: string[]): OrchestrateOptions {
             case "--min-disk-gb": opts.minDiskGB = parseFloat(next()); break;
             case "--output-jsonl": opts.outputJsonlPath = next(); break;
             case "--no-resume": opts.resume = false; break;
+            case "--no-worker": opts.useWorker = false; break;
             case "--help":
-                console.log(`Usage: orchestrate.ts [--dry-run] [--task-ids id1,id2] [--top-k 10] [--workspace dir] [--output file] [--output-jsonl file] [--no-resume] [--csv path] [--task-delay-ms 0] [--no-cleanup] [--min-disk-gb 5]`);
+                console.log(`Usage: orchestrate.ts [--dry-run] [--task-ids id1,id2] [--top-k 10] [--workspace dir] [--output file] [--output-jsonl file] [--no-resume] [--no-worker] [--csv path] [--task-delay-ms 0] [--no-cleanup] [--min-disk-gb 5]`);
                 process.exit(0);
         }
     }
