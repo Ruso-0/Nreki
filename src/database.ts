@@ -100,6 +100,42 @@ export class NrekiDB {
     private usageStmt: SqlJsStatement | null = null;
     private fastGrepCacheInvalidationHook: ((filePath?: string) => void) | null = null;
 
+    /**
+     * Phase 5 Sprint 4.8 (Furia round 26+ post-INV-6):
+     *
+     * Hot-path cached prepared statements. The previous `db.run(...)` /
+     * `db.exec(...)` shorthands in insertChunk / upsertFile / clearChunks
+     * each trigger one sqlite3_prepare_v2 + sqlite3_finalize cycle.
+     * sql.js leaks a uint16 schema-ref counter per cycle in our access
+     * pattern, overflowing the SQLite cap of 65535 after ~6 engine
+     * lifetimes on vscode-scale workspaces ("too many references to
+     * \"idx_chunks_symbol_name\": max 65535" → "memory access out of
+     * bounds" WASM trap).
+     *
+     * Caching these statements once per Database instance and re-binding
+     * across thousands of inserts collapses the cycle count from
+     * ~50 000/engine for insertChunk alone down to 1, plus a single
+     * cycle each for upsertFile / clearChunks DELETEs — well below cap.
+     *
+     * NOTE -- intentionally NOT cached: SELECT statements that alternate
+     * between "row present" and "row absent" between calls (the
+     * fileNeedsUpdate path + the clearChunks initial SELECT). Bisect on
+     * engine-watcher.test.ts showed a sql.js cursor-staleness pattern
+     * when those are cached: the watcher's bootstrap-then-re-index
+     * flow reads a stale "no rows" result on the second invocation
+     * even after reset()+bind(). The cost (~5K prepare/finalize/file)
+     * is dominated by chunk-INSERT cycles anyway.
+     *
+     * All cached handles are freed in close() so the WASM-side struct
+     * is released alongside the Database.
+     */
+    private insertChunkStmt: SqlJsStatement | null = null;
+    private lastInsertRowidStmt: SqlJsStatement | null = null;
+    private upsertFileStmt: SqlJsStatement | null = null;
+    private clearChunksDeleteSymbolIoStmt: SqlJsStatement | null = null;
+    private clearChunksDeleteChunksStmt: SqlJsStatement | null = null;
+    private clearChunksDeleteFilesStmt: SqlJsStatement | null = null;
+
     constructor(dbPath: string = ".nreki.db") {
         this.dbPath = dbPath;
     }
@@ -390,10 +426,21 @@ export class NrekiDB {
     /** Persist database and vector index to disk. */
     save(): void {
         if (!this.db) return;
-        // Save SQLite database — atomic via temp+rename.
-        // writeFileSync overwrites in-place and is NOT atomic.
-        // OOM/crash mid-write truncates the file to 0 bytes.
-        // rename() is atomic on POSIX (single inode pointer swap).
+        // Phase 5 Sprint 4.8 (Furia round 26+): sql.js's Database.export()
+        // calls sqlite3_finalize on every active prepared statement as a
+        // side effect. Any cached Statement handle we still hold becomes
+        // "Statement closed"; the next .step() throws and silently aborts
+        // the surrounding watcher re-index path (engine-watcher.test.ts
+        // bisect proved this is the only failure mode of the cached
+        // statement refactor).
+        //
+        // Cheapest correct fix: free + null all of our long-lived
+        // statements before export so the lazy "if (!this.X) prepare"
+        // guards re-arm them on next use. The save itself runs at most
+        // once per debounce window (~1 s of inactivity), so the few
+        // prepare/finalize cycles this introduces are negligible vs the
+        // ~50 000/engine that the caching avoided.
+        this.releaseCachedStatements();
         const data = this.db.export();
         const buffer = Buffer.from(data);
         const dir = path.dirname(this.dbPath);
@@ -407,9 +454,32 @@ export class NrekiDB {
         fs.renameSync(tmpDb, this.dbPath);
     }
 
+    /**
+     * Free and null every cached prepared statement. Safe to call
+     * multiple times. Used by save() (before export, which would
+     * invalidate them anyway) and by close() (before db.close()).
+     */
+    private releaseCachedStatements(): void {
+        const freeIfSet = (s: SqlJsStatement | null): null => {
+            if (s) { try { s.free(); } catch { /* best-effort on corrupt handle */ } }
+            return null;
+        };
+        this.fastGrepStmt                  = freeIfSet(this.fastGrepStmt);
+        this.usageStmt                     = freeIfSet(this.usageStmt);
+        this.insertChunkStmt               = freeIfSet(this.insertChunkStmt);
+        this.lastInsertRowidStmt           = freeIfSet(this.lastInsertRowidStmt);
+        this.upsertFileStmt                = freeIfSet(this.upsertFileStmt);
+        this.clearChunksDeleteSymbolIoStmt = freeIfSet(this.clearChunksDeleteSymbolIoStmt);
+        this.clearChunksDeleteChunksStmt   = freeIfSet(this.clearChunksDeleteChunksStmt);
+        this.clearChunksDeleteFilesStmt    = freeIfSet(this.clearChunksDeleteFilesStmt);
+    }
+
     // ─── File Operations ─────────────────────────────────────────
 
     fileNeedsUpdate(filePath: string, content: string): boolean {
+        // SELECT intentionally NOT cached (see clearChunks comment for
+        // the staleness pattern observed under cached SELECTs in the
+        // watcher bootstrap-then-re-index flow).
         const newHash = crypto.createHash("sha256").update(content).digest("hex");
         const stmt = this.db.prepare("SELECT hash FROM files WHERE path = ?");
         try {
@@ -429,10 +499,15 @@ export class NrekiDB {
     }
 
     upsertFile(filePath: string, hash: string): void {
-        this.db.run(
-            "INSERT OR REPLACE INTO files (path, hash, indexed_at) VALUES (?, ?, datetime('now'))",
-            [filePath, hash]
-        );
+        if (!this.upsertFileStmt) {
+            this.upsertFileStmt = this.db.prepare(
+                "INSERT OR REPLACE INTO files (path, hash, indexed_at) VALUES (?, ?, datetime('now'))",
+            );
+        }
+        const stmt = this.upsertFileStmt;
+        stmt.reset();
+        stmt.bind([filePath, hash]);
+        stmt.step();
         this._hasIndexedFiles = true;
     }
 
@@ -442,6 +517,13 @@ export class NrekiDB {
             this.fastGrepStmt = null;
         }
 
+        // SELECT statement intentionally NOT cached: the bisect on
+        // engine-watcher.test.ts showed that caching a SELECT that
+        // alternates between "row present" and "row absent" between
+        // calls exposes a sql.js cursor staleness pattern in the
+        // watcher's bootstrap-then-re-index flow. Cost: one
+        // prepare/finalize cycle per dirty file -- dominated by the
+        // ~5 INSERT cycles per chunk per file anyway.
         const stmt = this.db.prepare("SELECT id FROM chunks WHERE path = ?");
         const ids: number[] = [];
         try {
@@ -457,15 +539,39 @@ export class NrekiDB {
         if (ids.length > 0) {
             this.kwIndex.deleteBulk(ids);
             if (this.rawIdentsLoaded) this.rawIdentsByFile.delete(filePath);
-            this.db.run(
-                "DELETE FROM symbol_io WHERE chunk_id IN (SELECT id FROM chunks WHERE path = ?)",
-                [filePath]
-            );
-            this.db.run("DELETE FROM chunks WHERE path = ?", [filePath]);
+
+            // DELETE statements safe to cache -- no result-set staleness.
+            if (!this.clearChunksDeleteSymbolIoStmt) {
+                this.clearChunksDeleteSymbolIoStmt = this.db.prepare(
+                    "DELETE FROM symbol_io WHERE chunk_id IN (SELECT id FROM chunks WHERE path = ?)",
+                );
+            }
+            const delSymbol = this.clearChunksDeleteSymbolIoStmt;
+            delSymbol.reset();
+            delSymbol.bind([filePath]);
+            delSymbol.step();
+
+            if (!this.clearChunksDeleteChunksStmt) {
+                this.clearChunksDeleteChunksStmt = this.db.prepare(
+                    "DELETE FROM chunks WHERE path = ?",
+                );
+            }
+            const delChunks = this.clearChunksDeleteChunksStmt;
+            delChunks.reset();
+            delChunks.bind([filePath]);
+            delChunks.step();
         }
         // PATCH-6: Also remove from files table so fileNeedsUpdate() doesn't
         // skip re-indexing when the file is recreated with the same content.
-        this.db.run("DELETE FROM files WHERE path = ?", [filePath]);
+        if (!this.clearChunksDeleteFilesStmt) {
+            this.clearChunksDeleteFilesStmt = this.db.prepare(
+                "DELETE FROM files WHERE path = ?",
+            );
+        }
+        const delFiles = this.clearChunksDeleteFilesStmt;
+        delFiles.reset();
+        delFiles.bind([filePath]);
+        delFiles.step();
         this._hasIndexedFiles = false;
         this.fastGrepCacheInvalidationHook?.(filePath);
     }
@@ -483,14 +589,26 @@ export class NrekiDB {
         endIndex: number = 0,
         symbolName: string = "",
     ): number {
-        this.db.run(
-            `INSERT INTO chunks (path, shorthand, raw_code, node_type, start_line, end_line, start_index, end_index, symbol_name)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [filePath, shorthand, rawCode, nodeType, startLine, endLine, startIndex, endIndex, symbolName]
-        );
+        if (!this.insertChunkStmt) {
+            this.insertChunkStmt = this.db.prepare(
+                `INSERT INTO chunks (path, shorthand, raw_code, node_type, start_line, end_line, start_index, end_index, symbol_name)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            );
+        }
+        const insStmt = this.insertChunkStmt;
+        insStmt.reset();
+        insStmt.bind([filePath, shorthand, rawCode, nodeType, startLine, endLine, startIndex, endIndex, symbolName]);
+        insStmt.step();
 
-        const rowid = (this.db.exec("SELECT last_insert_rowid() AS id")[0]
-            .values[0][0] as number);
+        if (!this.lastInsertRowidStmt) {
+            this.lastInsertRowidStmt = this.db.prepare(
+                "SELECT last_insert_rowid() AS id",
+            );
+        }
+        const ridStmt = this.lastInsertRowidStmt;
+        ridStmt.reset();
+        ridStmt.step();
+        const rowid = (ridStmt.getAsObject() as { id: number }).id;
 
         this.kwIndex.insert(rowid, shorthand);
         this.addRawIdents(filePath, rawCode);
@@ -1157,15 +1275,11 @@ export class NrekiDB {
 
     close(): void {
         if (!this.db) return;
-        if (this.fastGrepStmt) {
-            this.fastGrepStmt.free();
-            this.fastGrepStmt = null;
-        }
-        if (this.usageStmt) {
-            this.usageStmt.free();
-            this.usageStmt = null;
-        }
+        // save() releases cached statements internally before export.
+        // We keep an explicit second release after save() in case future
+        // operations between save() and db.close() re-prepare anything.
         this.save();
+        this.releaseCachedStatements();
         this.db.close();
     }
 }
