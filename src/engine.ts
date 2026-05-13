@@ -712,6 +712,17 @@ export class NrekiEngine {
             this.saveTimeout = null;
         }
         this.stopWatcher();
+        // Phase 5 Sprint 4.7 (Furia round 26): release Tree-sitter
+        // WASM resources BEFORE db.close. The parser's `Query` objects
+        // hold internal uint16 refcounts that overflow under cumulative
+        // parses across many engine instances; explicit .delete() over
+        // the WASM FFI is required because the JS GC cannot reclaim
+        // WASM-side allocations.
+        try {
+            this.parser.shutdown();
+        } catch (err) {
+            logger.warn(`Parser shutdown failed: ${(err as Error).message}`);
+        }
         this.db.close();
     }
 }

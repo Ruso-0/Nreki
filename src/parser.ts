@@ -608,6 +608,55 @@ export class ASTParser {
         return `[${nodeType}] ${signature} { /* TG:L${startLine}-L${endLine} */ }`;
     }
 
+    /**
+     * Release Tree-sitter WASM resources held by this parser.
+     *
+     * Phase 5 Sprint 4.7 (Furia round 26): Tree-sitter `Query` and
+     * `Parser` objects live in the web-tree-sitter WASM linear memory.
+     * Their internal subtree refcounts are uint16-bounded (max 65535),
+     * and the JS GC cannot reclaim WASM-side allocations -- they
+     * require explicit `.delete()` calls across the FFI boundary.
+     *
+     * Without this teardown, cumulative parses across many engines
+     * (e.g. Phase 5 orchestrator running NREKI + fast_grep + NREKI-MBF
+     * per task * 100 tasks) saturate the refcount, causing a WASM heap
+     * trap that surfaces in JS as "memory access out of bounds".
+     *
+     * Safe to call multiple times; subsequent calls are no-ops once
+     * the caches are cleared and the parser reference released.
+     *
+     * Engine.shutdown() must invoke this BEFORE db.close() so the
+     * indexer cannot accidentally access a deleted parser during a
+     * trailing flush.
+     */
+    shutdown(): void {
+        for (const [ext, query] of this.queryCache.entries()) {
+            try {
+                query.delete();
+            } catch (err) {
+                logger.warn(`Failed to delete Query for ${ext}: ${(err as Error).message}`);
+            }
+        }
+        this.queryCache.clear();
+
+        // Note: Parser.Language has no .delete() in the web-tree-sitter
+        // API -- grammars are statically allocated for the process
+        // lifetime and reused across Parser instances. We only clear
+        // the JS-side Map so the references can be GC'd; the WASM-side
+        // grammar memory stays resident (intentional, bounded).
+        this.languageCache.clear();
+
+        if (this.initialized) {
+            try {
+                this.parser.delete();
+            } catch (err) {
+                logger.warn(`Failed to delete Parser: ${(err as Error).message}`);
+            }
+            this.initialized = false;
+            this.initGate = null;
+        }
+    }
+
     /** Normalize Tree-sitter capture names to clean node types. */
     private normalizeNodeType(captureName: string): string {
         const typeMap: Record<string, string> = {
