@@ -344,19 +344,23 @@ Hybrid RRF achieves accuracy gains at 1.98x the token cost of NREKI standalone. 
 ### 6.4 Cross-Language Generalization Constraint
 
 NREKI's parser layer supports multiple programming languages through
-tree-sitter grammar configuration. In the v11.0.x checked workspace,
+tree-sitter grammar configuration. In the v11.0.1 checked workspace,
 `src/parser.ts` and `wasm/` verify active parsing support for
 TypeScript/TSX, JavaScript/JSX (including .mjs/.cjs/.mts/.cts),
-Python, Go, CSS, JSON, HTML, Kotlin (.kt/.kts), Java, and C++
-(.cpp/.cc/.cxx/.hpp/.hh/.hxx) — ten distinct languages spanning
-the JVM ecosystem (Kotlin, Java), native cross-platform (C++),
-web (TypeScript/JSX, JavaScript, CSS, HTML, JSON), and systems /
-scientific (Python, Go) families.
+Python, Go, CSS, JSON, HTML, Kotlin (.kt/.kts), Java, C++
+(.cpp/.cc/.cxx/.hpp/.hh/.hxx), C (.c), and headers (.h) — twelve
+distinct active grammar bindings spanning the JVM ecosystem (Kotlin,
+Java), native cross-platform (C++, C), web (TypeScript/JSX,
+JavaScript, CSS, HTML, JSON), and systems / scientific (Python, Go)
+families. Header files (.h) route dynamically to C or C++ grammar
+at parse time based on C++ marker detection (template, namespace,
+class, `#ifdef __cplusplus`, scope-resolution `::`, access specifiers,
+`extern "C"`).
 
 The Phase 5 empirical evaluation uses the PolyBench-Verified
 TypeScript subset exclusively (N=99 evaluable tasks). All
-quantitative claims herein apply only to TypeScript retrieval
-performance.
+quantitative retrieval claims herein apply only to TypeScript
+retrieval performance.
 
 Three distinct capabilities are gated differently and must not
 be conflated:
@@ -365,7 +369,7 @@ be conflated:
    language-agnostic by construction and operate uniformly across
    all parser-active languages once their WASM grammar is loaded.
    Symbolic chunks, signature shorthands, and parser-level syntactic
-   validation are available for the full ten-language set.
+   validation are available for the full twelve-binding set.
 
 2. **The Type Ledger architectural component is TypeScript-specific
    by design.** It relies on TypeScript compiler-derived type
@@ -380,9 +384,38 @@ be conflated:
 
 3. **Cross-file import detection** is currently implemented for
    TypeScript / JavaScript, Python, and Go only. Kotlin / Java /
-   C++ files participate in the retrieval index but their cross-file
-   dependency edges are intra-file only in v11.0.x; cross-file
-   import resolution is tracked as a follow-up sprint.
+   C++ / C files participate in the retrieval index but their
+   cross-file dependency edges are intra-file only in v11.0.x;
+   cross-file import resolution is tracked as a follow-up sprint.
+
+**Indicative compression measurements (v11.0.1, May 2026).** To
+characterize per-file shorthand compression behavior of the
+activated grammars on representative production code, we measured
+six open-source corpora using
+`scripts/measure-cross-language-savings.mjs` (Node 24, ASTParser
+from `dist/parser.js`, ~4-char-per-token proxy). Measurement scope
+is the **local foveal shorthand** only; the cross-file Type Ledger
+pruning that contributes to TypeScript retrieval gains is **not**
+measured here and remains TypeScript-only by design.
+
+| Language | Corpus | n_files | Aggregate | p50 | p95 |
+|---|---|---:|---:|---:|---:|
+| Java | spring-boot | 748 | 81.3% | 83.8% | 94.7% |
+| Kotlin (I/O) | Square Okio | 306 | 80.8% | 85.0% | 100% |
+| Kotlin (Android) | nowinandroid `app/` | 16 | 89.4% | 88.7% | 98.3% |
+| C++ (.cc) | abseil-cpp `absl/strings` | 103 | 89.9% | 90.2% | 96.5% |
+| C (.c) | redis `src/` | 133 | 92.4% | 92.3% | 97.8% |
+| Header (.h, C++-routed) | abseil-cpp `absl/strings` | 66 | 88.7% | 92.1% | 98.2% |
+
+These corpora are well-maintained, well-factored reference projects;
+results may not generalize to all production codebases. Each row
+exposes the full distribution (aggregate, p50, p95) rather than a
+single point estimate so that the long tail of low-savings files
+(large auto-generated headers, dense data tables) is visible. The
+numbers above characterize foveal compression only and do not
+constitute a retrieval-effectiveness claim. Raw per-file results
+and methodology are archived at
+`docs/paper-phase5/corpus-measurements-v11.0.1.json`.
 
 This work claims demonstrated effectiveness on TypeScript code
 retrieval at PolyBench-Verified production scale. Generalization
