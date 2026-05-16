@@ -50,6 +50,8 @@ const DEFAULT_EXTENSIONS = [
     ".kt", ".kts",
     ".java",
     ".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx",
+    // v11.0.1: C activation + header routing
+    ".c", ".h",
 ];
 
 const DEFAULT_IGNORE = [

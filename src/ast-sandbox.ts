@@ -52,6 +52,7 @@ const LANGUAGE_MAP: Record<string, string> = {
     kotlin: "tree-sitter-kotlin.wasm",
     java: "tree-sitter-java.wasm",
     cpp: "tree-sitter-cpp.wasm",
+    c: "tree-sitter-c.wasm",
 };
 
 /** Map file extensions to language names. */
@@ -78,6 +79,8 @@ const EXT_TO_LANGUAGE: Record<string, string> = {
     ".hpp": "cpp",
     ".hh": "cpp",
     ".hxx": "cpp",
+    ".c": "c",
+    ".h": "c",
 };
 
 // ─── AstSandbox ──────────────────────────────────────────────────────

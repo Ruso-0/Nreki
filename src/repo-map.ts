@@ -75,6 +75,7 @@ const SUPPORTED_EXTENSIONS = new Set([
     ".kt", ".kts",
     ".java",
     ".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx",
+    ".c", ".h",
 ]);
 
 const IGNORE_DIRS = new Set([

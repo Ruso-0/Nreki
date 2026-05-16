@@ -200,7 +200,8 @@ export class CognitiveEnforcer {
                 ".css", ".json", ".html",
                 ".kt", ".kts",
                 ".java",
-                ".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx"
+                ".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx",
+                ".c", ".h"
             ]);
 
             if (!SUPPORTED_AST.has(ext)) {

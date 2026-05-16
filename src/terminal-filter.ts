@@ -168,11 +168,11 @@ export function filterNodeModules(lines: string[]): string[] {
 
 // Common error patterns
 const TS_ERROR_RE = /error TS(\d+):\s*(.+)/;
-const JEST_FAIL_RE = /(?:FAIL|✕|×|✗)\s+([\w/.-]+\.(?:ts|tsx|js|jsx|py|go|mjs|cjs|mts|cts|kt|kts|java|cpp|cc|cxx|hpp|hh|hxx))/;
-const VITEST_FAIL_RE = /(?:FAIL|×)\s+([\w/.-]+\.(?:ts|tsx|js|jsx|py|go|mjs|cjs|mts|cts|kt|kts|java|cpp|cc|cxx|hpp|hh|hxx))/;
+const JEST_FAIL_RE = /(?:FAIL|✕|×|✗)\s+([\w/.-]+\.(?:ts|tsx|js|jsx|py|go|mjs|cjs|mts|cts|kt|kts|java|cpp|cc|cxx|hpp|hh|hxx|c|h))/;
+const VITEST_FAIL_RE = /(?:FAIL|×)\s+([\w/.-]+\.(?:ts|tsx|js|jsx|py|go|mjs|cjs|mts|cts|kt|kts|java|cpp|cc|cxx|hpp|hh|hxx|c|h))/;
 const NODE_ERROR_RE = /^(\w*Error):\s*(.+)/;
 const NPM_ERR_RE = /^npm (?:ERR!|error)\s*(.+)/i;
-const FILE_PATH_RE = /(?:^|\s)([\w/.-]+\.(?:ts|tsx|js|jsx|py|go|mjs|cjs|mts|cts|kt|kts|java|cpp|cc|cxx|hpp|hh|hxx))\b/g;
+const FILE_PATH_RE = /(?:^|\s)([\w/.-]+\.(?:ts|tsx|js|jsx|py|go|mjs|cjs|mts|cts|kt|kts|java|cpp|cc|cxx|hpp|hh|hxx|c|h))\b/g;
 
 export function extractErrorSummary(text: string): ErrorSummary {
     const lines = text.split("\n");
