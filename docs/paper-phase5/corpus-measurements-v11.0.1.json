@@ -1,0 +1,114 @@
+{
+  "version": "11.0.2",
+  "measuredOn": "2026-05-16",
+  "methodology": {
+    "scope": "LOCAL foveal shorthand compression only; cross-file Type Ledger pruning NOT measured (TS-only).",
+    "tokenProxy": "code.length / 4 — GPT tokenizer rule of thumb. tiktoken swap available for paper-grade.",
+    "runtime": "Node v24.12.0 on Windows 11; ASTParser from dist/parser.js (NREKI v11.0.1).",
+    "biasDisclosure": "Corpora are well-maintained OSS reference repos; results may not generalize to all production codebases. Each row reports n_files, aggregate %, p50, p95 to expose distribution."
+  },
+  "corpora": {
+    "java": {
+      "source": "spring-boot (commit: shallow clone @ master)",
+      "path": "D:/tmp/spring-boot",
+      "url": "https://github.com/spring-projects/spring-boot.git",
+      "extensionsIncluded": [
+        ".java"
+      ],
+      "n_files": 748,
+      "aggregateSavingPercent": 81.3,
+      "aggregateRawTokensApprox": 731423,
+      "aggregateCompressedTokensApprox": 137012,
+      "totalChunks": 5920,
+      "p50SavingPercent": 83.8,
+      "p95SavingPercent": 94.7,
+      "minSavingPercent": 35.3,
+      "maxSavingPercent": 100
+    },
+    "kotlin_io": {
+      "source": "okio (commit: shallow clone)",
+      "path": "D:/tmp/okio",
+      "url": "https://github.com/square/okio.git",
+      "extensionsIncluded": [
+        ".kt"
+      ],
+      "n_files": 306,
+      "aggregateSavingPercent": 80.8,
+      "aggregateRawTokensApprox": 415286,
+      "aggregateCompressedTokensApprox": 79810,
+      "totalChunks": 4241,
+      "p50SavingPercent": 85,
+      "p95SavingPercent": 100,
+      "minSavingPercent": 16.9,
+      "maxSavingPercent": 100
+    },
+    "kotlin_android": {
+      "source": "now-in-android (commit: shallow clone @ main) — app/ subtree",
+      "path": "D:/tmp/nowinandroid/app",
+      "url": "https://github.com/android/nowinandroid.git",
+      "extensionsIncluded": [
+        ".kt"
+      ],
+      "n_files": 16,
+      "aggregateSavingPercent": 89.4,
+      "aggregateRawTokensApprox": 23597,
+      "aggregateCompressedTokensApprox": 2496,
+      "totalChunks": 88,
+      "p50SavingPercent": 88.7,
+      "p95SavingPercent": 98.3,
+      "minSavingPercent": 80.6,
+      "maxSavingPercent": 98.3
+    },
+    "cpp": {
+      "source": "abseil-cpp absl/strings (commit: shallow clone) — .cc only",
+      "path": "D:/tmp/abseil/absl/strings",
+      "url": "https://github.com/abseil/abseil-cpp.git",
+      "extensionsIncluded": [
+        ".cc"
+      ],
+      "n_files": 103,
+      "aggregateSavingPercent": 89.9,
+      "aggregateRawTokensApprox": 365173,
+      "aggregateCompressedTokensApprox": 36915,
+      "totalChunks": 1799,
+      "p50SavingPercent": 90.2,
+      "p95SavingPercent": 96.5,
+      "minSavingPercent": 66.6,
+      "maxSavingPercent": 98.6
+    },
+    "c": {
+      "source": "redis src/ (commit: shallow clone) — .c only",
+      "path": "D:/tmp/redis/src",
+      "url": "https://github.com/redis/redis.git",
+      "extensionsIncluded": [
+        ".c"
+      ],
+      "n_files": 133,
+      "aggregateSavingPercent": 92.4,
+      "aggregateRawTokensApprox": 1819343,
+      "aggregateCompressedTokensApprox": 137581,
+      "totalChunks": 6728,
+      "p50SavingPercent": 92.3,
+      "p95SavingPercent": 97.8,
+      "minSavingPercent": 68.8,
+      "maxSavingPercent": 100
+    },
+    "h_routing": {
+      "source": "abseil-cpp absl/strings (commit: shallow clone) — .h headers (C++ routing)",
+      "path": "D:/tmp/abseil/absl/strings",
+      "url": "https://github.com/abseil/abseil-cpp.git",
+      "extensionsIncluded": [
+        ".h"
+      ],
+      "n_files": 66,
+      "aggregateSavingPercent": 88.7,
+      "aggregateRawTokensApprox": 168464,
+      "aggregateCompressedTokensApprox": 19024,
+      "totalChunks": 870,
+      "p50SavingPercent": 92.1,
+      "p95SavingPercent": 98.2,
+      "minSavingPercent": 68.6,
+      "maxSavingPercent": 99
+    }
+  }
+}
