@@ -27,6 +27,11 @@ const NEEDED = [
     "tree-sitter-kotlin.wasm",
     "tree-sitter-java.wasm",
     "tree-sitter-cpp.wasm",
+    // v11.0.1: C grammar activated for NDK pure C code + headers.
+    // tree-sitter-c@0.20.7 bundled via tree-sitter-wasms@0.1.13.
+    // Headers .h are routed dynamically at parse time (see parser.ts
+    // header-routing logic) — not statically mapped to either C or C++ grammar.
+    "tree-sitter-c.wasm",
 ];
 
 if (!existsSync(WASM_DIR)) {
