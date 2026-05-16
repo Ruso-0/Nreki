@@ -20,6 +20,13 @@ const NEEDED = [
     "tree-sitter-css.wasm",   // v10.11.1
     "tree-sitter-html.wasm",  // v10.11.1
     "tree-sitter-json.wasm",  // v10.11.1
+    // v11.0.x multi-language activation - bundled in tree-sitter-wasms@0.1.13
+    // Kotlin: Android primary (fwcd/tree-sitter-kotlin@0.3.1)
+    // Java: JVM ecosystem (tree-sitter-java@0.20.2, record_declaration supported)
+    // C++: Android NDK + cross-platform native (tree-sitter-cpp@0.20.4)
+    "tree-sitter-kotlin.wasm",
+    "tree-sitter-java.wasm",
+    "tree-sitter-cpp.wasm",
 ];
 
 if (!existsSync(WASM_DIR)) {
@@ -41,6 +48,8 @@ if (existsSync(WASMS_PKG)) {
             console.log(`  ✓ ${name} copied from tree-sitter-wasms.`);
         } else {
             console.warn(`  ⚠ ${name} not found in tree-sitter-wasms package.`);
+            console.warn(`     File extension(s) for this grammar will silently fall back to "unsupported".`);
+            console.warn(`     If you need this language, upgrade: npm install tree-sitter-wasms@latest`);
         }
     }
 } else {
