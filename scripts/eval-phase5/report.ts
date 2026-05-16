@@ -28,6 +28,23 @@ function fmtMs(n: number): string {
     return Math.round(n).toString() + "ms";
 }
 
+function runnerNames(report: AggregateReport): string[] {
+    return Object.keys(report.per_runner).sort();
+}
+
+function timeoutRate(report: AggregateReport, runner: string): number {
+    let total = 0;
+    let timeouts = 0;
+    for (const task of report.per_task) {
+        const cell = task.runners[runner];
+        if (!cell) continue;
+        total++;
+        const err = cell.result.error ?? "";
+        if (/timeout/i.test(err)) timeouts++;
+    }
+    return total > 0 ? timeouts / total : 0;
+}
+
 /**
  * Print the AggregateReport as a per-runner console table plus a
  * brief task-completion footer. Goes to stdout via console.log.
@@ -41,17 +58,37 @@ export function printConsoleSummary(report: AggregateReport): void {
     console.log("======================================================================");
     console.log("");
 
+    console.log("Information Retrieval (Aider excluded; p50 is headline)");
     const header =
-        `${pad("Runner", 16)} | ${pad("recall_mean", 12, false)} | ${pad("chunk_mean", 11, false)} | ${pad("tok_mean", 9, false)} | ${pad("p50_ms", 8, false)} | ${pad("p95_ms", 8, false)} | ${pad("p99_ms", 8, false)} | ${pad("err%", 6, false)}`;
+        `${pad("Runner", 16)} | ${pad("FHR_mean", 8, false)} | ${pad("CLR_mean", 8, false)} | ${pad("tok_p50", 9, false)} | ${pad("tok_p95", 9, false)} | ${pad("tok_p99", 9, false)} | ${pad("lat_p50", 8, false)} | ${pad("lat_p95", 8, false)} | ${pad("lat_p99", 8, false)} | ${pad("err%", 6, false)}`;
     console.log(header);
     console.log("-".repeat(header.length));
 
-    const runners = Object.keys(report.per_runner).sort();
+    const runners = runnerNames(report).filter(r => r !== "aider");
     for (const r of runners) {
         const s = report.per_runner[r];
         const line =
-            `${pad(r, 16)} | ${pad(fmtNum(s.first_hit_recall_mean), 12, false)} | ${pad(fmtNum(s.strict_chunk_containment_mean), 11, false)} | ${pad(fmtNum(s.token_cost_mean, 1), 9, false)} | ${pad(fmtMs(s.latency_ms_p50), 8, false)} | ${pad(fmtMs(s.latency_ms_p95), 8, false)} | ${pad(fmtMs(s.latency_ms_p99), 8, false)} | ${pad(fmtNum(s.error_rate * 100, 1), 6, false)}`;
+            `${pad(r, 16)} | ${pad(fmtNum(s.first_hit_recall_mean), 8, false)} | ${pad(fmtNum(s.strict_chunk_containment_mean), 8, false)} | ${pad(fmtNum(s.token_cost_p50, 1), 9, false)} | ${pad(fmtNum(s.token_cost_p95, 1), 9, false)} | ${pad(fmtNum(s.token_cost_p99, 1), 9, false)} | ${pad(fmtMs(s.latency_ms_p50), 8, false)} | ${pad(fmtMs(s.latency_ms_p95), 8, false)} | ${pad(fmtMs(s.latency_ms_p99), 8, false)} | ${pad(fmtNum(s.error_rate * 100, 1), 6, false)}`;
         console.log(line);
+    }
+
+    console.log("");
+    console.log("Mean disclosure (not headline):");
+    for (const r of runners) {
+        const s = report.per_runner[r];
+        console.log(
+            `  ${r}: token_mean=${fmtNum(s.token_cost_mean, 1)} latency_mean=${fmtMs(s.latency_ms_mean)}`,
+        );
+    }
+
+    const aider = report.per_runner.aider;
+    if (aider) {
+        console.log("");
+        console.log("Infrastructure Reliability (excluded from IR ranking)");
+        const timeoutPct = timeoutRate(report, "aider") * 100;
+        console.log(
+            `  aider: timeout_rate=${fmtNum(timeoutPct, 1)}% error_rate=${fmtNum(aider.error_rate * 100, 1)}% completed=${aider.completed_tasks}`,
+        );
     }
 
     console.log("");

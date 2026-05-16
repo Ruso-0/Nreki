@@ -28,6 +28,7 @@ import { runRipgrep } from "./runners/ripgrep-runner.js";
 import { runBM25 } from "./runners/bm25-runner.js";
 import { runAider } from "./runners/aider-runner.js";
 import { runNREKI } from "./runners/nreki-runner.js";
+import { runHybrid } from "./runners/hybrid-runner.js";
 import type { PolyBenchTask, GroundTruth } from "./types.js";
 import type { RetrievalResult, RetrieverName } from "./types-runners.js";
 
@@ -37,11 +38,17 @@ export type ReportRunnerName =
     | "fast_grep"
     | "ripgrep"
     | "bm25"
+    | "hybrid-rrf"
     | "aider"
     | "nreki-mbf-off"
     | "nreki-mbf-on";
 
 export const ALL_REPORT_RUNNERS: ReportRunnerName[] = [
+    "voyage-3", "fast_grep", "ripgrep", "bm25", "hybrid-rrf", "aider",
+    "nreki-mbf-off", "nreki-mbf-on",
+];
+
+export const DEFAULT_REPORT_RUNNERS: ReportRunnerName[] = [
     "voyage-3", "fast_grep", "ripgrep", "bm25", "aider",
     "nreki-mbf-off", "nreki-mbf-on",
 ];
@@ -119,6 +126,7 @@ export function computeMetrics(
 /** Map a ReportRunnerName back to the canonical RetrieverName for the result. */
 export function canonicalRetrieverName(name: ReportRunnerName): RetrieverName {
     if (name === "nreki-mbf-off" || name === "nreki-mbf-on") return "nreki";
+    if (name === "hybrid-rrf") return "hybrid-rrf";
     return name as RetrieverName;
 }
 
@@ -155,6 +163,8 @@ export async function invokeRunner(
             return runRipgrep(task, repoRoot, topK);
         case "bm25":
             return runBM25(task, repoRoot, topK);
+        case "hybrid-rrf":
+            return runHybrid(task, repoRoot, topK);
         case "aider":
             return runAider(task, repoRoot, topK);
         case "nreki-mbf-off":

@@ -29,6 +29,7 @@
  *     [--top-k 10] \
  *     [--workspace .eval-phase5-cache] \
  *     [--output results.json] \
+ *     [--runners nreki-mbf-on,bm25] \
  *     [--task-delay-ms 0] \
  *     [--no-cleanup] \
  *     [--csv scripts/eval-phase5/data/polybench-verified.csv]
@@ -47,6 +48,7 @@ import { computeGroundTruth } from "./ground-truth.js";
 import {
     executeTaskBody,
     ALL_REPORT_RUNNERS,
+    DEFAULT_REPORT_RUNNERS,
     type ReportRunnerName,
     type PerTaskResult,
     type PerRunnerMetrics,
@@ -64,6 +66,7 @@ import { printConsoleSummary, writeJsonReport } from "./report.js";
 // from orchestrate.ts before Sprint 4.9.
 export {
     ALL_REPORT_RUNNERS,
+    DEFAULT_REPORT_RUNNERS,
     type ReportRunnerName,
     type PerTaskResult,
     type PerRunnerMetrics,
@@ -79,7 +82,7 @@ export interface OrchestrateOptions {
     workspaceRoot: string;
     /** JSON output path. */
     outputPath: string;
-    /** Which runners to invoke; default = ALL_REPORT_RUNNERS. */
+    /** Which runners to invoke; default = DEFAULT_REPORT_RUNNERS. */
     runners?: ReportRunnerName[];
     /** rm-rf the task clone after each task completes. Default true. */
     cleanupClones?: boolean;
@@ -352,7 +355,7 @@ export async function orchestrate(options: OrchestrateOptions): Promise<Aggregat
     const cleanupClones = options.cleanupClones ?? true;
     const taskDelayMs = options.taskDelayMs ?? 0;
     const minDiskGB = options.minDiskGB ?? 5;
-    const runnersList = options.runners ?? ALL_REPORT_RUNNERS;
+    const runnersList = options.runners ?? DEFAULT_REPORT_RUNNERS;
     const resume = options.resume ?? true;
     const jsonlPath = options.outputJsonlPath;
 
@@ -507,6 +510,16 @@ function parseArgv(argv: string[]): OrchestrateOptions {
             case "--top-k": opts.topK = parseInt(next(), 10); break;
             case "--workspace": opts.workspaceRoot = next(); break;
             case "--output": opts.outputPath = next(); break;
+            case "--runners": {
+                const names = next().split(",").filter(Boolean);
+                const valid = new Set<string>(ALL_REPORT_RUNNERS);
+                const invalid = names.filter(name => !valid.has(name));
+                if (invalid.length > 0) {
+                    throw new Error(`Unknown runner(s): ${invalid.join(", ")}`);
+                }
+                opts.runners = names as ReportRunnerName[];
+                break;
+            }
             case "--csv": opts.csvPath = next(); break;
             case "--task-delay-ms": opts.taskDelayMs = parseInt(next(), 10); break;
             case "--no-cleanup": opts.cleanupClones = false; break;
@@ -515,7 +528,7 @@ function parseArgv(argv: string[]): OrchestrateOptions {
             case "--no-resume": opts.resume = false; break;
             case "--no-worker": opts.useWorker = false; break;
             case "--help":
-                console.log(`Usage: orchestrate.ts [--dry-run] [--task-ids id1,id2] [--top-k 10] [--workspace dir] [--output file] [--output-jsonl file] [--no-resume] [--no-worker] [--csv path] [--task-delay-ms 0] [--no-cleanup] [--min-disk-gb 5]`);
+                console.log(`Usage: orchestrate.ts [--dry-run] [--task-ids id1,id2] [--top-k 10] [--workspace dir] [--output file] [--output-jsonl file] [--runners nreki-mbf-on,bm25] [--no-resume] [--no-worker] [--csv path] [--task-delay-ms 0] [--no-cleanup] [--min-disk-gb 5]`);
                 process.exit(0);
         }
     }

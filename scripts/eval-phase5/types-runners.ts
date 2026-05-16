@@ -19,6 +19,7 @@ export type RetrieverName =
     | "ripgrep"
     | "bm25"
     | "nreki"
+    | "hybrid-rrf"
     | "aider";
 
 /**
