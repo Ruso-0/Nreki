@@ -80,15 +80,37 @@ in the retrieval index identically to TypeScript files.
 | HTML        | .html                                   | ✓      | ✓      | ✓            | —             | —           |
 | **Kotlin**  | .kt .kts                                | ✓      | ✓      | ✓            | —             | —           |
 | **Java**    | .java                                   | ✓      | ✓      | ✓            | —             | —           |
-| **C++**     | .cpp .cc .cxx .hpp .hh .hxx             | ✓      | ✓      | ✓            | —             | —           |
+| **C++**     | .cpp .cc .cxx .hpp .hh .hxx .h*         | ✓      | ✓      | ✓            | —             | —           |
+| **C**       | .c .h*                                  | ✓      | ✓      | ✓            | —             | —           |
 
-Kotlin / Java / C++ activation in v11.0.x covers Android development
-(Kotlin app layer + Java legacy + C++ NDK native layer) and the
+Kotlin / Java / C++ / C activation in v11.0.x covers Android development
+(Kotlin app layer + Java legacy + C++ NDK native layer + C NDK code) and the
 broader JVM / native cross-platform ecosystem.
 
+> *`.h` headers are routed at parse time: headers containing
+> C++ markers (template, namespace, class, `#ifdef __cplusplus`)
+> use the C++ grammar; pure C headers use the C grammar. Default
+> to C grammar for ambiguous cases.
+
 **Known limitation (v11.0.x):** cross-file import detection for
-Kotlin / Java / C++ is not yet implemented. Repo-map dependency edges
+Kotlin / Java / C++ / C is not yet implemented. Repo-map dependency edges
 for files in these languages are intra-file only until v11.0.x.1.
+
+### Known limitations (v11.0.1)
+
+**Android XML manifests and Gradle build files are NOT yet indexed.**
+AndroidManifest.xml, resource XMLs (`res/layout/`, `res/values/`, etc.),
+and Gradle build scripts (`build.gradle` Groovy DSL) coverage is tracked
+for v11.0.2 (see issue #4).
+
+**WASM checksum verification deferred.** Upstream grammar upgrades may not
+propagate to vendor `wasm/` directory due to skip-if-exists logic in
+`scripts/download-wasm.js`. SHA-256 checksum verification tracked as issue #5.
+
+**chunks table lacks language column.** Retrieval language-aware scoring
+requires runtime path extension filtering. Breaking migration tracked as
+issue #6 (coordinated with v11.0.2 XML activation due to noise risk
+amplification).
 
 **Type Ledger (cross-file architectural dependency mapping) remains
 TypeScript-specific by design** - it relies on TypeScript compiler-

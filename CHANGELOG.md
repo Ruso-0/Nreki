@@ -2,6 +2,38 @@
 
 All notable changes to NREKI will be documented in this file.
 
+## [11.0.1] - 2026-05-16
+
+### Added
+
+- **C language activation**: tree-sitter-c@0.20.7 grammar activated for `.c` files. Captures function definitions (including pointer-returning functions via nested `pointer_declarator` variants), struct/union/enum/typedef declarations, and forward declarations. C99 designated initializers parse without ERROR nodes.
+
+- **Header file routing (`.h`)**: dynamic detection of C vs C++ at parse time. Headers containing C++ markers (template, namespace, class, `#ifdef __cplusplus`, `extern "C"`, scope-resolution `::`, access specifiers) route to tree-sitter-cpp grammar; pure C headers route to tree-sitter-c grammar. Default: C grammar (smaller WASM load: 792 KB vs 4.6 MB). Empirically verified against abseil-cpp/absl/strings/ (66 .h files, 870 chunks produced vs 0 pre-fix; 88.7% aggregate compression savings).
+
+- **Cross-language compression measurement script**: `scripts/measure-cross-language-savings.mjs` (with README) for empirical corpus benchmarking.
+
+- **Corpus measurement data**: production corpora measured — Spring Boot (Java, via WSL2), Square Okio (Kotlin, 39 files, 82.6% savings), Abseil (C++ .cc 103 files 89.9% + .h 66 files 88.7%), Redis (C, pending).
+
+### Fixed
+
+- **`.c` and `.h` files invisible to parser** (silent activation gap from v11.0.0): LANGUAGE_CONFIGS missing entries caused parser to return 0 chunks with `language: "unsupported"` for C source and header files despite tree-sitter-c WASM being bundled. Confirmed empirically against Abseil headers (66 .h files: 0→870 chunks post-fix).
+
+- **extractName regex fallback C keyword safety** (Furia 41 Adicional 1, Furia 42 Adicional 2): semantic-edit fallback regex captured first word of C function declarations ("void", "int", "static") as symbol name when AST extraction failed. Added explicit C/C++ pattern with keyword denylist; keyword matches return empty string.
+
+- **C pointer declarator blindness** (Furia 42 Adicional 1): C functions returning pointers (`char *strdup`, `int **alloc`) were invisible to symbol extraction because `function_declarator` nests inside `pointer_declarator`. Added 3 declarator variant captures to C_QUERY.
+
+### Changed
+
+- README "AST parser coverage" table extended for C row with `.h` header-routing footnote.
+- package.json description updated to include C in parser-level support list.
+- CPP_QUERY used for .h files routed to C++ grammar (was incorrectly using C_QUERY for all .h files).
+
+### Known Limitations
+
+- **Android XML / Gradle Groovy NOT indexed**: tracked as issue #4. v11.0.2 target.
+- **download-wasm.js SHA-256 checksums**: tracked as issue #5.
+- **chunks table language column**: breaking migration tracked as issue #6.
+
 ## [11.0.0] - 2026-05-15
 
 ### BREAKING CHANGES
