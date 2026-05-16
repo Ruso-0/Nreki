@@ -2,6 +2,43 @@
 
 All notable changes to NREKI will be documented in this file.
 
+## [11.0.0] - 2026-05-15
+
+### BREAKING CHANGES
+
+- **Removed**: ONNX embeddings dependency (`@xenova/transformers`). Users relying on embedding-based retrieval should migrate to Hybrid RRF (NREKI Type Ledger + BM25 file-level fusion) or to an external dense embedding provider (`voyage-code-3`, OpenAI, etc.). The removed embedding code was unused by NREKI's primary retrieval path and added substantial package weight and runtime memory risk. Migration path for local evaluation workflows: `hybrid-rrf` runner.
+
+### Added
+
+- **Hybrid RRF retrieval**: Late-fusion file-level RRF combining NREKI Type Ledger + BM25. See `scripts/eval-phase5/runners/hybrid-runner.ts`.
+- **Adversarial methodology**: adversarial AI-in-the-loop auditing protocol documented in the Phase 5 paper draft Section 3.5.
+- **Bonferroni-corrected significance testing**: bootstrap CI95% + Bonferroni `alpha=0.01` for multi-hypothesis evaluation.
+- **Phase 5 paper artifacts**: submission-ready paper draft and anonymous supplementary archive under `docs/paper-phase5/`.
+- **Cross-file mode detection**: `src/detect-mode.ts` module, preserving mode behavior while isolating test imports from CLI side effects.
+- **Materia Oscura rescue disclosure**: 4 tasks where Hybrid RRF reached Rank-1 despite NREKI Top-10 miss; 10 tasks where Hybrid RRF reached Rank-1 despite neither standalone retriever being Rank-1.
+
+### Changed
+
+- **Sprint 6.4 evaluation**: N=99 PolyBench-Verified TypeScript tribunal verified Hybrid RRF FHR 0.566 vs NREKI 0.414 vs BM25 0.374; 9/10 hybrid deltas survive Bonferroni correction.
+- **Test lifecycle hooks**: WASM/engine resources now have release-safe teardown paths for Vitest forks, covering `ASTParser`, `AstSandbox`, `ParserPool`, `NrekiDB`, and `NrekiEngine`.
+- **Evaluation orchestration**: `hybrid-rrf` is available via `--runners`; default runner set remains backward-compatible with the seven historical report runners.
+
+### Fixed
+
+- **WASM Tree-sitter cleanup**: hygienic parser/query teardown prevents cumulative WASM allocations from surviving test-file boundaries.
+- **Cached prepared statements**: cached SQL statement cleanup eliminates sql.js WASM refcount overflow.
+- **Child process task isolation**: per-task evaluation isolation protects long PolyBench runs.
+- **Tree-sitter SDK pin**: MCP SDK `1.23.1` fixes silent tool drops in strict MCP clients.
+- **CSS parser gaps**: at-rules + focus normalization asymmetry.
+- **Cognitive Enforcer deadlock**: Chronos recovery via `_nreki_bypass`.
+- **Backward compatibility test OOM**: `backward-compat.test.ts` now uses a tiny temp workspace instead of scanning the full repository root for definition/reference tests.
+
+### Internal
+
+- Working tree covers Sprint 4.7 through Sprint 6.4 plus Phase 5 paper artifacts.
+- Trilateral methodology: 40 adversarial rounds completed pre-release.
+- Anti-silent-failure disclosures retained for methodology, statistics, reliability, token cost, and case-study claims.
+
 ## [10.19.0] - 2026-05-05
 
 # v10.19.0 — Zombie shutdown fix (parent watchdog + signal handlers)
