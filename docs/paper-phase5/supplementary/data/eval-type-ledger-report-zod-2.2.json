@@ -1,0 +1,523 @@
+{
+  "corpus": "D:\\Nreki\\corpus\\colinhacks__zod",
+  "elapsedSec": "6.1s",
+  "filesEvaluated": 231,
+  "totalSymbols": 582,
+  "matchedSymbols_legacy": 492,
+  "matchedSymbols_strict": 343,
+  "accuracy_legacy_subset": "84.5%",
+  "accuracy_strict_bidirectional": "58.9%",
+  "failureRate": "15.5%",
+  "killCriterion": "PROCEED",
+  "coverage": {
+    "chunksFuncMethod": 1069,
+    "chunksWithIO": 636,
+    "coveragePct": "59.49%"
+  },
+  "density": {
+    "avgConsumesPerChunk": 0.6,
+    "avgProducesPerChunk": 0.45,
+    "avgTotalIOPerChunk": 1.05
+  },
+  "oracleAgreement": {
+    "chunksMatchingOracle": 492,
+    "matchPct": "84.5%",
+    "chunksWithEmptyExtractorButOracleHasTypes": 0
+  },
+  "whitelist_unwrap": {
+    "applied_on_both_sides": true,
+    "unwrap": [
+      "Promise",
+      "Awaitable",
+      "Array",
+      "ReadonlyArray",
+      "T[]",
+      "readonly T[]"
+    ],
+    "keep_container_name": [
+      "Map",
+      "Set",
+      "WeakMap",
+      "WeakSet",
+      "Result",
+      "Option",
+      "Either",
+      "Maybe",
+      "any custom generic not in unwrap list"
+    ],
+    "discard": [
+      "any",
+      "unknown",
+      "never",
+      "void",
+      "string",
+      "number",
+      "boolean",
+      "bigint",
+      "symbol",
+      "null",
+      "undefined",
+      "object",
+      "__type",
+      "__object",
+      "_",
+      "(Anonymous*"
+    ]
+  },
+  "regex_change": {
+    "from": "[A-Z][A-Za-z0-9_]*",
+    "to": "[a-zA-Z_$][a-zA-Z0-9_$]*",
+    "rationale": "Accept $-prefix and underscore-prefix valid TypeScript identifiers."
+  },
+  "caveat_oracle": "Ground truth from vanilla ts.createProgram, NOT from TsCompilerWrapper. Production accuracy may diverge ~2-5% in edge cases (deep re-exports, complex generics, monorepo paths). Acceptable as Phase 1 proxy. If accuracy lands 78-82%, re-validate with TsCompilerWrapper harness before kill decision.",
+  "known_heuristic_gaps": [
+    "Regex ^[^{]+ for signature extraction may truncate at { in generic bounds (e.g. T extends { id: string }).",
+    "Regex extracts single-token types only — does not handle qualified names like core.SomeType (captures only 'core').",
+    "Regex generic group <[^>]+> stops at first >, so deeply nested generics like Promise<Map<K,V>> may misparse."
+  ],
+  "breakdown_by_reason": [
+    {
+      "bucket": "named-type-missed",
+      "count": 90,
+      "pct_of_failures": "100.0%",
+      "examples": [
+        {
+          "file": "packages\\bench\\discriminated-union.ts",
+          "symbol": "makeSchema@L53",
+          "treesitter": {
+            "consumes": [
+              "typeof"
+            ],
+            "produces": []
+          },
+          "tscompiler": {
+            "consumes": [
+              "\"D:/Nreki/node_modules/zod/src/v4/index\""
+            ],
+            "produces": []
+          },
+          "match": false,
+          "reason": "missing consumes:\"D:/Nreki/node_modules/zod/src/v4/index\""
+        },
+        {
+          "file": "packages\\zod\\src\\v3\\types.ts",
+          "symbol": "deepPartialify@L2424",
+          "treesitter": {
+            "consumes": [
+              "ZodTypeAny"
+            ],
+            "produces": []
+          },
+          "tscompiler": {
+            "consumes": [
+              "ZodType"
+            ],
+            "produces": []
+          },
+          "match": false,
+          "reason": "missing consumes:ZodType"
+        }
+      ]
+    }
+  ],
+  "named_type_sub_buckets": [
+    {
+      "sub_bucket": "dollar-prefix-type",
+      "count": 76
+    },
+    {
+      "sub_bucket": "plain-named-missed",
+      "count": 14
+    }
+  ],
+  "filter_projection": [
+    {
+      "filter_through": "named-type-missed",
+      "cumulative_filtered": 90,
+      "remaining_total": 492,
+      "projected_accuracy": "100.0%",
+      "passes_60_smoke_threshold": true,
+      "passes_80_kill_threshold": true
+    }
+  ],
+  "worstFailures": [
+    {
+      "file": "packages\\bench\\discriminated-union.ts",
+      "symbol": "makeSchema@L53",
+      "treesitter": {
+        "consumes": [
+          "typeof"
+        ],
+        "produces": []
+      },
+      "tscompiler": {
+        "consumes": [
+          "\"D:/Nreki/node_modules/zod/src/v4/index\""
+        ],
+        "produces": []
+      },
+      "match": false,
+      "reason": "missing consumes:\"D:/Nreki/node_modules/zod/src/v4/index\""
+    },
+    {
+      "file": "packages\\zod\\src\\v3\\types.ts",
+      "symbol": "deepPartialify@L2424",
+      "treesitter": {
+        "consumes": [
+          "ZodTypeAny"
+        ],
+        "produces": []
+      },
+      "tscompiler": {
+        "consumes": [
+          "ZodType"
+        ],
+        "produces": []
+      },
+      "match": false,
+      "reason": "missing consumes:ZodType"
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\classic\\compat.ts",
+      "symbol": "setErrorMap@L46",
+      "treesitter": {
+        "consumes": [
+          "core"
+        ],
+        "produces": []
+      },
+      "tscompiler": {
+        "consumes": [
+          "$ZodErrorMap"
+        ],
+        "produces": []
+      },
+      "match": false,
+      "reason": "missing consumes:$ZodErrorMap"
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\classic\\schemas.ts",
+      "symbol": "check@L2622",
+      "treesitter": {
+        "consumes": [
+          "core"
+        ],
+        "produces": [
+          "core"
+        ]
+      },
+      "tscompiler": {
+        "consumes": [],
+        "produces": [
+          "$ZodCheck"
+        ]
+      },
+      "match": false,
+      "reason": "missing produces:$ZodCheck"
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\classic\\schemas.ts",
+      "symbol": "refine@L2639",
+      "treesitter": {
+        "consumes": [
+          "NoInfer"
+        ],
+        "produces": [
+          "core"
+        ]
+      },
+      "tscompiler": {
+        "consumes": [],
+        "produces": [
+          "$ZodCheck"
+        ]
+      },
+      "match": false,
+      "reason": "missing produces:$ZodCheck"
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\classic\\schemas.ts",
+      "symbol": "superRefine@L2647",
+      "treesitter": {
+        "consumes": [
+          "T",
+          "core",
+          "core"
+        ],
+        "produces": [
+          "core"
+        ]
+      },
+      "tscompiler": {
+        "consumes": [
+          "$ZodSuperRefineParams"
+        ],
+        "produces": [
+          "$ZodCheck"
+        ]
+      },
+      "match": false,
+      "reason": "missing consumes:$ZodSuperRefineParams,produces:$ZodCheck"
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_lt@L857",
+      "treesitter": {
+        "consumes": [
+          "util"
+        ],
+        "produces": [
+          "checks"
+        ]
+      },
+      "tscompiler": {
+        "consumes": [],
+        "produces": [
+          "$ZodCheckLessThan"
+        ]
+      },
+      "match": false,
+      "reason": "missing produces:$ZodCheckLessThan"
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_lte@L870",
+      "treesitter": {
+        "consumes": [
+          "util"
+        ],
+        "produces": [
+          "checks"
+        ]
+      },
+      "tscompiler": {
+        "consumes": [],
+        "produces": [
+          "$ZodCheckLessThan"
+        ]
+      },
+      "match": false,
+      "reason": "missing produces:$ZodCheckLessThan"
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_gt@L890",
+      "treesitter": {
+        "consumes": [
+          "util"
+        ],
+        "produces": [
+          "checks"
+        ]
+      },
+      "tscompiler": {
+        "consumes": [],
+        "produces": [
+          "$ZodCheckGreaterThan"
+        ]
+      },
+      "match": false,
+      "reason": "missing produces:$ZodCheckGreaterThan"
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_gte@L901",
+      "treesitter": {
+        "consumes": [
+          "util"
+        ],
+        "produces": [
+          "checks"
+        ]
+      },
+      "tscompiler": {
+        "consumes": [],
+        "produces": [
+          "$ZodCheckGreaterThan"
+        ]
+      },
+      "match": false,
+      "reason": "missing produces:$ZodCheckGreaterThan"
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_positive@L916",
+      "treesitter": {
+        "consumes": [],
+        "produces": [
+          "checks"
+        ]
+      },
+      "tscompiler": {
+        "consumes": [],
+        "produces": [
+          "$ZodCheckGreaterThan"
+        ]
+      },
+      "match": false,
+      "reason": "missing produces:$ZodCheckGreaterThan"
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_negative@L922",
+      "treesitter": {
+        "consumes": [],
+        "produces": [
+          "checks"
+        ]
+      },
+      "tscompiler": {
+        "consumes": [],
+        "produces": [
+          "$ZodCheckLessThan"
+        ]
+      },
+      "match": false,
+      "reason": "missing produces:$ZodCheckLessThan"
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_nonpositive@L928",
+      "treesitter": {
+        "consumes": [],
+        "produces": [
+          "checks"
+        ]
+      },
+      "tscompiler": {
+        "consumes": [],
+        "produces": [
+          "$ZodCheckLessThan"
+        ]
+      },
+      "match": false,
+      "reason": "missing produces:$ZodCheckLessThan"
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_nonnegative@L934",
+      "treesitter": {
+        "consumes": [],
+        "produces": [
+          "checks"
+        ]
+      },
+      "tscompiler": {
+        "consumes": [],
+        "produces": [
+          "$ZodCheckGreaterThan"
+        ]
+      },
+      "match": false,
+      "reason": "missing produces:$ZodCheckGreaterThan"
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_multipleOf@L940",
+      "treesitter": {
+        "consumes": [],
+        "produces": [
+          "checks"
+        ]
+      },
+      "tscompiler": {
+        "consumes": [],
+        "produces": [
+          "$ZodCheckMultipleOf"
+        ]
+      },
+      "match": false,
+      "reason": "missing produces:$ZodCheckMultipleOf"
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_maxSize@L953",
+      "treesitter": {
+        "consumes": [],
+        "produces": [
+          "checks"
+        ]
+      },
+      "tscompiler": {
+        "consumes": [],
+        "produces": [
+          "$ZodCheckMaxSize"
+        ]
+      },
+      "match": false,
+      "reason": "missing produces:$ZodCheckMaxSize"
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_minSize@L966",
+      "treesitter": {
+        "consumes": [],
+        "produces": [
+          "checks"
+        ]
+      },
+      "tscompiler": {
+        "consumes": [],
+        "produces": [
+          "$ZodCheckMinSize"
+        ]
+      },
+      "match": false,
+      "reason": "missing produces:$ZodCheckMinSize"
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_size@L979",
+      "treesitter": {
+        "consumes": [],
+        "produces": [
+          "checks"
+        ]
+      },
+      "tscompiler": {
+        "consumes": [],
+        "produces": [
+          "$ZodCheckSizeEquals"
+        ]
+      },
+      "match": false,
+      "reason": "missing produces:$ZodCheckSizeEquals"
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_maxLength@L992",
+      "treesitter": {
+        "consumes": [],
+        "produces": [
+          "checks"
+        ]
+      },
+      "tscompiler": {
+        "consumes": [],
+        "produces": [
+          "$ZodCheckMaxLength"
+        ]
+      },
+      "match": false,
+      "reason": "missing produces:$ZodCheckMaxLength"
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_minLength@L1006",
+      "treesitter": {
+        "consumes": [],
+        "produces": [
+          "checks"
+        ]
+      },
+      "tscompiler": {
+        "consumes": [],
+        "produces": [
+          "$ZodCheckMinLength"
+        ]
+      },
+      "match": false,
+      "reason": "missing produces:$ZodCheckMinLength"
+    }
+  ]
+}

@@ -1,0 +1,3239 @@
+{
+  "corpus": "colinhacks__zod",
+  "zone": "HARD_FLOOR",
+  "under_unwrap_safe_meaningful": "59.0%",
+  "total_suspects": 175,
+  "suspects": [
+    {
+      "file": "packages\\bench\\metabench.ts",
+      "symbol": "metabench@L14",
+      "line": 14,
+      "tsx_consumes": [
+        "Benchmarks"
+      ],
+      "tsx_produces": [
+        "Metabench"
+      ],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "Metabench"
+      ],
+      "spurious_consumes": [
+        "Benchmarks"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\bench\\metabench.ts",
+      "symbol": "benchWithData@L36",
+      "line": 36,
+      "tsx_consumes": [
+        "BenchWithDataParams"
+      ],
+      "tsx_produces": [
+        "Metabench"
+      ],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "Metabench"
+      ],
+      "spurious_consumes": [
+        "BenchWithDataParams"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\docs\\app\\layout.tsx",
+      "symbol": "Layout@L16",
+      "line": 16,
+      "tsx_consumes": [
+        "ReactNode"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [],
+      "spurious_consumes": [
+        "ReactNode"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\docs\\components\\ecosystem.tsx",
+      "symbol": "Table@L343",
+      "line": 343,
+      "tsx_consumes": [
+        "ZodResource"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [],
+      "spurious_consumes": [
+        "ZodResource"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\docs\\components\\ecosystem.tsx",
+      "symbol": "ResourceTable@L376",
+      "line": 376,
+      "tsx_consumes": [
+        "ResourceTableProps"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [],
+      "spurious_consumes": [
+        "ResourceTableProps"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\docs\\components\\featured.tsx",
+      "symbol": "Featured@L8",
+      "line": 8,
+      "tsx_consumes": [
+        "FeatureData"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [],
+      "spurious_consumes": [
+        "FeatureData"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\docs\\components\\heading.tsx",
+      "symbol": "Heading@L12",
+      "line": 12,
+      "tsx_consumes": [
+        "HeadingProps"
+      ],
+      "tsx_produces": [
+        "ReactElement"
+      ],
+      "tsc_consumes": [],
+      "tsc_produces": [],
+      "spurious_consumes": [
+        "HeadingProps"
+      ],
+      "spurious_produces": [
+        "ReactElement"
+      ]
+    },
+    {
+      "file": "packages\\docs\\components\\inkeep-search.tsx",
+      "symbol": "InkeepSearchBox@L7",
+      "line": 7,
+      "tsx_consumes": [
+        "SharedProps"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [],
+      "spurious_consumes": [
+        "SharedProps"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\docs\\components\\sidebar-logo.tsx",
+      "symbol": "SidebarLogo@L6",
+      "line": 6,
+      "tsx_consumes": [
+        "ImageProps"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [],
+      "spurious_consumes": [
+        "ImageProps"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\docs\\loaders\\get-llm-text.ts",
+      "symbol": "getLLMText@L14",
+      "line": 14,
+      "tsx_consumes": [
+        "InferPageType"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [],
+      "spurious_consumes": [
+        "InferPageType"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\docs\\app\\(doc)\\layout.tsx",
+      "symbol": "Layout@L68",
+      "line": 68,
+      "tsx_consumes": [
+        "ReactNode"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [],
+      "spurious_consumes": [
+        "ReactNode"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\docs\\app\\blog\\layout.tsx",
+      "symbol": "BlogLayout@L5",
+      "line": 5,
+      "tsx_consumes": [
+        "ReactNode"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [],
+      "spurious_consumes": [
+        "ReactNode"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v3\\errors.ts",
+      "symbol": "setErrorMap@L7",
+      "line": 7,
+      "tsx_consumes": [
+        "ZodErrorMap"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [],
+      "spurious_consumes": [
+        "ZodErrorMap"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v3\\types.ts",
+      "symbol": "processCreateParams@L123",
+      "line": 123,
+      "tsx_consumes": [
+        "RawCreateParams"
+      ],
+      "tsx_produces": [
+        "ProcessedCreateParams"
+      ],
+      "tsc_consumes": [],
+      "tsc_produces": [],
+      "spurious_consumes": [
+        "RawCreateParams"
+      ],
+      "spurious_produces": [
+        "ProcessedCreateParams"
+      ]
+    },
+    {
+      "file": "packages\\zod\\src\\v3\\types.ts",
+      "symbol": "isValidIP@L687",
+      "line": 687,
+      "tsx_consumes": [
+        "IpVersion"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [],
+      "spurious_consumes": [
+        "IpVersion"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v3\\types.ts",
+      "symbol": "isValidCidr@L720",
+      "line": 720,
+      "tsx_consumes": [
+        "IpVersion"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [],
+      "spurious_consumes": [
+        "IpVersion"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v3\\types.ts",
+      "symbol": "deepPartialify@L2424",
+      "line": 2424,
+      "tsx_consumes": [
+        "ZodTypeAny"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [
+        "ZodType"
+      ],
+      "tsc_produces": [],
+      "spurious_consumes": [
+        "ZodTypeAny"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v3\\types.ts",
+      "symbol": "handleResults@L2951",
+      "line": 2951,
+      "tsx_consumes": [
+        "ParseContext",
+        "SyncParseReturnType"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [],
+      "spurious_consumes": [
+        "ParseContext",
+        "SyncParseReturnType"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v3\\types.ts",
+      "symbol": "finalizeSet@L3734",
+      "line": 3734,
+      "tsx_consumes": [
+        "SyncParseReturnType"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [],
+      "spurious_consumes": [
+        "SyncParseReturnType"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v3\\types.ts",
+      "symbol": "makeArgsIssue@L3833",
+      "line": 3833,
+      "tsx_consumes": [
+        "ZodError"
+      ],
+      "tsx_produces": [
+        "ZodIssue"
+      ],
+      "tsc_consumes": [
+        "ZodError"
+      ],
+      "tsc_produces": [],
+      "spurious_consumes": [],
+      "spurious_produces": [
+        "ZodIssue"
+      ]
+    },
+    {
+      "file": "packages\\zod\\src\\v3\\types.ts",
+      "symbol": "makeReturnsIssue@L3847",
+      "line": 3847,
+      "tsx_consumes": [
+        "ZodError"
+      ],
+      "tsx_produces": [
+        "ZodIssue"
+      ],
+      "tsc_consumes": [
+        "ZodError"
+      ],
+      "tsc_produces": [],
+      "spurious_consumes": [],
+      "spurious_produces": [
+        "ZodIssue"
+      ]
+    },
+    {
+      "file": "packages\\zod\\src\\v3\\types.ts",
+      "symbol": "createZodEnum@L4071",
+      "line": 4071,
+      "tsx_consumes": [
+        "RawCreateParams"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [],
+      "spurious_consumes": [
+        "RawCreateParams"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v3\\helpers\\parseUtil.ts",
+      "symbol": "addIssueToContext@L72",
+      "line": 72,
+      "tsx_consumes": [
+        "ParseContext",
+        "IssueData"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [
+        "ParseContext"
+      ],
+      "tsc_produces": [],
+      "spurious_consumes": [
+        "IssueData"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\classic\\compat.ts",
+      "symbol": "getErrorMap@L53",
+      "line": 53,
+      "tsx_consumes": [],
+      "tsx_produces": [
+        "$ZodErrorMap"
+      ],
+      "tsc_consumes": [],
+      "tsc_produces": [],
+      "spurious_consumes": [],
+      "spurious_produces": [
+        "$ZodErrorMap"
+      ]
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\classic\\from-json-schema.ts",
+      "symbol": "detectVersion@L104",
+      "line": 104,
+      "tsx_consumes": [
+        "JSONSchema",
+        "JSONSchemaVersion"
+      ],
+      "tsx_produces": [
+        "JSONSchemaVersion"
+      ],
+      "tsc_consumes": [],
+      "tsc_produces": [],
+      "spurious_consumes": [
+        "JSONSchema",
+        "JSONSchemaVersion"
+      ],
+      "spurious_produces": [
+        "JSONSchemaVersion"
+      ]
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\classic\\from-json-schema.ts",
+      "symbol": "resolveRef@L121",
+      "line": 121,
+      "tsx_consumes": [
+        "ConversionContext"
+      ],
+      "tsx_produces": [
+        "JSONSchema"
+      ],
+      "tsc_consumes": [
+        "ConversionContext"
+      ],
+      "tsc_produces": [],
+      "spurious_consumes": [],
+      "spurious_produces": [
+        "JSONSchema"
+      ]
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\classic\\from-json-schema.ts",
+      "symbol": "convertBaseSchema@L146",
+      "line": 146,
+      "tsx_consumes": [
+        "JSONSchema",
+        "ConversionContext"
+      ],
+      "tsx_produces": [
+        "ZodType"
+      ],
+      "tsc_consumes": [
+        "ConversionContext"
+      ],
+      "tsc_produces": [
+        "ZodType"
+      ],
+      "spurious_consumes": [
+        "JSONSchema"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\classic\\from-json-schema.ts",
+      "symbol": "convertSchema@L533",
+      "line": 533,
+      "tsx_consumes": [
+        "JSONSchema",
+        "ConversionContext"
+      ],
+      "tsx_produces": [
+        "ZodType"
+      ],
+      "tsc_consumes": [
+        "ConversionContext"
+      ],
+      "tsc_produces": [
+        "ZodType"
+      ],
+      "spurious_consumes": [
+        "JSONSchema"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\classic\\from-json-schema.ts",
+      "symbol": "fromJSONSchema@L629",
+      "line": 629,
+      "tsx_consumes": [
+        "JSONSchema",
+        "FromJSONSchemaParams"
+      ],
+      "tsx_produces": [
+        "ZodType"
+      ],
+      "tsc_consumes": [
+        "FromJSONSchemaParams"
+      ],
+      "tsc_produces": [
+        "ZodType"
+      ],
+      "spurious_consumes": [
+        "JSONSchema"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\classic\\schemas.ts",
+      "symbol": "_installLazyMethods@L33",
+      "line": 33,
+      "tsx_consumes": [
+        "_LazyMethodsOf"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [
+        "T"
+      ],
+      "tsc_produces": [],
+      "spurious_consumes": [
+        "_LazyMethodsOf"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\classic\\schemas.ts",
+      "symbol": "hash@L1013",
+      "line": 1013,
+      "tsx_consumes": [
+        "Alg",
+        "Enc"
+      ],
+      "tsx_produces": [
+        "ZodCustomStringFormat"
+      ],
+      "tsc_consumes": [
+        "Alg"
+      ],
+      "tsc_produces": [
+        "ZodCustomStringFormat"
+      ],
+      "spurious_consumes": [
+        "Enc"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\classic\\schemas.ts",
+      "symbol": "tuple@L1757",
+      "line": 1757,
+      "tsx_consumes": [
+        "SomeType"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [],
+      "spurious_consumes": [
+        "SomeType"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\classic\\schemas.ts",
+      "symbol": "transform@L2113",
+      "line": 2113,
+      "tsx_consumes": [
+        "$RefinementCtx"
+      ],
+      "tsx_produces": [
+        "ZodTransform"
+      ],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "ZodTransform"
+      ],
+      "spurious_consumes": [
+        "$RefinementCtx"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\classic\\schemas.ts",
+      "symbol": "_default@L2220",
+      "line": 2220,
+      "tsx_consumes": [
+        "NoUndefined"
+      ],
+      "tsx_produces": [
+        "ZodDefault"
+      ],
+      "tsc_consumes": [
+        "T"
+      ],
+      "tsc_produces": [
+        "ZodDefault"
+      ],
+      "spurious_consumes": [
+        "NoUndefined"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\classic\\schemas.ts",
+      "symbol": "prefault@L2250",
+      "line": 2250,
+      "tsx_consumes": [
+        "input"
+      ],
+      "tsx_produces": [
+        "ZodPrefault"
+      ],
+      "tsc_consumes": [
+        "T"
+      ],
+      "tsc_produces": [
+        "ZodPrefault"
+      ],
+      "spurious_consumes": [
+        "input"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\classic\\schemas.ts",
+      "symbol": "_catch@L2332",
+      "line": 2332,
+      "tsx_consumes": [
+        "output",
+        "$ZodCatchCtx"
+      ],
+      "tsx_produces": [
+        "ZodCatch"
+      ],
+      "tsc_consumes": [
+        "T"
+      ],
+      "tsc_produces": [
+        "ZodCatch"
+      ],
+      "spurious_consumes": [
+        "output",
+        "$ZodCatchCtx"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\classic\\schemas.ts",
+      "symbol": "pipe@L2381",
+      "line": 2381,
+      "tsx_consumes": [
+        "SomeType",
+        "SomeType"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [],
+      "spurious_consumes": [
+        "SomeType"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\classic\\schemas.ts",
+      "symbol": "codec@L2403",
+      "line": 2403,
+      "tsx_consumes": [
+        "output",
+        "ParsePayload",
+        "input",
+        "ParsePayload"
+      ],
+      "tsx_produces": [
+        "ZodCodec"
+      ],
+      "tsc_consumes": [
+        "A",
+        "B"
+      ],
+      "tsc_produces": [
+        "ZodCodec"
+      ],
+      "spurious_consumes": [
+        "output",
+        "ParsePayload",
+        "input"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\classic\\schemas.ts",
+      "symbol": "_function@L2596",
+      "line": 2596,
+      "tsx_consumes": [
+        "$ZodType",
+        "$ZodFunctionArgs"
+      ],
+      "tsx_produces": [
+        "ZodFunction"
+      ],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "ZodFunction"
+      ],
+      "spurious_consumes": [
+        "$ZodType",
+        "$ZodFunctionArgs"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\classic\\schemas.ts",
+      "symbol": "check@L2622",
+      "line": 2622,
+      "tsx_consumes": [
+        "CheckFn"
+      ],
+      "tsx_produces": [
+        "$ZodCheck"
+      ],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "$ZodCheck"
+      ],
+      "spurious_consumes": [
+        "CheckFn"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\classic\\schemas.ts",
+      "symbol": "refine@L2639",
+      "line": 2639,
+      "tsx_consumes": [
+        "NoInfer"
+      ],
+      "tsx_produces": [
+        "$ZodCheck"
+      ],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "$ZodCheck"
+      ],
+      "spurious_consumes": [
+        "NoInfer"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\classic\\schemas.ts",
+      "symbol": "superRefine@L2647",
+      "line": 2647,
+      "tsx_consumes": [
+        "$RefinementCtx",
+        "$ZodSuperRefineParams"
+      ],
+      "tsx_produces": [
+        "$ZodCheck"
+      ],
+      "tsc_consumes": [
+        "$ZodSuperRefineParams"
+      ],
+      "tsc_produces": [
+        "$ZodCheck"
+      ],
+      "spurious_consumes": [
+        "$RefinementCtx"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\classic\\schemas.ts",
+      "symbol": "_instanceof@L2663",
+      "line": 2663,
+      "tsx_consumes": [
+        "ZodInstanceOfParams"
+      ],
+      "tsx_produces": [
+        "ZodCustom"
+      ],
+      "tsc_consumes": [
+        "T"
+      ],
+      "tsc_produces": [
+        "ZodCustom"
+      ],
+      "spurious_consumes": [
+        "ZodInstanceOfParams"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\classic\\schemas.ts",
+      "symbol": "preprocess@L2728",
+      "line": 2728,
+      "tsx_consumes": [
+        "$RefinementCtx"
+      ],
+      "tsx_produces": [
+        "ZodPreprocess"
+      ],
+      "tsc_consumes": [
+        "U"
+      ],
+      "tsc_produces": [
+        "ZodPreprocess"
+      ],
+      "spurious_consumes": [
+        "$RefinementCtx"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_string@L63",
+      "line": 63,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "T"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_coercedString@L74",
+      "line": 74,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "T"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_email@L96",
+      "line": 96,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "T"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_guid@L113",
+      "line": 113,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "T"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_uuid@L130",
+      "line": 130,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "T"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_uuidv4@L147",
+      "line": 147,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "T"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_uuidv6@L165",
+      "line": 165,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "T"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_uuidv7@L183",
+      "line": 183,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "T"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_url@L201",
+      "line": 201,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "T"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_emoji@L218",
+      "line": 218,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "T"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_nanoid@L235",
+      "line": 235,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "T"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_cuid@L267",
+      "line": 267,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "T"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_cuid2@L284",
+      "line": 284,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "T"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_ulid@L301",
+      "line": 301,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "T"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_xid@L318",
+      "line": 318,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "T"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_ksuid@L335",
+      "line": 335,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "T"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_ipv4@L352",
+      "line": 352,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "T"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_ipv6@L369",
+      "line": 369,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "T"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_mac@L386",
+      "line": 386,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "T"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_cidrv4@L403",
+      "line": 403,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "T"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_cidrv6@L420",
+      "line": 420,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "T"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_base64@L437",
+      "line": 437,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "T"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_base64url@L454",
+      "line": 454,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "T"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_e164@L471",
+      "line": 471,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "T"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_jwt@L488",
+      "line": 488,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "T"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_isoDateTime@L512",
+      "line": 512,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "T"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_isoDate@L531",
+      "line": 531,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "T"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_isoTime@L547",
+      "line": 547,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "T"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_isoDuration@L564",
+      "line": 564,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "T"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_number@L581",
+      "line": 581,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "T"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_coercedNumber@L593",
+      "line": 593,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "T"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_int@L606",
+      "line": 606,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "T"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_float32@L619",
+      "line": 619,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "T"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_float64@L632",
+      "line": 632,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "T"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_int32@L645",
+      "line": 645,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "T"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_uint32@L658",
+      "line": 658,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "T"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_boolean@L674",
+      "line": 674,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "T"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_coercedBoolean@L684",
+      "line": 684,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "T"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_bigint@L700",
+      "line": 700,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "T"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_coercedBigint@L710",
+      "line": 710,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "T"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_int64@L722",
+      "line": 722,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "T"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_uint64@L735",
+      "line": 735,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "T"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_symbol@L751",
+      "line": 751,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "T"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_undefined@L764",
+      "line": 764,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "T"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_null@L777",
+      "line": 777,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "T"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_any@L787",
+      "line": 787,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "T"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_unknown@L796",
+      "line": 796,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "T"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_never@L805",
+      "line": 805,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "T"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_void@L815",
+      "line": 815,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "T"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_date@L825",
+      "line": 825,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "T"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_coercedDate@L832",
+      "line": 832,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "T"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_nan@L846",
+      "line": 846,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "T"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_lt@L857",
+      "line": 857,
+      "tsx_consumes": [
+        "Numeric"
+      ],
+      "tsx_produces": [
+        "$ZodCheckLessThan"
+      ],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "$ZodCheckLessThan"
+      ],
+      "spurious_consumes": [
+        "Numeric"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_lte@L870",
+      "line": 870,
+      "tsx_consumes": [
+        "Numeric"
+      ],
+      "tsx_produces": [
+        "$ZodCheckLessThan"
+      ],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "$ZodCheckLessThan"
+      ],
+      "spurious_consumes": [
+        "Numeric"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_gt@L890",
+      "line": 890,
+      "tsx_consumes": [
+        "Numeric"
+      ],
+      "tsx_produces": [
+        "$ZodCheckGreaterThan"
+      ],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "$ZodCheckGreaterThan"
+      ],
+      "spurious_consumes": [
+        "Numeric"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_gte@L901",
+      "line": 901,
+      "tsx_consumes": [
+        "Numeric"
+      ],
+      "tsx_produces": [
+        "$ZodCheckGreaterThan"
+      ],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "$ZodCheckGreaterThan"
+      ],
+      "spurious_consumes": [
+        "Numeric"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_mime@L1115",
+      "line": 1115,
+      "tsx_consumes": [
+        "MimeTypes"
+      ],
+      "tsx_produces": [
+        "$ZodCheckMimeType"
+      ],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "$ZodCheckMimeType"
+      ],
+      "spurious_consumes": [
+        "MimeTypes"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_array@L1162",
+      "line": 1162,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [
+        "$ZodArray"
+      ],
+      "tsc_consumes": [
+        "T"
+      ],
+      "tsc_produces": [
+        "$ZodArray"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_union@L1182",
+      "line": 1182,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [
+        "$ZodUnion"
+      ],
+      "tsc_consumes": [
+        "T"
+      ],
+      "tsc_produces": [
+        "$ZodUnion"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_xor@L1196",
+      "line": 1196,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [
+        "$ZodXor"
+      ],
+      "tsc_consumes": [
+        "T"
+      ],
+      "tsc_produces": [
+        "$ZodXor"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_discriminatedUnion@L1221",
+      "line": 1221,
+      "tsx_consumes": [
+        "SchemaClass",
+        "Disc",
+        "Types"
+      ],
+      "tsx_produces": [
+        "$ZodDiscriminatedUnion"
+      ],
+      "tsc_consumes": [
+        "Disc",
+        "Types"
+      ],
+      "tsc_produces": [
+        "$ZodDiscriminatedUnion"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_intersection@L1241",
+      "line": 1241,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [
+        "$ZodIntersection"
+      ],
+      "tsc_consumes": [
+        "T",
+        "U"
+      ],
+      "tsc_produces": [
+        "$ZodIntersection"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_tuple@L1274",
+      "line": 1274,
+      "tsx_consumes": [
+        "SchemaClass",
+        "$ZodType"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [
+        "$ZodType"
+      ],
+      "tsc_produces": [],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_record@L1294",
+      "line": 1294,
+      "tsx_consumes": [
+        "SchemaClass",
+        "Key",
+        "Value"
+      ],
+      "tsx_produces": [
+        "$ZodRecord"
+      ],
+      "tsc_consumes": [
+        "Key",
+        "Value"
+      ],
+      "tsc_produces": [
+        "$ZodRecord"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_map@L1311",
+      "line": 1311,
+      "tsx_consumes": [
+        "SchemaClass",
+        "Key",
+        "Value"
+      ],
+      "tsx_produces": [
+        "$ZodMap"
+      ],
+      "tsc_consumes": [
+        "Key",
+        "Value"
+      ],
+      "tsc_produces": [
+        "$ZodMap"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_set@L1328",
+      "line": 1328,
+      "tsx_consumes": [
+        "SchemaClass",
+        "Value"
+      ],
+      "tsx_produces": [
+        "$ZodSet"
+      ],
+      "tsc_consumes": [
+        "Value"
+      ],
+      "tsc_produces": [
+        "$ZodSet"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_enum@L1355",
+      "line": 1355,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_nativeEnum@L1384",
+      "line": 1384,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [
+        "$ZodEnum"
+      ],
+      "tsc_consumes": [
+        "T"
+      ],
+      "tsc_produces": [
+        "$ZodEnum"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_literal@L1409",
+      "line": 1409,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_file@L1420",
+      "line": 1420,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [
+        "$ZodFile"
+      ],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "$ZodFile"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_transform@L1430",
+      "line": 1430,
+      "tsx_consumes": [
+        "SchemaClass",
+        "ParsePayload"
+      ],
+      "tsx_produces": [
+        "$ZodTransform"
+      ],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "$ZodTransform"
+      ],
+      "spurious_consumes": [
+        "SchemaClass",
+        "ParsePayload"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_optional@L1443",
+      "line": 1443,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [
+        "$ZodOptional"
+      ],
+      "tsc_consumes": [
+        "T"
+      ],
+      "tsc_produces": [
+        "$ZodOptional"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_nullable@L1456",
+      "line": 1456,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [
+        "$ZodNullable"
+      ],
+      "tsc_consumes": [
+        "T"
+      ],
+      "tsc_produces": [
+        "$ZodNullable"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_default@L1469",
+      "line": 1469,
+      "tsx_consumes": [
+        "SchemaClass",
+        "NoUndefined"
+      ],
+      "tsx_produces": [
+        "$ZodDefault"
+      ],
+      "tsc_consumes": [
+        "T"
+      ],
+      "tsc_produces": [
+        "$ZodDefault"
+      ],
+      "spurious_consumes": [
+        "SchemaClass",
+        "NoUndefined"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_nonoptional@L1486",
+      "line": 1486,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [
+        "$ZodNonOptional"
+      ],
+      "tsc_consumes": [
+        "T"
+      ],
+      "tsc_produces": [
+        "$ZodNonOptional"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_success@L1501",
+      "line": 1501,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [
+        "$ZodSuccess"
+      ],
+      "tsc_consumes": [
+        "T"
+      ],
+      "tsc_produces": [
+        "$ZodSuccess"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_catch@L1514",
+      "line": 1514,
+      "tsx_consumes": [
+        "SchemaClass",
+        "output",
+        "$ZodCatchCtx"
+      ],
+      "tsx_produces": [
+        "$ZodCatch"
+      ],
+      "tsc_consumes": [
+        "T"
+      ],
+      "tsc_produces": [
+        "$ZodCatch"
+      ],
+      "spurious_consumes": [
+        "SchemaClass",
+        "output",
+        "$ZodCatchCtx"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_pipe@L1529",
+      "line": 1529,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [
+        "$ZodPipe"
+      ],
+      "tsc_consumes": [
+        "A"
+      ],
+      "tsc_produces": [
+        "$ZodPipe"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_readonly@L1547",
+      "line": 1547,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [
+        "$ZodReadonly"
+      ],
+      "tsc_consumes": [
+        "T"
+      ],
+      "tsc_produces": [
+        "$ZodReadonly"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_templateLiteral@L1560",
+      "line": 1560,
+      "tsx_consumes": [
+        "SchemaClass",
+        "Parts"
+      ],
+      "tsx_produces": [
+        "$ZodTemplateLiteral"
+      ],
+      "tsc_consumes": [
+        "Parts"
+      ],
+      "tsc_produces": [
+        "$ZodTemplateLiteral"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_lazy@L1575",
+      "line": 1575,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [
+        "$ZodLazy"
+      ],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "$ZodLazy"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_promise@L1588",
+      "line": 1588,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [
+        "$ZodPromise"
+      ],
+      "tsc_consumes": [
+        "T"
+      ],
+      "tsc_produces": [
+        "$ZodPromise"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_custom@L1601",
+      "line": 1601,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [
+        "$ZodCustom"
+      ],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "$ZodCustom"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_refine@L1620",
+      "line": 1620,
+      "tsx_consumes": [
+        "SchemaClass"
+      ],
+      "tsx_produces": [
+        "$ZodCustom"
+      ],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "$ZodCustom"
+      ],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_superRefine@L1659",
+      "line": 1659,
+      "tsx_consumes": [
+        "$RefinementCtx",
+        "$ZodSuperRefineParams"
+      ],
+      "tsx_produces": [
+        "$ZodCheck"
+      ],
+      "tsc_consumes": [
+        "$ZodSuperRefineParams"
+      ],
+      "tsc_produces": [
+        "$ZodCheck"
+      ],
+      "spurious_consumes": [
+        "$RefinementCtx"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\api.ts",
+      "symbol": "_check@L1685",
+      "line": 1685,
+      "tsx_consumes": [
+        "CheckFn"
+      ],
+      "tsx_produces": [
+        "$ZodCheck"
+      ],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "$ZodCheck"
+      ],
+      "spurious_consumes": [
+        "CheckFn"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\config.ts",
+      "symbol": "config@L12",
+      "line": 12,
+      "tsx_consumes": [
+        "$ZodConfig"
+      ],
+      "tsx_produces": [
+        "$ZodConfig"
+      ],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "$ZodConfig"
+      ],
+      "spurious_consumes": [
+        "$ZodConfig"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\core.ts",
+      "symbol": "config@L150",
+      "line": 150,
+      "tsx_consumes": [
+        "$ZodConfig"
+      ],
+      "tsx_produces": [
+        "$ZodConfig"
+      ],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "$ZodConfig"
+      ],
+      "spurious_consumes": [
+        "$ZodConfig"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\errors.ts",
+      "symbol": "flattenError@L265",
+      "line": 265,
+      "tsx_consumes": [
+        "$ZodError",
+        "$ZodIssue"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [
+        "$ZodError"
+      ],
+      "tsc_produces": [],
+      "spurious_consumes": [
+        "$ZodIssue"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\errors.ts",
+      "symbol": "formatError@L293",
+      "line": 293,
+      "tsx_consumes": [
+        "$ZodError",
+        "$ZodIssue"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [
+        "$ZodError"
+      ],
+      "tsc_produces": [],
+      "spurious_consumes": [
+        "$ZodIssue"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\errors.ts",
+      "symbol": "treeifyError@L347",
+      "line": 347,
+      "tsx_consumes": [
+        "$ZodError",
+        "$ZodIssue"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [
+        "$ZodError"
+      ],
+      "tsc_produces": [],
+      "spurious_consumes": [
+        "$ZodIssue"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\json-schema-processors.ts",
+      "symbol": "toJSONSchema@L621",
+      "line": 621,
+      "tsx_consumes": [
+        "$ZodType",
+        "ToJSONSchemaParams"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [],
+      "spurious_consumes": [
+        "$ZodType",
+        "ToJSONSchemaParams"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\schemas.ts",
+      "symbol": "isValidJWT@L1009",
+      "line": 1009,
+      "tsx_consumes": [
+        "JWTAlgorithm"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [],
+      "spurious_consumes": [
+        "JWTAlgorithm"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\schemas.ts",
+      "symbol": "handlePropertyResult@L1750",
+      "line": 1750,
+      "tsx_consumes": [
+        "ParsePayload",
+        "ParsePayload",
+        "PropertyKey"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [
+        "ParsePayload",
+        "ParsePayload"
+      ],
+      "tsc_produces": [],
+      "spurious_consumes": [
+        "PropertyKey"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\schemas.ts",
+      "symbol": "handleMapResult@L3086",
+      "line": 3086,
+      "tsx_consumes": [
+        "ParsePayload",
+        "ParsePayload",
+        "ParsePayload",
+        "Map",
+        "$ZodMap",
+        "ParseContext"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [
+        "ParsePayload",
+        "ParsePayload",
+        "ParsePayload",
+        "Map",
+        "$ZodMap"
+      ],
+      "tsc_produces": [],
+      "spurious_consumes": [
+        "ParseContext"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\schemas.ts",
+      "symbol": "handleCodecTxResult@L4122",
+      "line": 4122,
+      "tsx_consumes": [
+        "ParsePayload",
+        "SomeType",
+        "ParseContextInternal"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [
+        "ParsePayload",
+        "ParseContextInternal"
+      ],
+      "tsc_produces": [],
+      "spurious_consumes": [
+        "SomeType"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\to-json-schema.ts",
+      "symbol": "process@L139",
+      "line": 139,
+      "tsx_consumes": [
+        "ToJSONSchemaContext",
+        "ProcessParams"
+      ],
+      "tsx_produces": [
+        "BaseSchema"
+      ],
+      "tsc_consumes": [
+        "T",
+        "ToJSONSchemaContext",
+        "ProcessParams"
+      ],
+      "tsc_produces": [],
+      "spurious_consumes": [],
+      "spurious_produces": [
+        "BaseSchema"
+      ]
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\to-json-schema.ts",
+      "symbol": "isTransforming@L526",
+      "line": 526,
+      "tsx_consumes": [
+        "$ZodType",
+        "Set"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [
+        "$ZodType"
+      ],
+      "tsc_produces": [],
+      "spurious_consumes": [
+        "Set"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\util.ts",
+      "symbol": "assertEqual@L192",
+      "line": 192,
+      "tsx_consumes": [
+        "AssertEqual"
+      ],
+      "tsx_produces": [
+        "AssertEqual"
+      ],
+      "tsc_consumes": [],
+      "tsc_produces": [],
+      "spurious_consumes": [
+        "AssertEqual"
+      ],
+      "spurious_produces": [
+        "AssertEqual"
+      ]
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\util.ts",
+      "symbol": "assertNotEqual@L196",
+      "line": 196,
+      "tsx_consumes": [
+        "AssertNotEqual"
+      ],
+      "tsx_produces": [
+        "AssertNotEqual"
+      ],
+      "tsc_consumes": [],
+      "tsc_produces": [],
+      "spurious_consumes": [
+        "AssertNotEqual"
+      ],
+      "spurious_produces": [
+        "AssertNotEqual"
+      ]
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\util.ts",
+      "symbol": "getEnumValues@L207",
+      "line": 207,
+      "tsx_consumes": [
+        "EnumLike"
+      ],
+      "tsx_produces": [
+        "EnumValue"
+      ],
+      "tsc_consumes": [],
+      "tsc_produces": [],
+      "spurious_consumes": [
+        "EnumLike"
+      ],
+      "spurious_produces": [
+        "EnumValue"
+      ]
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\util.ts",
+      "symbol": "normalizeParams@L517",
+      "line": 517,
+      "tsx_consumes": [],
+      "tsx_produces": [
+        "Normalize"
+      ],
+      "tsc_consumes": [
+        "T"
+      ],
+      "tsc_produces": [],
+      "spurious_consumes": [],
+      "spurious_produces": [
+        "Normalize"
+      ]
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\util.ts",
+      "symbol": "optionalKeys@L574",
+      "line": 574,
+      "tsx_consumes": [
+        "$ZodShape"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [],
+      "spurious_consumes": [
+        "$ZodShape"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\util.ts",
+      "symbol": "extend@L659",
+      "line": 659,
+      "tsx_consumes": [
+        "$ZodObject",
+        "$ZodShape"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [
+        "$ZodObject"
+      ],
+      "tsc_produces": [],
+      "spurious_consumes": [
+        "$ZodShape"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\util.ts",
+      "symbol": "safeExtend@L687",
+      "line": 687,
+      "tsx_consumes": [
+        "$ZodObject",
+        "$ZodShape"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [
+        "$ZodObject"
+      ],
+      "tsc_produces": [],
+      "spurious_consumes": [
+        "$ZodShape"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\util.ts",
+      "symbol": "partial@L720",
+      "line": 720,
+      "tsx_consumes": [
+        "SchemaClass",
+        "$ZodObject"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [
+        "$ZodObject"
+      ],
+      "tsc_produces": [],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\util.ts",
+      "symbol": "required@L772",
+      "line": 772,
+      "tsx_consumes": [
+        "SchemaClass",
+        "$ZodObject"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [
+        "$ZodObject"
+      ],
+      "tsc_produces": [],
+      "spurious_consumes": [
+        "SchemaClass"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\util.ts",
+      "symbol": "prefixIssues@L837",
+      "line": 837,
+      "tsx_consumes": [
+        "PropertyKey",
+        "$ZodRawIssue"
+      ],
+      "tsx_produces": [
+        "$ZodRawIssue"
+      ],
+      "tsc_consumes": [],
+      "tsc_produces": [],
+      "spurious_consumes": [
+        "PropertyKey",
+        "$ZodRawIssue"
+      ],
+      "spurious_produces": [
+        "$ZodRawIssue"
+      ]
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\util.ts",
+      "symbol": "finalizeIssue@L849",
+      "line": 849,
+      "tsx_consumes": [
+        "$ZodRawIssue",
+        "ParseContextInternal",
+        "$ZodConfig"
+      ],
+      "tsx_produces": [
+        "$ZodIssue"
+      ],
+      "tsc_consumes": [
+        "$ZodConfig"
+      ],
+      "tsc_produces": [],
+      "spurious_consumes": [
+        "$ZodRawIssue",
+        "ParseContextInternal"
+      ],
+      "spurious_produces": [
+        "$ZodIssue"
+      ]
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\util.ts",
+      "symbol": "parsedType@L885",
+      "line": 885,
+      "tsx_consumes": [],
+      "tsx_produces": [
+        "$ZodInvalidTypeExpected"
+      ],
+      "tsc_consumes": [],
+      "tsc_produces": [],
+      "spurious_consumes": [],
+      "spurious_produces": [
+        "$ZodInvalidTypeExpected"
+      ]
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\util.ts",
+      "symbol": "issue@L911",
+      "line": 911,
+      "tsx_consumes": [],
+      "tsx_produces": [
+        "$ZodRawIssue"
+      ],
+      "tsc_consumes": [],
+      "tsc_produces": [],
+      "spurious_consumes": [],
+      "spurious_produces": [
+        "$ZodRawIssue"
+      ]
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\core\\util.ts",
+      "symbol": "cleanEnum@L925",
+      "line": 925,
+      "tsx_consumes": [],
+      "tsx_produces": [
+        "EnumValue"
+      ],
+      "tsc_consumes": [],
+      "tsc_produces": [],
+      "spurious_consumes": [],
+      "spurious_produces": [
+        "EnumValue"
+      ]
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\locales\\be.ts",
+      "symbol": "getSizing@L69",
+      "line": 69,
+      "tsx_consumes": [],
+      "tsx_produces": [
+        "BelarusianSizable"
+      ],
+      "tsc_consumes": [],
+      "tsc_produces": [],
+      "spurious_consumes": [],
+      "spurious_produces": [
+        "BelarusianSizable"
+      ]
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\locales\\hy.ts",
+      "symbol": "getSizing@L56",
+      "line": 56,
+      "tsx_consumes": [],
+      "tsx_produces": [
+        "ArmenianSizable"
+      ],
+      "tsc_consumes": [],
+      "tsc_produces": [],
+      "spurious_consumes": [],
+      "spurious_produces": [
+        "ArmenianSizable"
+      ]
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\locales\\lt.ts",
+      "symbol": "getUnitTypeFromNumber@L12",
+      "line": 12,
+      "tsx_consumes": [],
+      "tsx_produces": [
+        "UnitType"
+      ],
+      "tsc_consumes": [],
+      "tsc_produces": [],
+      "spurious_consumes": [],
+      "spurious_produces": [
+        "UnitType"
+      ]
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\locales\\lt.ts",
+      "symbol": "getSizing@L100",
+      "line": 100,
+      "tsx_consumes": [
+        "UnitType",
+        "SizeableComparisonType"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [],
+      "spurious_consumes": [
+        "UnitType",
+        "SizeableComparisonType"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\locales\\ru.ts",
+      "symbol": "getSizing@L69",
+      "line": 69,
+      "tsx_consumes": [],
+      "tsx_produces": [
+        "RussianSizable"
+      ],
+      "tsc_consumes": [],
+      "tsc_produces": [],
+      "spurious_consumes": [],
+      "spurious_produces": [
+        "RussianSizable"
+      ]
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\mini\\schemas.ts",
+      "symbol": "hash@L525",
+      "line": 525,
+      "tsx_consumes": [
+        "Alg",
+        "Enc"
+      ],
+      "tsx_produces": [
+        "ZodMiniCustomStringFormat"
+      ],
+      "tsc_consumes": [
+        "Alg"
+      ],
+      "tsc_produces": [
+        "ZodMiniCustomStringFormat"
+      ],
+      "spurious_consumes": [
+        "Enc"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\mini\\schemas.ts",
+      "symbol": "array@L821",
+      "line": 821,
+      "tsx_consumes": [
+        "SomeType"
+      ],
+      "tsx_produces": [
+        "ZodMiniArray"
+      ],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "ZodMiniArray"
+      ],
+      "spurious_consumes": [
+        "SomeType"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\mini\\schemas.ts",
+      "symbol": "safeExtend@L914",
+      "line": 914,
+      "tsx_consumes": [
+        "SafeExtendShape"
+      ],
+      "tsx_produces": [
+        "ZodMiniObject"
+      ],
+      "tsc_consumes": [
+        "T"
+      ],
+      "tsc_produces": [
+        "ZodMiniObject"
+      ],
+      "spurious_consumes": [
+        "SafeExtendShape"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\mini\\schemas.ts",
+      "symbol": "tuple@L1149",
+      "line": 1149,
+      "tsx_consumes": [
+        "SomeType"
+      ],
+      "tsx_produces": [],
+      "tsc_consumes": [],
+      "tsc_produces": [],
+      "spurious_consumes": [
+        "SomeType"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\mini\\schemas.ts",
+      "symbol": "transform@L1382",
+      "line": 1382,
+      "tsx_consumes": [
+        "ParsePayload"
+      ],
+      "tsx_produces": [
+        "ZodMiniTransform"
+      ],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "ZodMiniTransform"
+      ],
+      "spurious_consumes": [
+        "ParsePayload"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\mini\\schemas.ts",
+      "symbol": "_default@L1475",
+      "line": 1475,
+      "tsx_consumes": [
+        "NoUndefined"
+      ],
+      "tsx_produces": [
+        "ZodMiniDefault"
+      ],
+      "tsc_consumes": [
+        "T"
+      ],
+      "tsc_produces": [
+        "ZodMiniDefault"
+      ],
+      "spurious_consumes": [
+        "NoUndefined"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\mini\\schemas.ts",
+      "symbol": "prefault@L1501",
+      "line": 1501,
+      "tsx_consumes": [
+        "NoUndefined"
+      ],
+      "tsx_produces": [
+        "ZodMiniPrefault"
+      ],
+      "tsc_consumes": [
+        "T"
+      ],
+      "tsc_produces": [
+        "ZodMiniPrefault"
+      ],
+      "spurious_consumes": [
+        "NoUndefined"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\mini\\schemas.ts",
+      "symbol": "_catch@L1572",
+      "line": 1572,
+      "tsx_consumes": [
+        "output",
+        "$ZodCatchCtx"
+      ],
+      "tsx_produces": [
+        "ZodMiniCatch"
+      ],
+      "tsc_consumes": [
+        "T"
+      ],
+      "tsc_produces": [
+        "ZodMiniCatch"
+      ],
+      "spurious_consumes": [
+        "output",
+        "$ZodCatchCtx"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\mini\\schemas.ts",
+      "symbol": "codec@L1641",
+      "line": 1641,
+      "tsx_consumes": [
+        "output",
+        "ParsePayload",
+        "input",
+        "ParsePayload"
+      ],
+      "tsx_produces": [
+        "ZodMiniCodec"
+      ],
+      "tsc_consumes": [
+        "A",
+        "B"
+      ],
+      "tsc_produces": [
+        "ZodMiniCodec"
+      ],
+      "spurious_consumes": [
+        "output",
+        "ParsePayload",
+        "input"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\mini\\schemas.ts",
+      "symbol": "check@L1774",
+      "line": 1774,
+      "tsx_consumes": [
+        "CheckFn"
+      ],
+      "tsx_produces": [
+        "$ZodCheck"
+      ],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "$ZodCheck"
+      ],
+      "spurious_consumes": [
+        "CheckFn"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\mini\\schemas.ts",
+      "symbol": "refine@L1796",
+      "line": 1796,
+      "tsx_consumes": [
+        "NoInfer"
+      ],
+      "tsx_produces": [
+        "$ZodCheck"
+      ],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "$ZodCheck"
+      ],
+      "spurious_consumes": [
+        "NoInfer"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\mini\\schemas.ts",
+      "symbol": "superRefine@L1805",
+      "line": 1805,
+      "tsx_consumes": [
+        "$RefinementCtx",
+        "$ZodSuperRefineParams"
+      ],
+      "tsx_produces": [
+        "$ZodCheck"
+      ],
+      "tsc_consumes": [
+        "$ZodSuperRefineParams"
+      ],
+      "tsc_produces": [
+        "$ZodCheck"
+      ],
+      "spurious_consumes": [
+        "$RefinementCtx"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\mini\\schemas.ts",
+      "symbol": "_instanceof@L1821",
+      "line": 1821,
+      "tsx_consumes": [
+        "$ZodCustomParams"
+      ],
+      "tsx_produces": [
+        "ZodMiniCustom"
+      ],
+      "tsc_consumes": [
+        "T"
+      ],
+      "tsc_produces": [
+        "ZodMiniCustom"
+      ],
+      "spurious_consumes": [
+        "$ZodCustomParams"
+      ],
+      "spurious_produces": []
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\mini\\schemas.ts",
+      "symbol": "_function@L1936",
+      "line": 1936,
+      "tsx_consumes": [
+        "$ZodFunctionOut",
+        "$ZodFunctionArgs"
+      ],
+      "tsx_produces": [
+        "ZodMiniFunction"
+      ],
+      "tsc_consumes": [],
+      "tsc_produces": [
+        "ZodMiniFunction"
+      ],
+      "spurious_consumes": [
+        "$ZodFunctionOut",
+        "$ZodFunctionArgs"
+      ],
+      "spurious_produces": []
+    }
+  ]
+}

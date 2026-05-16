@@ -1,0 +1,560 @@
+{
+  "corpus": "D:\\Nreki\\corpus\\withastro__astro",
+  "elapsedSec": "8.8s",
+  "filesEvaluated": 1314,
+  "totalSymbols": 2161,
+  "matchedSymbols": 2006,
+  "accuracy": "92.8%",
+  "failureRate": "7.2%",
+  "killCriterion": "PROCEED",
+  "whitelist_unwrap": {
+    "applied_on_both_sides": true,
+    "unwrap": [
+      "Promise",
+      "Awaitable",
+      "Array",
+      "ReadonlyArray",
+      "T[]",
+      "readonly T[]"
+    ],
+    "keep_container_name": [
+      "Map",
+      "Set",
+      "WeakMap",
+      "WeakSet",
+      "Result",
+      "Option",
+      "Either",
+      "Maybe",
+      "any custom generic not in unwrap list"
+    ],
+    "discard": [
+      "any",
+      "unknown",
+      "never",
+      "void",
+      "string",
+      "number",
+      "boolean",
+      "bigint",
+      "symbol",
+      "null",
+      "undefined",
+      "object",
+      "__type",
+      "__object",
+      "_",
+      "(Anonymous*"
+    ]
+  },
+  "regex_change": {
+    "from": "[A-Z][A-Za-z0-9_]*",
+    "to": "[a-zA-Z_$][a-zA-Z0-9_$]*",
+    "rationale": "Accept $-prefix and underscore-prefix valid TypeScript identifiers."
+  },
+  "caveat_oracle": "Ground truth from vanilla ts.createProgram, NOT from TsCompilerWrapper. Production accuracy may diverge ~2-5% in edge cases (deep re-exports, complex generics, monorepo paths). Acceptable as Phase 1 proxy. If accuracy lands 78-82%, re-validate with TsCompilerWrapper harness before kill decision.",
+  "known_heuristic_gaps": [
+    "Regex ^[^{]+ for signature extraction may truncate at { in generic bounds (e.g. T extends { id: string }).",
+    "Regex extracts single-token types only — does not handle qualified names like core.SomeType (captures only 'core').",
+    "Regex generic group <[^>]+> stops at first >, so deeply nested generics like Promise<Map<K,V>> may misparse."
+  ],
+  "breakdown_by_reason": [
+    {
+      "bucket": "named-type-missed",
+      "count": 151,
+      "pct_of_failures": "97.4%",
+      "examples": [
+        {
+          "file": "packages\\astro\\test\\test-adapter.ts",
+          "symbol": "testAdapter@L20",
+          "treesitter": {
+            "consumes": [],
+            "produces": []
+          },
+          "tscompiler": {
+            "consumes": [
+              "TestAdapterOptions"
+            ],
+            "produces": []
+          },
+          "match": false,
+          "reason": "missing consumes:TestAdapterOptions"
+        },
+        {
+          "file": "packages\\astro\\test\\test-adapter.ts",
+          "symbol": "selfTestAdapter@L154",
+          "treesitter": {
+            "consumes": [],
+            "produces": []
+          },
+          "tscompiler": {
+            "consumes": [
+              "TestAdapterOptions"
+            ],
+            "produces": []
+          },
+          "match": false,
+          "reason": "missing consumes:TestAdapterOptions"
+        }
+      ]
+    },
+    {
+      "bucket": "generic-type-param",
+      "count": 4,
+      "pct_of_failures": "2.6%",
+      "examples": [
+        {
+          "file": "packages\\astro\\src\\cli\\install-package.ts",
+          "symbol": "getPackage@L18",
+          "treesitter": {
+            "consumes": [
+              "AstroLogger",
+              "GetPackageOptions",
+              "T | undefined"
+            ],
+            "produces": [
+              "T | undefined"
+            ]
+          },
+          "tscompiler": {
+            "consumes": [
+              "AstroLogger"
+            ],
+            "produces": [
+              "T"
+            ]
+          },
+          "match": false,
+          "reason": "missing produces:T"
+        },
+        {
+          "file": "packages\\astro\\src\\integrations\\hooks.ts",
+          "symbol": "withTakingALongTimeMsg@L40",
+          "treesitter": {
+            "consumes": [],
+            "produces": []
+          },
+          "tscompiler": {
+            "consumes": [],
+            "produces": [
+              "T"
+            ]
+          },
+          "match": false,
+          "reason": "missing produces:T"
+        }
+      ]
+    }
+  ],
+  "named_type_sub_buckets": [
+    {
+      "sub_bucket": "plain-named-missed",
+      "count": 146
+    },
+    {
+      "sub_bucket": "dollar-prefix-type",
+      "count": 5
+    }
+  ],
+  "filter_projection": [
+    {
+      "filter_through": "named-type-missed",
+      "cumulative_filtered": 151,
+      "remaining_total": 2010,
+      "projected_accuracy": "99.8%",
+      "passes_60_smoke_threshold": true,
+      "passes_80_kill_threshold": true
+    },
+    {
+      "filter_through": "generic-type-param",
+      "cumulative_filtered": 155,
+      "remaining_total": 2006,
+      "projected_accuracy": "100.0%",
+      "passes_60_smoke_threshold": true,
+      "passes_80_kill_threshold": true
+    }
+  ],
+  "worstFailures": [
+    {
+      "file": "packages\\astro\\test\\test-adapter.ts",
+      "symbol": "testAdapter@L20",
+      "treesitter": {
+        "consumes": [],
+        "produces": []
+      },
+      "tscompiler": {
+        "consumes": [
+          "TestAdapterOptions"
+        ],
+        "produces": []
+      },
+      "match": false,
+      "reason": "missing consumes:TestAdapterOptions"
+    },
+    {
+      "file": "packages\\astro\\test\\test-adapter.ts",
+      "symbol": "selfTestAdapter@L154",
+      "treesitter": {
+        "consumes": [],
+        "produces": []
+      },
+      "tscompiler": {
+        "consumes": [
+          "TestAdapterOptions"
+        ],
+        "produces": []
+      },
+      "match": false,
+      "reason": "missing consumes:TestAdapterOptions"
+    },
+    {
+      "file": "packages\\create-astro\\src\\shell.ts",
+      "symbol": "shell@L45",
+      "treesitter": {
+        "consumes": [
+          "ExecaOptions"
+        ],
+        "produces": []
+      },
+      "tscompiler": {
+        "consumes": [
+          "ExecaOptions"
+        ],
+        "produces": [
+          "Output"
+        ]
+      },
+      "match": false,
+      "reason": "missing produces:Output"
+    },
+    {
+      "file": "packages\\underscore-redirects\\src\\astro.ts",
+      "symbol": "createRedirectsFromAstroRoutes@L62",
+      "treesitter": {
+        "consumes": [],
+        "produces": []
+      },
+      "tscompiler": {
+        "consumes": [
+          "CreateRedirectsFromAstroRoutesParams"
+        ],
+        "produces": [
+          "HostRoutes"
+        ]
+      },
+      "match": false,
+      "reason": "missing consumes:CreateRedirectsFromAstroRoutesParams,produces:HostRoutes"
+    },
+    {
+      "file": "packages\\upgrade\\src\\shell.ts",
+      "symbol": "shell@L46",
+      "treesitter": {
+        "consumes": [
+          "ExecaOptions"
+        ],
+        "produces": []
+      },
+      "tscompiler": {
+        "consumes": [
+          "ExecaOptions"
+        ],
+        "produces": [
+          "Output"
+        ]
+      },
+      "match": false,
+      "reason": "missing produces:Output"
+    },
+    {
+      "file": "packages\\astro\\src\\actions\\integration.ts",
+      "symbol": "astroIntegrationActionsRouteHandler@L14",
+      "treesitter": {
+        "consumes": [],
+        "produces": []
+      },
+      "tscompiler": {
+        "consumes": [],
+        "produces": [
+          "AstroIntegration"
+        ]
+      },
+      "match": false,
+      "reason": "missing produces:AstroIntegration"
+    },
+    {
+      "file": "packages\\astro\\src\\actions\\utils.ts",
+      "symbol": "hasActionPayload@L8",
+      "treesitter": {
+        "consumes": [
+          "APIContext",
+          "locals"
+        ],
+        "produces": [
+          "locals"
+        ]
+      },
+      "tscompiler": {
+        "consumes": [
+          "Locals"
+        ],
+        "produces": []
+      },
+      "match": false,
+      "reason": "missing consumes:Locals"
+    },
+    {
+      "file": "packages\\astro\\src\\actions\\utils.ts",
+      "symbol": "createGetActionResult@L12",
+      "treesitter": {
+        "consumes": [
+          "APIContext",
+          "APIContext"
+        ],
+        "produces": [
+          "APIContext"
+        ]
+      },
+      "tscompiler": {
+        "consumes": [
+          "Locals"
+        ],
+        "produces": []
+      },
+      "match": false,
+      "reason": "missing consumes:Locals"
+    },
+    {
+      "file": "packages\\astro\\src\\assets\\runtime.ts",
+      "symbol": "createSvgComponent@L18",
+      "treesitter": {
+        "consumes": [],
+        "produces": []
+      },
+      "tscompiler": {
+        "consumes": [
+          "SvgComponentProps"
+        ],
+        "produces": []
+      },
+      "match": false,
+      "reason": "missing consumes:SvgComponentProps"
+    },
+    {
+      "file": "packages\\astro\\src\\assets\\vite-plugin-assets.ts",
+      "symbol": "assets@L126",
+      "treesitter": {
+        "consumes": [],
+        "produces": []
+      },
+      "tscompiler": {
+        "consumes": [
+          "Options"
+        ],
+        "produces": []
+      },
+      "match": false,
+      "reason": "missing consumes:Options"
+    },
+    {
+      "file": "packages\\astro\\src\\cli\\install-package.ts",
+      "symbol": "getPackage@L18",
+      "treesitter": {
+        "consumes": [
+          "AstroLogger",
+          "GetPackageOptions",
+          "T | undefined"
+        ],
+        "produces": [
+          "T | undefined"
+        ]
+      },
+      "tscompiler": {
+        "consumes": [
+          "AstroLogger"
+        ],
+        "produces": [
+          "T"
+        ]
+      },
+      "match": false,
+      "reason": "missing produces:T"
+    },
+    {
+      "file": "packages\\astro\\src\\config\\entrypoint.ts",
+      "symbol": "sharpImageService@L21",
+      "treesitter": {
+        "consumes": [
+          "SharpImageServiceConfig"
+        ],
+        "produces": []
+      },
+      "tscompiler": {
+        "consumes": [
+          "SharpImageServiceConfig"
+        ],
+        "produces": [
+          "ImageServiceConfig"
+        ]
+      },
+      "match": false,
+      "reason": "missing produces:ImageServiceConfig"
+    },
+    {
+      "file": "packages\\astro\\src\\config\\entrypoint.ts",
+      "symbol": "memoryCache@L45",
+      "treesitter": {
+        "consumes": [
+          "MemoryCacheProviderOptions"
+        ],
+        "produces": []
+      },
+      "tscompiler": {
+        "consumes": [
+          "MemoryCacheProviderOptions"
+        ],
+        "produces": [
+          "CacheProviderConfig"
+        ]
+      },
+      "match": false,
+      "reason": "missing produces:CacheProviderConfig"
+    },
+    {
+      "file": "packages\\astro\\src\\content\\content-layer.ts",
+      "symbol": "simpleLoader@L395",
+      "treesitter": {
+        "consumes": [],
+        "produces": []
+      },
+      "tscompiler": {
+        "consumes": [
+          "LoaderContext"
+        ],
+        "produces": []
+      },
+      "match": false,
+      "reason": "missing consumes:LoaderContext"
+    },
+    {
+      "file": "packages\\astro\\src\\content\\runtime.ts",
+      "symbol": "parseLiveEntry@L55",
+      "treesitter": {
+        "consumes": [
+          "LiveDataEntry",
+          "zCore",
+          "Promise"
+        ],
+        "produces": [
+          "Promise"
+        ]
+      },
+      "tscompiler": {
+        "consumes": [
+          "LiveDataEntry",
+          "$ZodType"
+        ],
+        "produces": []
+      },
+      "match": false,
+      "reason": "missing consumes:$ZodType"
+    },
+    {
+      "file": "packages\\astro\\src\\content\\runtime.ts",
+      "symbol": "createGetEntries@L253",
+      "treesitter": {
+        "consumes": [
+          "ReturnType"
+        ],
+        "produces": []
+      },
+      "tscompiler": {
+        "consumes": [
+          "getEntry"
+        ],
+        "produces": []
+      },
+      "match": false,
+      "reason": "missing consumes:getEntry"
+    },
+    {
+      "file": "packages\\astro\\src\\content\\server-listeners.ts",
+      "symbol": "attachContentServerListeners@L15",
+      "treesitter": {
+        "consumes": [],
+        "produces": []
+      },
+      "tscompiler": {
+        "consumes": [
+          "ContentServerListenerParams"
+        ],
+        "produces": []
+      },
+      "match": false,
+      "reason": "missing consumes:ContentServerListenerParams"
+    },
+    {
+      "file": "packages\\astro\\src\\content\\types-generator.ts",
+      "symbol": "getContentLayerSchema@L388",
+      "treesitter": {
+        "consumes": [
+          "ContentConfig",
+          "T",
+          "z.ZodSchema | undefined"
+        ],
+        "produces": [
+          "z.ZodSchema | undefined"
+        ]
+      },
+      "tscompiler": {
+        "consumes": [
+          "T"
+        ],
+        "produces": [
+          "ZodType"
+        ]
+      },
+      "match": false,
+      "reason": "missing produces:ZodType"
+    },
+    {
+      "file": "packages\\astro\\src\\content\\types-generator.ts",
+      "symbol": "generateJSONSchema@L606",
+      "treesitter": {
+        "consumes": [
+          "typeof",
+          "fs",
+          "CollectionConfig",
+          "URL",
+          "AstroLogger"
+        ],
+        "produces": []
+      },
+      "tscompiler": {
+        "consumes": [
+          "\"node:fs\"",
+          "URL",
+          "AstroLogger"
+        ],
+        "produces": []
+      },
+      "match": false,
+      "reason": "missing consumes:\"node:fs\""
+    },
+    {
+      "file": "packages\\astro\\src\\content\\utils.ts",
+      "symbol": "getEntryData@L153",
+      "treesitter": {
+        "consumes": [],
+        "produces": []
+      },
+      "tscompiler": {
+        "consumes": [],
+        "produces": [
+          "TOutputData"
+        ]
+      },
+      "match": false,
+      "reason": "missing produces:TOutputData"
+    }
+  ]
+}
