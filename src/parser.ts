@@ -17,6 +17,7 @@ import { safeParse } from "./utils/safe-parse.js";
 import { logger } from "./utils/logger.js";
 import { extractTypeIO } from "./utils/type-extractor.js";
 import { registerTestResource } from "./utils/test-resource-registry.js";
+import { detectHeaderLanguage } from "./utils/header-router.js";
 
 // ─── Types ───────────────────────────────────────────────────────────
 
@@ -86,7 +87,10 @@ export type SupportedExtension =
     | ".cxx"
     | ".hpp"
     | ".hh"
-    | ".hxx";
+    | ".hxx"
+    | ".c"
+    | ".h";
+
 
 // ─── Language Configuration ──────────────────────────────────────────
 
@@ -121,6 +125,26 @@ const CPP_QUERY = `
       (union_specifier name: (type_identifier) @class_name) @class
       (namespace_definition name: (namespace_identifier) @class_name) @class
     `;
+
+// Furia 42 Adicional 1: pointer_declarator nesting variants.
+// C functions returning pointers nest function_declarator inside
+// pointer_declarator. Without these variants, char *strdup(...),
+// int **matrix_alloc(...), FILE *fopen(...) are invisible to
+// symbolName extraction.
+//
+// Forward declarations (without body) use bare function_declarator
+// not wrapped in function_definition — critical for header parsing.
+const C_QUERY = `
+  (function_definition declarator: (function_declarator declarator: (identifier) @func_name)) @func
+  (function_definition declarator: (pointer_declarator declarator: (function_declarator declarator: (identifier) @func_name))) @func
+  (function_definition declarator: (pointer_declarator declarator: (pointer_declarator declarator: (function_declarator declarator: (identifier) @func_name)))) @func
+  (function_declarator declarator: (identifier) @fwd_func_name) @fwd_func
+  (function_declarator declarator: (pointer_declarator declarator: (identifier) @fwd_func_name)) @fwd_func
+  (struct_specifier name: (type_identifier) @class_name) @class
+  (union_specifier name: (type_identifier) @class_name) @class
+  (enum_specifier name: (type_identifier) @class_name) @class
+  (type_definition declarator: (type_identifier) @type_name) @type
+`;
 
 const LANGUAGE_CONFIGS: Record<string, LanguageConfig> = {
     ".ts": {
@@ -333,6 +357,26 @@ const LANGUAGE_CONFIGS: Record<string, LanguageConfig> = {
         wasmFile: "tree-sitter-cpp.wasm",
         query: CPP_QUERY,
     },
+
+    // C (v11.0.1 activation)
+    // Grammar: tree-sitter-c@0.20.7 (bundled via tree-sitter-wasms@0.1.13).
+    // C_QUERY covers function definitions (incl. pointer-returning),
+    // forward declarations, struct/union/enum, and typedef.
+    ".c": {
+        wasmFile: "tree-sitter-c.wasm",
+        query: C_QUERY,
+    },
+
+    // Headers .h — routed dynamically by header-router.ts at parse time.
+    // Default grammar is C (smaller WASM at 792 KB vs 4.6 MB for C++).
+    // Headers containing C++ markers (template, namespace, class,
+    // #ifdef __cplusplus, extern "C", public:/private:/protected:,
+    // ::, using namespace) dispatch to C++ grammar instead.
+    // languageCache keyed by ext+wasm to allow per-file routing.
+    ".h": {
+        wasmFile: "tree-sitter-c.wasm",
+        query: C_QUERY,
+    },
 };
 
 // ─── Parser ──────────────────────────────────────────────────────────
@@ -377,24 +421,29 @@ export class ASTParser {
         return Object.keys(LANGUAGE_CONFIGS);
     }
 
-    /** Load a Tree-sitter language grammar from WASM. A-08: Serializes concurrent loads. */
-    private async loadLanguage(ext: string): Promise<Parser.Language | null> {
-        if (this.languageCache.has(ext)) {
-            return this.languageCache.get(ext)!;
+    /** Load a Tree-sitter language grammar from WASM. A-08: Serializes concurrent loads.
+     *  For .h headers, accepts optional wasmFile override for dynamic C/C++ routing. */
+    private async loadLanguage(ext: string, overrideWasm?: string): Promise<Parser.Language | null> {
+        const cacheKey = overrideWasm ? `${ext}:${overrideWasm}` : ext;
+
+        if (this.languageCache.has(cacheKey)) {
+            return this.languageCache.get(cacheKey)!;
         }
 
         const load = this.loadGate.then(async () => {
-            if (this.languageCache.has(ext)) {
-                return this.languageCache.get(ext)!;
+            if (this.languageCache.has(cacheKey)) {
+                return this.languageCache.get(cacheKey)!;
             }
 
             const config = LANGUAGE_CONFIGS[ext];
             if (!config) return null;
 
+            const wasmFile = overrideWasm ?? config.wasmFile;
+
             try {
-                const wasmPath = path.join(this.wasmDir, config.wasmFile);
+                const wasmPath = path.join(this.wasmDir, wasmFile);
                 const language = await Parser.Language.load(wasmPath);
-                this.languageCache.set(ext, language);
+                this.languageCache.set(cacheKey, language);
                 return language;
             } catch (err) {
                 logger.error(`Failed to load grammar for ${ext}: ${(err as Error).message}`);
@@ -406,18 +455,25 @@ export class ASTParser {
         return load;
     }
 
-    /** Get or create a Tree-sitter query for a language. */
-    private getQuery(ext: string, language: Parser.Language): Parser.Query | null {
-        if (this.queryCache.has(ext)) {
-            return this.queryCache.get(ext)!;
+    /** Get or create a Tree-sitter query for a language.
+     *  For .h headers routed to C++ grammar, overrideQuery swaps C_QUERY
+     *  to CPP_QUERY so C++-specific patterns (class_specifier, namespace_definition)
+     *  are active. Cache key disambiguates C vs C++ query variants. */
+    private getQuery(ext: string, language: Parser.Language, overrideQuery?: string): Parser.Query | null {
+        const cacheKey = overrideQuery ? `${ext}:cpp` : ext;
+
+        if (this.queryCache.has(cacheKey)) {
+            return this.queryCache.get(cacheKey)!;
         }
 
         const config = LANGUAGE_CONFIGS[ext];
         if (!config) return null;
 
+        const querySrc = overrideQuery ?? config.query;
+
         try {
-            const query = language.query(config.query);
-            this.queryCache.set(ext, query);
+            const query = language.query(querySrc);
+            this.queryCache.set(cacheKey, query);
             return query;
         } catch (err) {
             logger.error(`Failed to create query for ${ext}: ${(err as Error).message}`);
@@ -440,7 +496,26 @@ export class ASTParser {
         await this.initialize();
 
         const ext = path.extname(filePath).toLowerCase();
-        const language = await this.loadLanguage(ext);
+
+        // ── Header routing (v11.0.1) ─────────────────────────────────────
+        // .h files are ambiguous: C or C++. Detect C++ markers in the
+        // first 50 lines of the file content. If any C++ marker is found,
+        // route to tree-sitter-cpp.wasm; otherwise use the default
+        // tree-sitter-c.wasm (smaller, faster load).
+        let overrideWasm: string | undefined;
+        let overrideQuery: string | undefined;
+        if (ext === ".h") {
+            const headerLang = detectHeaderLanguage(content);
+            if (headerLang === "cpp") {
+                overrideWasm = "tree-sitter-cpp.wasm";
+                // Swap to CPP_QUERY for C++-specific patterns (class_specifier,
+                // namespace_definition, qualified_identifier, etc.)
+                overrideQuery = CPP_QUERY;
+            }
+            // else: stays C (default from LANGUAGE_CONFIGS[".h"])
+        }
+
+        const language = await this.loadLanguage(ext, overrideWasm);
 
         if (!language) {
             return {
@@ -452,7 +527,7 @@ export class ASTParser {
         }
 
         this.parser.setLanguage(language);
-        const query = this.getQuery(ext, language);
+        const query = this.getQuery(ext, language, overrideQuery);
 
         if (!query) {
             return {
@@ -770,6 +845,7 @@ export class ASTParser {
             export_arrow_func: "func",
             var_decl: "var",
             export_var_decl: "var",
+            fwd_func: "func",
         };
 
         return typeMap[captureName] ?? captureName;
