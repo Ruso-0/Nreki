@@ -45,6 +45,7 @@ results-c4b-full.jsonl
 results-c4b-full.jsonl.pre-*
 results-c4b-v2-full-backup.jsonl
 results-c4c-*.jsonl
+results-c4c-proposals-summary.txt
 results-phase61-*.jsonl
 results-phase635-*.jsonl
 results-phase636-*.jsonl

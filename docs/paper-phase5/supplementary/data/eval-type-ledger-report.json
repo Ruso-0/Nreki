@@ -1,0 +1,603 @@
+{
+  "corpus": "D:\\Nreki\\corpus\\colinhacks__zod",
+  "oracle_source": "vanilla_ts_createProgram",
+  "oracle_init_ms": 0,
+  "elapsedSec": "4.3s",
+  "filesEvaluated": 231,
+  "totalSymbols": 582,
+  "matchedSymbols_legacy": 442,
+  "matchedSymbols_strict": 349,
+  "accuracy_legacy_subset": "75.9%",
+  "accuracy_strict_bidirectional": "60.0%",
+  "failureRate": "24.1%",
+  "killCriterion": "ABORT_SPRINT",
+  "under_unwrap_safe_all": "69.9%",
+  "under_unwrap_safe_meaningful": "59.0%",
+  "under_unwrap_safe_kill_criterion": "99.0% meaningful",
+  "under_unwrap_safe_zone": "HARD_FLOOR",
+  "coverage": {
+    "chunksFuncMethod": 1069,
+    "chunksWithIO": 603,
+    "coveragePct": "56.41%"
+  },
+  "density": {
+    "avgConsumesPerChunk": 0.47,
+    "avgProducesPerChunk": 0.38,
+    "avgTotalIOPerChunk": 0.86
+  },
+  "oracleAgreement": {
+    "chunksMatchingOracle": 442,
+    "matchPct": "75.9%",
+    "chunksWithEmptyExtractorButOracleHasTypes": 16
+  },
+  "whitelist_unwrap": {
+    "applied_on_both_sides": true,
+    "unwrap": [
+      "Promise",
+      "Awaitable",
+      "Array",
+      "ReadonlyArray",
+      "T[]",
+      "readonly T[]"
+    ],
+    "keep_container_name": [
+      "Map",
+      "Set",
+      "WeakMap",
+      "WeakSet",
+      "Result",
+      "Option",
+      "Either",
+      "Maybe",
+      "any custom generic not in unwrap list"
+    ],
+    "discard": [
+      "any",
+      "unknown",
+      "never",
+      "void",
+      "string",
+      "number",
+      "boolean",
+      "bigint",
+      "symbol",
+      "null",
+      "undefined",
+      "object",
+      "__type",
+      "__object",
+      "_",
+      "typeof",
+      "asserts",
+      "keyof",
+      "infer",
+      "extends",
+      "is",
+      "in",
+      "as",
+      "satisfies",
+      "readonly",
+      "Pick",
+      "Omit",
+      "Record",
+      "ReturnType",
+      "Parameters",
+      "InstanceType",
+      "ConstructorParameters",
+      "ThisType",
+      "ThisParameterType",
+      "OmitThisParameter",
+      "Uppercase",
+      "Lowercase",
+      "Capitalize",
+      "Uncapitalize",
+      "(Anonymous*"
+    ]
+  },
+  "regex_change": {
+    "from": "[A-Z][A-Za-z0-9_]*",
+    "to": "[a-zA-Z_$][a-zA-Z0-9_$]*",
+    "rationale": "Accept $-prefix and underscore-prefix valid TypeScript identifiers."
+  },
+  "caveat_oracle": "Ground truth from vanilla ts.createProgram, NOT from TsCompilerWrapper. Production accuracy may diverge ~2-5% in edge cases (deep re-exports, complex generics, monorepo paths). Acceptable as Phase 1 proxy. If accuracy lands 78-82%, re-validate with TsCompilerWrapper harness before kill decision.",
+  "known_heuristic_gaps": [
+    "Regex ^[^{]+ for signature extraction may truncate at { in generic bounds (e.g. T extends { id: string }).",
+    "Regex extracts single-token types only — does not handle qualified names like core.SomeType (captures only 'core').",
+    "Regex generic group <[^>]+> stops at first >, so deeply nested generics like Promise<Map<K,V>> may misparse."
+  ],
+  "breakdown_by_reason": [
+    {
+      "bucket": "generic-type-param",
+      "count": 134,
+      "pct_of_failures": "95.7%",
+      "examples": [
+        {
+          "file": "packages\\zod\\src\\v3\\benchmarks\\realworld.ts",
+          "symbol": "array@L33",
+          "treesitter": {
+            "consumes": [],
+            "produces": []
+          },
+          "tscompiler": {
+            "consumes": [],
+            "produces": [
+              "T"
+            ]
+          },
+          "match": false,
+          "reason": "missing produces:T"
+        },
+        {
+          "file": "packages\\zod\\src\\v3\\helpers\\util.ts",
+          "symbol": "assertIs@L6",
+          "treesitter": {
+            "consumes": [],
+            "produces": []
+          },
+          "tscompiler": {
+            "consumes": [
+              "T"
+            ],
+            "produces": []
+          },
+          "match": false,
+          "reason": "missing consumes:T"
+        }
+      ]
+    },
+    {
+      "bucket": "named-type-missed",
+      "count": 6,
+      "pct_of_failures": "4.3%",
+      "examples": [
+        {
+          "file": "packages\\bench\\discriminated-union.ts",
+          "symbol": "makeSchema@L53",
+          "treesitter": {
+            "consumes": [],
+            "produces": []
+          },
+          "tscompiler": {
+            "consumes": [
+              "\"D:/Nreki/node_modules/zod/src/v4/index\""
+            ],
+            "produces": []
+          },
+          "match": false,
+          "reason": "missing consumes:\"D:/Nreki/node_modules/zod/src/v4/index\""
+        },
+        {
+          "file": "packages\\zod\\src\\v3\\types.ts",
+          "symbol": "deepPartialify@L2424",
+          "treesitter": {
+            "consumes": [
+              "ZodTypeAny"
+            ],
+            "produces": []
+          },
+          "tscompiler": {
+            "consumes": [
+              "ZodType"
+            ],
+            "produces": []
+          },
+          "match": false,
+          "reason": "missing consumes:ZodType"
+        }
+      ]
+    }
+  ],
+  "named_type_sub_buckets": [
+    {
+      "sub_bucket": "plain-named-missed",
+      "count": 5
+    },
+    {
+      "sub_bucket": "dollar-prefix-type",
+      "count": 1
+    }
+  ],
+  "filter_projection": [
+    {
+      "filter_through": "generic-type-param",
+      "cumulative_filtered": 134,
+      "remaining_total": 448,
+      "projected_accuracy": "98.7%",
+      "passes_60_smoke_threshold": true,
+      "passes_80_kill_threshold": true
+    },
+    {
+      "filter_through": "named-type-missed",
+      "cumulative_filtered": 140,
+      "remaining_total": 442,
+      "projected_accuracy": "100.0%",
+      "passes_60_smoke_threshold": true,
+      "passes_80_kill_threshold": true
+    }
+  ],
+  "worstFailures": [
+    {
+      "file": "packages\\bench\\discriminated-union.ts",
+      "symbol": "makeSchema@L53",
+      "treesitter": {
+        "consumes": [],
+        "produces": []
+      },
+      "tscompiler": {
+        "consumes": [
+          "\"D:/Nreki/node_modules/zod/src/v4/index\""
+        ],
+        "produces": []
+      },
+      "match": false,
+      "reason": "missing consumes:\"D:/Nreki/node_modules/zod/src/v4/index\""
+    },
+    {
+      "file": "packages\\zod\\src\\v3\\types.ts",
+      "symbol": "deepPartialify@L2424",
+      "treesitter": {
+        "consumes": [
+          "ZodTypeAny"
+        ],
+        "produces": []
+      },
+      "tscompiler": {
+        "consumes": [
+          "ZodType"
+        ],
+        "produces": []
+      },
+      "match": false,
+      "reason": "missing consumes:ZodType"
+    },
+    {
+      "file": "packages\\zod\\src\\v3\\benchmarks\\realworld.ts",
+      "symbol": "array@L33",
+      "treesitter": {
+        "consumes": [],
+        "produces": []
+      },
+      "tscompiler": {
+        "consumes": [],
+        "produces": [
+          "T"
+        ]
+      },
+      "match": false,
+      "reason": "missing produces:T"
+    },
+    {
+      "file": "packages\\zod\\src\\v3\\helpers\\util.ts",
+      "symbol": "assertIs@L6",
+      "treesitter": {
+        "consumes": [],
+        "produces": []
+      },
+      "tscompiler": {
+        "consumes": [
+          "T"
+        ],
+        "produces": []
+      },
+      "match": false,
+      "reason": "missing consumes:T"
+    },
+    {
+      "file": "packages\\zod\\src\\v3\\helpers\\util.ts",
+      "symbol": "joinValues@L69",
+      "treesitter": {
+        "consumes": [],
+        "produces": []
+      },
+      "tscompiler": {
+        "consumes": [
+          "T"
+        ],
+        "produces": []
+      },
+      "match": false,
+      "reason": "missing consumes:T"
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\classic\\schemas.ts",
+      "symbol": "_installLazyMethods@L33",
+      "treesitter": {
+        "consumes": [
+          "_LazyMethodsOf"
+        ],
+        "produces": []
+      },
+      "tscompiler": {
+        "consumes": [
+          "T"
+        ],
+        "produces": []
+      },
+      "match": false,
+      "reason": "missing consumes:T"
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\classic\\schemas.ts",
+      "symbol": "array@L1418",
+      "treesitter": {
+        "consumes": [],
+        "produces": [
+          "ZodArray"
+        ]
+      },
+      "tscompiler": {
+        "consumes": [
+          "T"
+        ],
+        "produces": [
+          "ZodArray"
+        ]
+      },
+      "match": false,
+      "reason": "missing consumes:T"
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\classic\\schemas.ts",
+      "symbol": "keyof@L1423",
+      "treesitter": {
+        "consumes": [],
+        "produces": [
+          "ZodEnum"
+        ]
+      },
+      "tscompiler": {
+        "consumes": [
+          "T"
+        ],
+        "produces": [
+          "ZodEnum"
+        ]
+      },
+      "match": false,
+      "reason": "missing consumes:T"
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\classic\\schemas.ts",
+      "symbol": "object@L1572",
+      "treesitter": {
+        "consumes": [],
+        "produces": [
+          "ZodObject"
+        ]
+      },
+      "tscompiler": {
+        "consumes": [
+          "T"
+        ],
+        "produces": [
+          "ZodObject"
+        ]
+      },
+      "match": false,
+      "reason": "missing consumes:T"
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\classic\\schemas.ts",
+      "symbol": "strictObject@L1586",
+      "treesitter": {
+        "consumes": [],
+        "produces": [
+          "ZodObject"
+        ]
+      },
+      "tscompiler": {
+        "consumes": [
+          "T"
+        ],
+        "produces": [
+          "ZodObject"
+        ]
+      },
+      "match": false,
+      "reason": "missing consumes:T"
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\classic\\schemas.ts",
+      "symbol": "looseObject@L1600",
+      "treesitter": {
+        "consumes": [],
+        "produces": [
+          "ZodObject"
+        ]
+      },
+      "tscompiler": {
+        "consumes": [
+          "T"
+        ],
+        "produces": [
+          "ZodObject"
+        ]
+      },
+      "match": false,
+      "reason": "missing consumes:T"
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\classic\\schemas.ts",
+      "symbol": "union@L1626",
+      "treesitter": {
+        "consumes": [],
+        "produces": [
+          "ZodUnion"
+        ]
+      },
+      "tscompiler": {
+        "consumes": [
+          "T"
+        ],
+        "produces": [
+          "ZodUnion"
+        ]
+      },
+      "match": false,
+      "reason": "missing consumes:T"
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\classic\\schemas.ts",
+      "symbol": "xor@L1654",
+      "treesitter": {
+        "consumes": [],
+        "produces": [
+          "ZodXor"
+        ]
+      },
+      "tscompiler": {
+        "consumes": [
+          "T"
+        ],
+        "produces": [
+          "ZodXor"
+        ]
+      },
+      "match": false,
+      "reason": "missing consumes:T"
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\classic\\schemas.ts",
+      "symbol": "intersection@L1716",
+      "treesitter": {
+        "consumes": [],
+        "produces": [
+          "ZodIntersection"
+        ]
+      },
+      "tscompiler": {
+        "consumes": [
+          "T",
+          "U"
+        ],
+        "produces": [
+          "ZodIntersection"
+        ]
+      },
+      "match": false,
+      "reason": "missing consumes:T,consumes:U"
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\classic\\schemas.ts",
+      "symbol": "nativeEnum@L1995",
+      "treesitter": {
+        "consumes": [],
+        "produces": [
+          "ZodEnum"
+        ]
+      },
+      "tscompiler": {
+        "consumes": [
+          "T"
+        ],
+        "produces": [
+          "ZodEnum"
+        ]
+      },
+      "match": false,
+      "reason": "missing consumes:T"
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\classic\\schemas.ts",
+      "symbol": "optional@L2140",
+      "treesitter": {
+        "consumes": [],
+        "produces": [
+          "ZodOptional"
+        ]
+      },
+      "tscompiler": {
+        "consumes": [
+          "T"
+        ],
+        "produces": [
+          "ZodOptional"
+        ]
+      },
+      "match": false,
+      "reason": "missing consumes:T"
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\classic\\schemas.ts",
+      "symbol": "exactOptional@L2165",
+      "treesitter": {
+        "consumes": [],
+        "produces": [
+          "ZodExactOptional"
+        ]
+      },
+      "tscompiler": {
+        "consumes": [
+          "T"
+        ],
+        "produces": [
+          "ZodExactOptional"
+        ]
+      },
+      "match": false,
+      "reason": "missing consumes:T"
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\classic\\schemas.ts",
+      "symbol": "nullable@L2190",
+      "treesitter": {
+        "consumes": [],
+        "produces": [
+          "ZodNullable"
+        ]
+      },
+      "tscompiler": {
+        "consumes": [
+          "T"
+        ],
+        "produces": [
+          "ZodNullable"
+        ]
+      },
+      "match": false,
+      "reason": "missing consumes:T"
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\classic\\schemas.ts",
+      "symbol": "nullish@L2198",
+      "treesitter": {
+        "consumes": [],
+        "produces": [
+          "ZodOptional"
+        ]
+      },
+      "tscompiler": {
+        "consumes": [
+          "T"
+        ],
+        "produces": [
+          "ZodOptional"
+        ]
+      },
+      "match": false,
+      "reason": "missing consumes:T"
+    },
+    {
+      "file": "packages\\zod\\src\\v4\\classic\\schemas.ts",
+      "symbol": "_default@L2220",
+      "treesitter": {
+        "consumes": [
+          "NoUndefined"
+        ],
+        "produces": [
+          "ZodDefault"
+        ]
+      },
+      "tscompiler": {
+        "consumes": [
+          "T"
+        ],
+        "produces": [
+          "ZodDefault"
+        ]
+      },
+      "match": false,
+      "reason": "missing consumes:T"
+    }
+  ]
+}
