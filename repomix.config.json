@@ -1,0 +1,56 @@
+{
+  "output": {
+    "filePath": "repomix-output.txt",
+    "style": "plain",
+    "compress": false,
+    "removeComments": false,
+    "removeEmptyLines": false,
+    "showLineNumbers": true,
+    "topFilesLength": 20,
+    "includeEmptyDirectories": false,
+    "directoryStructure": true,
+    "files": true
+  },
+  "include": [],
+  "ignore": {
+    "useGitignore": true,
+    "useDefaultPatterns": true,
+    "customPatterns": [
+      "**/*.jsonl",
+      "**/*.pre-*",
+      "**/*-backup.jsonl",
+      "**/results-*.txt",
+      "**/results-*.json",
+      "**/*.wasm",
+      "**/*.node",
+      "**/*.sqlite",
+      "**/*.db",
+      "**/*.bin",
+      "**/*.onnx",
+      "**/*.tar",
+      "**/*.tar.gz",
+      "**/*.zip",
+      "**/.aider.chat.history.md",
+      "**/repomix-output.*",
+      "docs/paper-phase5/supplementary/data/**",
+      "docs/paper-phase5/draft-v0.1.md",
+      "docs/paper-phase5/draft-v0.2.md",
+      "docs/paper-phase5/draft-v0.3.md",
+      "docs/paper-phase5/draft-v0.3.1.md",
+      "docs/paper-phase5/draft-v0.4-arxiv.md",
+      "docs/paper-phase5/draft-v0.4-arxiv-restored.md",
+      "docs/demo.svg",
+      "corpus/**",
+      "corpora/**",
+      "fixtures-large/**",
+      "snapshots/**",
+      "**/coverage/**",
+      "**/.cache/**",
+      "**/tmp/**",
+      "**/temp/**"
+    ]
+  },
+  "security": {
+    "enableSecurityCheck": true
+  }
+}
