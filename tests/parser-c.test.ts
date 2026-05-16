@@ -70,6 +70,24 @@ describe("C grammar activation", () => {
         expect(klass!.nodeType).toBe("class");
     });
 
+    it("captures typedef forward declarations", async () => {
+        const code = `
+            typedef struct Foo Foo;
+            typedef int (*callback_t)(int);
+        `;
+        const result = await parser.parse("test.c", code);
+
+        const fooTypedef = result.chunks.find(c =>
+            c.symbolName === "Foo" && c.nodeType === "type"
+        );
+        expect(fooTypedef).toBeDefined();
+
+        const cbTypedef = result.chunks.find(c =>
+            c.symbolName === "callback_t" && c.nodeType === "type"
+        );
+        expect(cbTypedef).toBeDefined();
+    });
+
     it("parses C99 designated initializers without error", async () => {
         const code = `
             typedef struct { int x; int y; } Point;

@@ -144,6 +144,9 @@ const C_QUERY = `
   (union_specifier name: (type_identifier) @class_name) @class
   (enum_specifier name: (type_identifier) @class_name) @class
   (type_definition declarator: (type_identifier) @type_name) @type
+  (type_definition type: (struct_specifier name: (type_identifier) @struct_typedef_name) declarator: (type_identifier) @type_name) @type
+  (type_definition type: (enum_specifier name: (type_identifier) @enum_typedef_name) declarator: (type_identifier) @type_name) @type
+  (type_definition declarator: (function_declarator declarator: (parenthesized_declarator (pointer_declarator declarator: (type_identifier) @type_name)))) @type
 `;
 
 const LANGUAGE_CONFIGS: Record<string, LanguageConfig> = {
@@ -591,9 +594,29 @@ export class ASTParser {
 
                 // Skip duplicates from overlapping query patterns
                 if (seen.has(nodeKey)) continue;
-                if (!isWebExt && result.some(c =>
-                    c.symbolName === symbolName && node.startIndex < c.endIndex && c.startIndex < node.endIndex
-                )) continue;
+                if (!isWebExt) {
+                    const newType = this.normalizeNodeType(mainCapture.name);
+                    let skip = false;
+                    for (let i = result.length - 1; i >= 0; i--) {
+                        const c = result[i];
+                        if (c.symbolName !== symbolName) continue;
+                        const overlaps = node.startIndex < c.endIndex && c.startIndex < node.endIndex;
+                        if (!overlaps) continue;
+                        // Same nodeType → existing wins (current behavior).
+                        // Different nodeType + new strictly contains existing → new wins
+                        // (e.g., `typedef struct Foo Foo;` → @type replaces @class Foo).
+                        if (newType !== c.nodeType
+                            && node.startIndex <= c.startIndex
+                            && node.endIndex >= c.endIndex
+                            && (node.startIndex < c.startIndex || node.endIndex > c.endIndex)) {
+                            result.splice(i, 1);
+                            continue;
+                        }
+                        skip = true;
+                        break;
+                    }
+                    if (skip) continue;
+                }
                 seen.add(nodeKey);
 
                 // OOM Parachute (D2): truncate on files with pathological symbol counts
