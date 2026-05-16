@@ -4,7 +4,7 @@
   <img src="https://img.shields.io/npm/v/@ruso-0/nreki?style=for-the-badge&color=blue" alt="npm version">
   <img src="https://img.shields.io/badge/Tests-783-brightgreen?style=for-the-badge" alt="783 Tests">
   <img src="https://img.shields.io/badge/AHI-9.7%2F10-brightgreen?style=for-the-badge" alt="AHI 9.7/10">
-  <img src="https://img.shields.io/badge/Languages-TS%20%7C%20JS%20%7C%20Go%20%7C%20Python-blue?style=for-the-badge" alt="Multi-language">
+  <img src="https://img.shields.io/badge/Languages-TS%20%7C%20JS%20%7C%20Go%20%7C%20Python%20%7C%20Kotlin%20%7C%20Java%20%7C%20C%2B%2B-blue?style=for-the-badge" alt="Multi-language">
   <img src="https://img.shields.io/badge/Cloud-Zero-orange?style=for-the-badge" alt="Zero Cloud">
   <img src="https://img.shields.io/badge/License-Apache_2.0-yellow?style=for-the-badge" alt="Apache 2.0">
 </p>
@@ -53,13 +53,47 @@ Three tools (`nreki_navigate`, `nreki_code`, `nreki_guard`), 23 actions, 4 langu
 - **Defect radar + ghost oracle.** Four inline detectors and a 0-ext-refs tagger run during `outline` - free signals, no extra tool call.
 - **Executable engrams.** Pin insights to symbols. Engrams prefixed `ASSERT` survive AST mutation; everything else invalidates on body change so memory can't go stale.
 
-## Language support
+## Language support (Validation + Auto-heal)
 
 | Language | Validation | Auto-heal |
 |----------|------------|-----------|
 | TypeScript / JavaScript | Full (TS Compiler API) | TS CodeFix API |
 | Go | gopls LSP sidecar | codeAction (atomic) |
 | Python | pyright LSP sidecar | codeAction (atomic) |
+
+## AST parser coverage
+
+NREKI's tree-sitter parser layer indexes additional languages for
+foveal compression + symbol retrieval + semantic-edit syntactic
+validation. These languages do **not** have LSP sidecars and
+therefore receive no auto-heal; otherwise their files participate
+in the retrieval index identically to TypeScript files.
+
+| Language    | Extensions                              | Parser | Foveal | Syntax check | LSP auto-heal | Type Ledger |
+|-------------|-----------------------------------------|--------|--------|--------------|---------------|-------------|
+| TypeScript  | .ts .tsx .mts .cts                      | ✓      | ✓      | ✓            | ✓ (tsc)       | ✓           |
+| JavaScript  | .js .jsx .mjs .cjs                      | ✓      | ✓      | ✓            | ✓ (tsc)       | ✓           |
+| Python      | .py                                     | ✓      | ✓      | ✓            | ✓ (pyright)   | —           |
+| Go          | .go                                     | ✓      | ✓      | ✓            | ✓ (gopls)     | —           |
+| CSS         | .css                                    | ✓      | ✓      | ✓            | —             | —           |
+| JSON        | .json                                   | ✓      | ✓      | ✓            | —             | —           |
+| HTML        | .html                                   | ✓      | ✓      | ✓            | —             | —           |
+| **Kotlin**  | .kt .kts                                | ✓      | ✓      | ✓            | —             | —           |
+| **Java**    | .java                                   | ✓      | ✓      | ✓            | —             | —           |
+| **C++**     | .cpp .cc .cxx .hpp .hh .hxx             | ✓      | ✓      | ✓            | —             | —           |
+
+Kotlin / Java / C++ activation in v11.0.x covers Android development
+(Kotlin app layer + Java legacy + C++ NDK native layer) and the
+broader JVM / native cross-platform ecosystem.
+
+**Known limitation (v11.0.x):** cross-file import detection for
+Kotlin / Java / C++ is not yet implemented. Repo-map dependency edges
+for files in these languages are intra-file only until v11.0.x.1.
+
+**Type Ledger (cross-file architectural dependency mapping) remains
+TypeScript-specific by design** - it relies on TypeScript compiler-
+derived type information. Multi-language Type Ledger expansion is
+tracked under the Phase 8 roadmap.
 
 ## Docs & links
 

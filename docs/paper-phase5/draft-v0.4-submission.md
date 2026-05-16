@@ -337,11 +337,54 @@ Hybrid RRF achieves accuracy gains at 1.98x the token cost of NREKI standalone. 
 
 ### 6.4 Cross-Language Generalization Constraint
 
-NREKI's parser layer supports multiple programming languages through tree-sitter grammar configuration. In the current checked workspace, `src/parser.ts` and `wasm/` verify active parsing support for TypeScript/TSX, JavaScript/JSX, Python, Go, CSS, JSON, and HTML. The Phase 5 empirical evaluation uses the PolyBench-Verified TypeScript subset exclusively (N=99 evaluable tasks). All quantitative claims herein apply only to TypeScript retrieval performance.
+NREKI's parser layer supports multiple programming languages through
+tree-sitter grammar configuration. In the v11.0.x checked workspace,
+`src/parser.ts` and `wasm/` verify active parsing support for
+TypeScript/TSX, JavaScript/JSX (including .mjs/.cjs/.mts/.cts),
+Python, Go, CSS, JSON, HTML, Kotlin (.kt/.kts), Java, and C++
+(.cpp/.cc/.cxx/.hpp/.hh/.hxx) — ten distinct languages spanning
+the JVM ecosystem (Kotlin, Java), native cross-platform (C++),
+web (TypeScript/JSX, JavaScript, CSS, HTML, JSON), and systems /
+scientific (Python, Go) families.
 
-Cross-language generalization to Python, Go, or other supported parser languages remains unverified quantitatively in this work. The Type Ledger architectural component is currently TypeScript-specific by design because it relies on TypeScript compiler-derived type information. Foveal compression is more language-agnostic, but cross-file architectural dependency mapping requires per-language adaptation. The prompt-level planning list of inactive Kotlin/Java/C++/Rust/Swift/C#/Dart/Ruby/PHP/Bash/Lua/Scala/Elixir/Zig grammars is not verified by the current `wasm/` directory, so this draft does not claim those grammars are bundled in the evaluated artifact.
+The Phase 5 empirical evaluation uses the PolyBench-Verified
+TypeScript subset exclusively (N=99 evaluable tasks). All
+quantitative claims herein apply only to TypeScript retrieval
+performance.
 
-This work claims demonstrated effectiveness on TypeScript code retrieval at PolyBench-Verified production scale. Generalization claims to other languages require dedicated empirical evaluation with language-specific benchmarks.
+Three distinct capabilities are gated differently and must not
+be conflated:
+
+1. **Foveal compression and tree-sitter symbol extraction** are
+   language-agnostic by construction and operate uniformly across
+   all parser-active languages once their WASM grammar is loaded.
+   Symbolic chunks, signature shorthands, and parser-level syntactic
+   validation are available for the full ten-language set.
+
+2. **The Type Ledger architectural component is TypeScript-specific
+   by design.** It relies on TypeScript compiler-derived type
+   information (control flow analysis on inferred generic
+   instantiations, conditional type reduction, declaration-merging
+   resolution, and structural propagation rules of the TypeScript
+   checker) that have no direct equivalents in the activated
+   languages on first pass. In v11.0.x this is enforced via an
+   explicit extension whitelist guard at the type extraction site,
+   preventing phantom type signatures from non-TypeScript code from
+   polluting the cross-file architectural index.
+
+3. **Cross-file import detection** is currently implemented for
+   TypeScript / JavaScript, Python, and Go only. Kotlin / Java /
+   C++ files participate in the retrieval index but their cross-file
+   dependency edges are intra-file only in v11.0.x; cross-file
+   import resolution is tracked as a follow-up sprint.
+
+This work claims demonstrated effectiveness on TypeScript code
+retrieval at PolyBench-Verified production scale. Generalization
+claims to other languages require dedicated empirical evaluation
+with language-specific benchmarks. The v11.0.x parser activation
+expands the substrate over which such benchmarks could be conducted,
+but does not itself constitute empirical evidence of cross-language
+retrieval performance.
 
 ### 6.5 Voyage Quota Exhaustion
 

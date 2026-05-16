@@ -11,6 +11,10 @@ All notable changes to NREKI will be documented in this file.
 ### Added
 
 - **Hybrid RRF retrieval**: Late-fusion file-level RRF combining NREKI Type Ledger + BM25. See `scripts/eval-phase5/runners/hybrid-runner.ts`.
+- **Multi-language parser activation**: tree-sitter grammars for Kotlin (.kt / .kts), Java (.java), and C++ (.cpp / .cc / .cxx / .hpp / .hh / .hxx) activated via tree-sitter-wasms bundle. Targets Android development (Kotlin app + Java legacy + C++ NDK) and the broader JVM / native cross-platform ecosystem. Files in these languages now receive foveal compression, semantic-edit syntactic validation, and inclusion in the retrieval index.
+- **DEFAULT_EXTENSIONS retroactive fix**: indexer FS watcher now includes .mjs / .cjs / .mts / .cts which were parser-supported since v10.12.0 but never reached the walker. Plus the 9 new Kotlin/Java/C++ extensions.
+- **Type Ledger pollution guard**: extractTypeIO now gated to TypeScript/JavaScript family extensions. Prevents phantom type extractions from Kotlin/Java/C++ regex matches from polluting symbol_io and corrupting TFC-Pro cross-file injection, type-graph queries, and in-degree ranking.
+- **Activation smoke tests**: tests/parser-kotlin.test.ts, tests/parser-java.test.ts, tests/parser-cpp.test.ts, plus tests/parser-multilang-smoke.test.ts as regression guard against tree-sitter-wasms grammar upgrades.
 - **Adversarial methodology**: adversarial AI-in-the-loop auditing protocol documented in the Phase 5 paper draft Section 3.5.
 - **Bonferroni-corrected significance testing**: bootstrap CI95% + Bonferroni `alpha=0.01` for multi-hypothesis evaluation.
 - **Phase 5 paper artifacts**: submission-ready paper draft and anonymous supplementary archive under `docs/paper-phase5/`.
@@ -20,8 +24,25 @@ All notable changes to NREKI will be documented in this file.
 ### Changed
 
 - **Sprint 6.4 evaluation**: N=99 PolyBench-Verified TypeScript tribunal verified Hybrid RRF FHR 0.566 vs NREKI 0.414 vs BM25 0.374; 9/10 hybrid deltas survive Bonferroni correction.
+- README "Language support" section renamed to "Language support (Validation + Auto-heal)" to disambiguate LSP-backed capabilities from AST parser coverage.
+- New "AST parser coverage" section documents foveal + retrieval + syntax-check capability for the 10-language active parser set with explicit Type Ledger TS-only disclosure.
+- Phase 5 paper Section 6.4 updated: active parser languages from 7 to 10. Empirical Phase 5 claims unchanged (TypeScript N=99 PolyBench-Verified remains the entire evaluation corpus).
 - **Test lifecycle hooks**: WASM/engine resources now have release-safe teardown paths for Vitest forks, covering `ASTParser`, `AstSandbox`, `ParserPool`, `NrekiDB`, and `NrekiEngine`.
 - **Evaluation orchestration**: `hybrid-rrf` is available via `--runners`; default runner set remains backward-compatible with the seven historical report runners.
+
+### Known Limitations
+
+- Cross-file dependency graph for Kotlin/Java/C++ files is intra-file only. Import statements not yet parsed for repo-map edges. Cross-file import resolution tracked as v11.0.x.1.
+- Type Ledger (TypeScript compiler-derived architectural deps) remains TypeScript-specific by design. Multi-language Type Ledger tracked as Phase 8 roadmap.
+- LSP auto-heal unchanged: only TS/JS/Go/Python receive codeAction-based auto-heal. Kotlin/Java/C++ surface syntax errors via tree-sitter ERROR / MISSING detection without auto-heal attempts.
+- .h files (ambiguous C vs C++) are excluded from default C++ activation. Users with C++ projects using .h for headers can opt-in via config.extensions override.
+
+### Deferred (tracked)
+
+- download-wasm.js SHA-256 checksum verification (issue #TBD)
+- Cross-file imports for Kotlin/Java/C++ (issue #TBD)
+- README test count badge update 783 → current (TECH_DEBT)
+- semantic-edit.ts:98 .tsx → "typescript" (bug, out of scope)
 
 ### Fixed
 

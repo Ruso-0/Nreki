@@ -6,6 +6,22 @@ remediar.
 
 ---
 
+## README Test Count Badge Drift (Deferred post-v11.0.0)
+
+- **Files**: `README.md`
+- **Issue**: README badge still advertises `Tests-783` even though the
+  suite has grown since the v10.7 badge update. The v11.0.x multi-language
+  activation intentionally leaves this stale badge untouched to avoid mixing
+  parser activation with release-metadata cleanup.
+- **Risk**: low. Documentation freshness issue only; no runtime or package
+  behavior affected.
+- **Remediation**: update README test count badge after the release gate has
+  a final stable `npm test` count.
+- **Registered**: sprint v11.0.0 multi-language activation
+- **Planned remediation**: follow-up documentation hygiene sprint
+
+---
+
 ## Testing / Mocks (Deferred for post-v10.19.0 Corpus)
 
 - **Files**: `tests/router.test.ts`, `tests/backward-compat.test.ts`
