@@ -2,6 +2,24 @@
 
 All notable changes to NREKI will be documented in this file.
 
+## [11.0.2] - 2026-05-16
+
+Mini-sprint closure for v11.0.1 cabos sueltos. No new features; only
+empirical closure of v11.0.1 measurement, query, and paper deliverables.
+
+### Added
+
+- **Corpus measurement consolidation**: `docs/paper-phase5/corpus-measurements-v11.0.1.json` ships full distribution stats (n_files, aggregate %, p50, p95) for six OSS corpora — Spring Boot Java (748 files, 81.3% aggregate), Square Okio Kotlin (306 files, 80.8%), nowinandroid app/ Kotlin Android (16 files, 89.4%), abseil-cpp absl/strings .cc (103 files, 89.9%), redis src/ C (133 files, 92.4%), abseil-cpp absl/strings .h C++-routed (66 files, 88.7%). Closes the Phase 7 abort from v11.0.1 sprint where Node was not installed in WSL2.
+- **Paper compile reproducibility**: `scripts/compile-paper-pdf.mjs` re-compiles the Phase 5 paper PDF via Chrome headless + Skia/PDF, matching the v11.0.0/v11.0.1 PDF metadata profile. `docs/paper-phase5/paper-style.css` provides academic-paper rendering. `marked` added to devDependencies.
+
+### Fixed
+
+- **typedef C variants in `C_QUERY`** (v11.0.1 empirical discrepancy): `typedef struct Foo Foo;` previously produced only a `@class` chunk for the inner struct because chunk dedup dropped the outer typedef match with the same symbol name. Added `type_definition` variants for named-struct and named-enum typedef aliases plus function-pointer typedef (`typedef int (*callback_t)(int)`). Dedup now allows a strictly-containing chunk with a different `nodeType` to replace the inner chunk (preserves equal-range dedup unchanged).
+
+### Changed
+
+- Phase 5 paper Section 6.4 (all three drafts: arxiv, arxiv-restored, submission) updated to v11.0.1 12-binding active grammar set (adds `.c` and `.h` header routing), retained three-capability-gate disclosure, plus corpus measurement table sourced from `corpus-measurements-v11.0.1.json` with explicit bias disclosure (well-maintained OSS reference repos; distribution exposed via p50/p95). PDF re-compiled (HeadlessChrome 148).
+
 ## [11.0.1] - 2026-05-16
 
 ### Added
