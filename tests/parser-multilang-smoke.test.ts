@@ -25,6 +25,8 @@ const CASES = [
     { ext: ".hpp", file: "sample.hpp", code: "class Greeter { public: int helloWorld(); };" },
     { ext: ".hh", file: "sample.hh", code: "class Greeter { public: int helloWorld(); };" },
     { ext: ".hxx", file: "sample.hxx", code: "class Greeter { public: int helloWorld(); };" },
+    { ext: ".c", file: "sample.c", code: "int helloWorld(void) { return 1; }" },
+    { ext: ".h", file: "sample.h", code: "int helloWorld(void);" },
 ];
 
 describe("multi-language parser activation gate", () => {
