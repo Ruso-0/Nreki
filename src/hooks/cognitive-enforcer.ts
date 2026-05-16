@@ -194,9 +194,13 @@ export class CognitiveEnforcer {
         if (action === "read") {
             const ext = path.extname(absPath).toLowerCase();
             const SUPPORTED_AST = new Set([
-                ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts",
+                ".ts", ".tsx", ".mts", ".cts",
+                ".js", ".jsx", ".mjs", ".cjs",
                 ".py", ".go",
-                ".css", ".json", ".html"
+                ".css", ".json", ".html",
+                ".kt", ".kts",
+                ".java",
+                ".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx"
             ]);
 
             if (!SUPPORTED_AST.has(ext)) {

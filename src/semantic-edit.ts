@@ -111,6 +111,15 @@ function detectLanguage(filePath: string): string | null {
         ".css": "css",
         ".json": "json",
         ".html": "html",
+        ".kt": "kotlin",
+        ".kts": "kotlin",
+        ".java": "java",
+        ".cpp": "cpp",
+        ".cc": "cpp",
+        ".cxx": "cpp",
+        ".hpp": "cpp",
+        ".hh": "cpp",
+        ".hxx": "cpp",
     };
     return map[ext] ?? null;
 }

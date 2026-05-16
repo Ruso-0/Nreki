@@ -39,7 +39,15 @@ export type SymbolKind = "function" | "class" | "interface" | "type" | "variable
 
 // ─── Constants ──────────────────────────────────────────────────────
 
-const SUPPORTED_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".py", ".go", ".css", ".json", ".html"]);
+const SUPPORTED_EXTENSIONS = new Set([
+    ".ts", ".tsx", ".mts", ".cts",
+    ".js", ".jsx", ".mjs", ".cjs",
+    ".py", ".go",
+    ".css", ".json", ".html",
+    ".kt", ".kts",
+    ".java",
+    ".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx",
+]);
 
 const IGNORE_DIRS = new Set([
     "node_modules", "dist", "build", ".git", "coverage",

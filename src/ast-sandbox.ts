@@ -49,6 +49,9 @@ const LANGUAGE_MAP: Record<string, string> = {
     css: "tree-sitter-css.wasm",
     json: "tree-sitter-json.wasm",
     html: "tree-sitter-html.wasm",
+    kotlin: "tree-sitter-kotlin.wasm",
+    java: "tree-sitter-java.wasm",
+    cpp: "tree-sitter-cpp.wasm",
 };
 
 /** Map file extensions to language names. */
@@ -66,6 +69,15 @@ const EXT_TO_LANGUAGE: Record<string, string> = {
     ".css": "css",
     ".json": "json",
     ".html": "html",
+    ".kt": "kotlin",
+    ".kts": "kotlin",
+    ".java": "java",
+    ".cpp": "cpp",
+    ".cc": "cpp",
+    ".cxx": "cpp",
+    ".hpp": "cpp",
+    ".hh": "cpp",
+    ".hxx": "cpp",
 };
 
 // ─── AstSandbox ──────────────────────────────────────────────────────

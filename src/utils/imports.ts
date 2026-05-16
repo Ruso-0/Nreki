@@ -55,6 +55,11 @@ export function cleanSignature(shorthand: string): string {
  * and pathHint (file hint for homonym disambiguation).
  */
 export function extractDependencies(code: string, ext: string): ImportDependency[] {
+    // v11.0.x note: Kotlin/Java/C++ import detection is NOT implemented.
+    // Files in these languages return [] from extractDependencies, resulting
+    // in repo-map cross-file dependency edges being intra-file only for these
+    // languages. Cross-file dependency resolution is deferred to the Phase 8.1
+    // multi-language imports follow-up sprint.
     const deps: ImportDependency[] = [];
 
     // Local path heuristic: Node needs ./, ~/, @/; Go needs /

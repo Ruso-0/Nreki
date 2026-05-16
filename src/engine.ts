@@ -38,7 +38,19 @@ import type { EngineConfig, IndexStats, SessionReport } from "./engine-types.js"
 
 // ─── Default config ──────────────────────────────────────────────────
 
-const DEFAULT_EXTENSIONS = [".ts", ".tsx", ".js", ".jsx", ".py", ".go", ".css", ".json", ".html"];
+const DEFAULT_EXTENSIONS = [
+    // TypeScript/JavaScript family (full set, fixes drift from v10.12.0)
+    ".ts", ".tsx", ".mts", ".cts",
+    ".js", ".jsx", ".mjs", ".cjs",
+    // Python/Go (LSP-backed)
+    ".py", ".go",
+    // Web (parser-active)
+    ".css", ".json", ".html",
+    // v11.0.x multi-language activation
+    ".kt", ".kts",
+    ".java",
+    ".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx",
+];
 
 const DEFAULT_IGNORE = [
     "**/node_modules/**",

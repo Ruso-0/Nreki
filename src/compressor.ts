@@ -44,7 +44,7 @@ export interface AdvancedCompressionResult {
 
 // ─── Language Detection ──────────────────────────────────────────────
 
-type Lang = "typescript" | "javascript" | "python" | "go" | "unknown";
+type Lang = "typescript" | "javascript" | "python" | "go" | "kotlin" | "java" | "cpp" | "unknown";
 
 function detectLang(filePath: string): Lang {
     const ext = filePath.split(".").pop()?.toLowerCase() ?? "";
@@ -52,6 +52,9 @@ function detectLang(filePath: string): Lang {
     if (ext === "js" || ext === "jsx") return "javascript";
     if (ext === "py") return "python";
     if (ext === "go") return "go";
+    if (ext === "kt" || ext === "kts") return "kotlin";
+    if (ext === "java") return "java";
+    if (["cpp", "cc", "cxx", "hpp", "hh", "hxx"].includes(ext)) return "cpp";
     return "unknown";
 }
 

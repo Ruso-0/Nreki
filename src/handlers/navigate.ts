@@ -71,6 +71,9 @@ export async function handleSearch(
         else if (['js', 'jsx', 'mjs', 'cjs'].includes(ext)) { lang = 'javascript'; commentPrefix = '//'; }
         else if (ext === 'py') { lang = 'python'; commentPrefix = '#'; }
         else if (ext === 'go') { lang = 'go'; commentPrefix = '//'; }
+        else if (['kt', 'kts'].includes(ext)) { lang = 'kotlin'; commentPrefix = '//'; }
+        else if (ext === 'java') { lang = 'java'; commentPrefix = '//'; }
+        else if (['cpp', 'cc', 'cxx', 'hpp', 'hh', 'hxx'].includes(ext)) { lang = 'cpp'; commentPrefix = '//'; }
         else if (!lang) { lang = 'typescript'; commentPrefix = '//'; }
 
         let sensoryTag = "";

@@ -1,9 +1,10 @@
 /**
  * parser.ts - Universal AST parser for NREKI.
  *
- * Wraps web-tree-sitter to parse TypeScript, JavaScript, Python, and Go
- * source files into semantic chunks. Each chunk is an AST node (class,
- * function, method, interface) compressed into shorthand notation.
+ * Wraps web-tree-sitter to parse TypeScript, JavaScript, Python, Go,
+ * web formats, Kotlin, Java, and C++ source files into semantic chunks.
+ * Each chunk is an AST node (class, function, method, interface)
+ * compressed into shorthand notation.
  *
  * Shorthand format: `[type] signature { /* TG:L42-L67 *​/ }`
  * This preserves structure while stripping implementation - ~18% savings.
@@ -76,7 +77,16 @@ export type SupportedExtension =
     | ".go"
     | ".css"
     | ".json"
-    | ".html";
+    | ".html"
+    | ".kt"
+    | ".kts"
+    | ".java"
+    | ".cpp"
+    | ".cc"
+    | ".cxx"
+    | ".hpp"
+    | ".hh"
+    | ".hxx";
 
 // ─── Language Configuration ──────────────────────────────────────────
 
@@ -85,6 +95,32 @@ interface LanguageConfig {
     /** Tree-sitter S-expression query to capture semantic nodes. */
     query: string;
 }
+
+const KOTLIN_QUERY = `
+      (function_declaration (simple_identifier) @func_name) @func
+      (class_declaration (type_identifier) @class_name) @class
+      (object_declaration (type_identifier) @class_name) @class
+    `;
+
+const JAVA_QUERY = `
+      (class_declaration name: (identifier) @class_name) @class
+      (interface_declaration name: (identifier) @iface_name) @interface
+      (enum_declaration name: (identifier) @class_name) @class
+      (record_declaration name: (identifier) @class_name) @class
+      (method_declaration name: (identifier) @method_name) @method
+      (constructor_declaration name: (identifier) @method_name) @method
+    `;
+
+const CPP_QUERY = `
+      (function_definition declarator: (function_declarator declarator: (identifier) @func_name)) @func
+      (function_definition declarator: (function_declarator declarator: (field_identifier) @method_name)) @method
+      (function_definition declarator: (function_declarator declarator: (qualified_identifier name: (identifier) @func_name))) @func
+      (function_definition declarator: (pointer_declarator declarator: (function_declarator declarator: (identifier) @func_name))) @func
+      (class_specifier name: (type_identifier) @class_name) @class
+      (struct_specifier name: (type_identifier) @class_name) @class
+      (union_specifier name: (type_identifier) @class_name) @class
+      (namespace_definition name: (namespace_identifier) @class_name) @class
+    `;
 
 const LANGUAGE_CONFIGS: Record<string, LanguageConfig> = {
     ".ts": {
@@ -248,6 +284,54 @@ const LANGUAGE_CONFIGS: Record<string, LanguageConfig> = {
             )
           ) @class
         `,
+    },
+    // Kotlin (v11.0.x activation)
+    // Grammar: fwcd/tree-sitter-kotlin@0.3.1 (bundled via tree-sitter-wasms).
+    // Empirical node names: function_declaration uses simple_identifier;
+    // class_declaration and object_declaration use type_identifier.
+    ".kt": {
+        wasmFile: "tree-sitter-kotlin.wasm",
+        query: KOTLIN_QUERY,
+    },
+    ".kts": {
+        wasmFile: "tree-sitter-kotlin.wasm",
+        query: KOTLIN_QUERY,
+    },
+
+    // Java (v11.0.x activation)
+    // Grammar: tree-sitter-java@0.20.2; record_declaration supported.
+    // method_declaration captures class and interface methods intentionally.
+    ".java": {
+        wasmFile: "tree-sitter-java.wasm",
+        query: JAVA_QUERY,
+    },
+
+    // C++ (v11.0.x activation)
+    // Grammar: tree-sitter-cpp@0.20.4. .h is excluded by default because it
+    // is ambiguous between C and C++; projects can opt in via config.extensions.
+    ".cpp": {
+        wasmFile: "tree-sitter-cpp.wasm",
+        query: CPP_QUERY,
+    },
+    ".cc": {
+        wasmFile: "tree-sitter-cpp.wasm",
+        query: CPP_QUERY,
+    },
+    ".cxx": {
+        wasmFile: "tree-sitter-cpp.wasm",
+        query: CPP_QUERY,
+    },
+    ".hpp": {
+        wasmFile: "tree-sitter-cpp.wasm",
+        query: CPP_QUERY,
+    },
+    ".hh": {
+        wasmFile: "tree-sitter-cpp.wasm",
+        query: CPP_QUERY,
+    },
+    ".hxx": {
+        wasmFile: "tree-sitter-cpp.wasm",
+        query: CPP_QUERY,
     },
 };
 
