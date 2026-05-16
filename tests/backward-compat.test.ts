@@ -9,7 +9,10 @@
  * "terminal" action renamed to "filter_output".
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import {
     handleNavigate,
     handleCode,
@@ -22,7 +25,26 @@ import { TokenMonitor } from "../src/monitor.js";
 
 // ─── Shared mock ────────────────────────────────────────────────────
 
+const tempRoots: string[] = [];
+
+function createMockRoot(): string {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "nreki-backcompat-"));
+    const srcDir = path.join(root, "src");
+    fs.mkdirSync(srcDir, { recursive: true });
+    fs.writeFileSync(
+        path.join(srcDir, "router.ts"),
+        "export class CircuitBreaker {}\nexport function handleSearch() { return 1; }\n",
+    );
+    fs.writeFileSync(
+        path.join(srcDir, "file.ts"),
+        "export function init() { return 1; }\n",
+    );
+    tempRoots.push(root);
+    return root;
+}
+
 function createMockDeps(): RouterDependencies {
+    const projectRoot = createMockRoot();
     const mockEngine = {
         initialize: vi.fn().mockResolvedValue(undefined),
         search: vi.fn().mockResolvedValue([
@@ -48,7 +70,7 @@ function createMockDeps(): RouterDependencies {
             parse: vi.fn().mockResolvedValue({ chunks: [] }),
             isSupported: vi.fn().mockReturnValue(true),
         }),
-        getProjectRoot: vi.fn().mockReturnValue(process.cwd()),
+        getProjectRoot: vi.fn().mockReturnValue(projectRoot),
         indexDirectory: vi.fn().mockResolvedValue({ indexed: 5, skipped: 0, errors: 0 }),
         getRepoMap: vi.fn().mockResolvedValue({
             map: {},
@@ -104,6 +126,13 @@ function createMockDeps(): RouterDependencies {
         circuitBreaker: new CircuitBreaker(),
     };
 }
+
+afterEach(() => {
+    while (tempRoots.length > 0) {
+        const root = tempRoots.pop();
+        if (root) fs.rmSync(root, { recursive: true, force: true });
+    }
+});
 
 // ─── Original nreki_navigate tools ─────────────────────────────────────
 

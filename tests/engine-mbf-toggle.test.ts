@@ -61,15 +61,23 @@ async function seedWorkspace(ws: string): Promise<void> {
 
 describe("EngineConfig.enableMarkovBlanket", () => {
     let ws: string;
+    let engine: NrekiEngine | undefined;
+    let engineOff: NrekiEngine | undefined;
+
     beforeEach(async () => {
         ws = await fs.mkdtemp(path.join(os.tmpdir(), "mbf-toggle-"));
     });
+
     afterEach(async () => {
+        engine?.shutdown();
+        engine = undefined;
+        engineOff?.shutdown();
+        engineOff = undefined;
         await fs.rm(ws, { recursive: true, force: true });
     });
 
     it("defaults to true when the field is omitted from EngineConfig", async () => {
-        const engine = new NrekiEngine({
+        engine = new NrekiEngine({
             dbPath: path.join(ws, ".nreki.db"),
             watchPaths: [ws],
         });
@@ -77,7 +85,7 @@ describe("EngineConfig.enableMarkovBlanket", () => {
     });
 
     it("is true when explicitly set to true", async () => {
-        const engine = new NrekiEngine({
+        engine = new NrekiEngine({
             dbPath: path.join(ws, ".nreki.db"),
             watchPaths: [ws],
             enableMarkovBlanket: true,
@@ -86,7 +94,7 @@ describe("EngineConfig.enableMarkovBlanket", () => {
     });
 
     it("is false when explicitly set to false", async () => {
-        const engine = new NrekiEngine({
+        engine = new NrekiEngine({
             dbPath: path.join(ws, ".nreki.db"),
             watchPaths: [ws],
             enableMarkovBlanket: false,
@@ -97,16 +105,16 @@ describe("EngineConfig.enableMarkovBlanket", () => {
     it("toggle does NOT affect fastGrep / indexer behavior", async () => {
         await seedWorkspace(ws);
 
-        const engineOn = await buildEngine(ws, true);
-        await engineOn.indexDirectory(ws);
-        const hitsOn = await engineOn.fastGrep("SuggestModel", 10);
+        engine = await buildEngine(ws, true);
+        await engine.indexDirectory(ws);
+        const hitsOn = await engine.fastGrep("SuggestModel", 10);
 
         // Re-seed under a sibling workspace so the second engine builds
         // a fresh DB (cleaner than reusing the first DB file).
         const ws2 = await fs.mkdtemp(path.join(os.tmpdir(), "mbf-toggle-off-"));
         try {
             await seedWorkspace(ws2);
-            const engineOff = await buildEngine(ws2, false);
+            engineOff = await buildEngine(ws2, false);
             await engineOff.indexDirectory(ws2);
             const hitsOff = await engineOff.fastGrep("SuggestModel", 10);
 
@@ -116,7 +124,7 @@ describe("EngineConfig.enableMarkovBlanket", () => {
             expect(fileSetOn).toEqual(fileSetOff);
             expect(fileSetOn.has("SuggestModel.ts")).toBe(true);
 
-            expect(engineOn.isMarkovBlanketEnabled()).toBe(true);
+            expect(engine.isMarkovBlanketEnabled()).toBe(true);
             expect(engineOff.isMarkovBlanketEnabled()).toBe(false);
         } finally {
             await fs.rm(ws2, { recursive: true, force: true });

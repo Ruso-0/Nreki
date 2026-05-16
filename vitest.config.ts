@@ -3,6 +3,7 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
     test: {
         include: ["tests/**/*.test.ts"],
+        setupFiles: ["tests/setup-resource-cleanup.ts"],
         pool: "forks",
         maxWorkers: 2,
         maxConcurrency: 2,

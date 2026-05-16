@@ -14,13 +14,14 @@ describe("E2E: Creative Circuit Breaker Flow", () => {
     let tmpDir: string;
     let deps: RouterDependencies;
     let testFile: string;
+    let engine: NrekiEngine | undefined;
 
     beforeAll(async () => {
         tmpDir = fs.mkdtempSync(path.join(process.cwd(), ".tg-e2e-"));
         testFile = path.join(tmpDir, "app.ts");
         fs.writeFileSync(testFile, "export function target() { return 1; }");
 
-        const engine = new NrekiEngine({
+        engine = new NrekiEngine({
             dbPath: path.join(tmpDir, "test.db"),
             watchPaths: [tmpDir],
         });
@@ -37,7 +38,11 @@ describe("E2E: Creative Circuit Breaker Flow", () => {
         };
     });
 
-    afterAll(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+    afterAll(() => {
+        engine?.shutdown();
+        engine = undefined;
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+    });
 
     it("simulates 3 failures → Level 1 redirect → grace period → recovery", async () => {
         // Broken code: missing closing brace

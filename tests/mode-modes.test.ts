@@ -3,7 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 import { NrekiKernel } from "../src/kernel/nreki-kernel.js";
-import { detectMode } from "../src/index.js";
+import { detectMode } from "../src/detect-mode.js";
 
 // ─── Helpers ─────────────────────────────────────────────────────────
 
