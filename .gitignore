@@ -6,6 +6,8 @@ dist/
 
 # NREKI runtime data
 .nreki.db
+.nreki.db.*.tmp
+.nreki.db.bak-*
 .nreki.db-journal
 .nreki.db-wal
 
@@ -34,9 +36,21 @@ desktop.ini
 # Phase 5 C.4.A orchestrator artefacts (cloned task workspaces +
 # JSON output files). All ephemeral / regenerable.
 .eval-phase5-cache/
+corpus/
 results-dryrun.json
 results-full.json
 results-*.json
+*.aider.chat.history.md
+results-c4b-full.jsonl
+results-c4b-full.jsonl.pre-*
+results-c4b-v2-full-backup.jsonl
+results-c4c-*.jsonl
+results-phase61-*.jsonl
+results-phase635-*.jsonl
+results-phase636-*.jsonl
+scripts/c4b-subset-stats.json
+scripts/eval-ts-latency-report.json
+scripts/rigorous_eval_ahi.json
 
 # Coverage
 coverage/
