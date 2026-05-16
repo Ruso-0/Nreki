@@ -15,6 +15,7 @@ import { fileURLToPath } from "url";
 import { safeParse } from "./utils/safe-parse.js";
 import { logger } from "./utils/logger.js";
 import { extractTypeIO } from "./utils/type-extractor.js";
+import { registerTestResource } from "./utils/test-resource-registry.js";
 
 // ─── Types ───────────────────────────────────────────────────────────
 
@@ -265,6 +266,7 @@ export class ASTParser {
         // Default: look for wasm/ relative to this file's directory
         const __dirname = path.dirname(fileURLToPath(import.meta.url));
         this.wasmDir = wasmDir ?? path.join(__dirname, "..", "wasm");
+        registerTestResource(this);
     }
 
     /** Initialize the Tree-sitter WASM runtime. Must be called once. */

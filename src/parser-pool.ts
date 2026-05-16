@@ -8,6 +8,7 @@
  */
 
 import Parser from "web-tree-sitter";
+import { registerTestResource } from "./utils/test-resource-registry.js";
 
 export class ParserPool {
     private pools = new Map<string, Parser[]>();
@@ -19,6 +20,7 @@ export class ParserPool {
 
     constructor(maxPerLang: number = 4) {
         this.maxPerLang = maxPerLang;
+        registerTestResource(this);
     }
 
     /** Initialize the WASM runtime. Idempotent. */
@@ -92,5 +94,18 @@ export class ParserPool {
         const pool = this.pools.get(langKey) ?? [];
         this.pools.set(langKey, pool);
         pool.push(parser);
+    }
+
+    shutdown(): void {
+        for (const pool of this.pools.values()) {
+            for (const parser of pool) {
+                try { parser.delete(); } catch { /* best-effort WASM teardown */ }
+            }
+        }
+        this.pools.clear();
+        this.counts.clear();
+        this.waiters.clear();
+        this.initialized = false;
+        this.initGate = null;
     }
 }

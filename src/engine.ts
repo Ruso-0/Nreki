@@ -26,6 +26,7 @@ import { safePath } from "./utils/path-jail.js";
 import { getOrGenerateRepoMap, type RepoMap, type DependencyGraph } from "./repo-map.js";
 import { logger } from "./utils/logger.js";
 import { FastGrepRAMCache } from "./search/fastgrep-cache.js";
+import { registerTestResource } from "./utils/test-resource-registry.js";
 
 // ─── Sub-pipelines (v8.5 decomposition) ──────────────────────────────
 import { IndexPipeline } from "./engine/indexer.js";
@@ -133,6 +134,7 @@ export class NrekiEngine {
     private static readonly USAGE_FLUSH_INTERVAL_MS = 2000;
     private isIndexing = false;
     private initialized = false;
+    private closed = false;
     private saveTimeout: NodeJS.Timeout | null = null;
 
     /** Files that have been read (raw or compressed) in this session. */
@@ -170,6 +172,7 @@ export class NrekiEngine {
         this.parser = new ASTParser(this.config.wasmDir || undefined);
         this.compressor = new Compressor(this.parser);
         this.advancedCompressor = new AdvancedCompressor(this.parser);
+        registerTestResource(this);
     }
 
     // ─── Initialization ────────────────────────────────────────────
@@ -180,6 +183,7 @@ export class NrekiEngine {
      */
     async initialize(): Promise<void> {
         if (this.initialized) return;
+        this.closed = false;
         await this.db.initialize();
         this.db.setFastGrepCacheInvalidationHook((filePath?: string) => {
             if (filePath !== undefined) {
@@ -702,6 +706,7 @@ export class NrekiEngine {
 
     /** Shutdown engine: stop watcher and close database. */
     shutdown(): void {
+        if (this.closed) return;
         if (this.usageFlushTimer) {
             clearInterval(this.usageFlushTimer);
             this.usageFlushTimer = null;
@@ -724,5 +729,7 @@ export class NrekiEngine {
             logger.warn(`Parser shutdown failed: ${(err as Error).message}`);
         }
         this.db.close();
+        this.closed = true;
+        this.initialized = false;
     }
 }

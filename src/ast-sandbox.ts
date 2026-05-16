@@ -14,6 +14,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { safeParse } from "./utils/safe-parse.js";
 import { ParserPool } from "./parser-pool.js";
+import { registerTestResource } from "./utils/test-resource-registry.js";
 
 // ─── Types ───────────────────────────────────────────────────────────
 
@@ -81,6 +82,7 @@ export class AstSandbox {
         const __dirname = path.dirname(fileURLToPath(import.meta.url));
         this.wasmDir = wasmDir ?? path.join(__dirname, "..", "wasm");
         this.pool = new ParserPool(4);
+        registerTestResource(this);
     }
 
     /** Initialize the Tree-sitter WASM runtime. Must be called once. */
@@ -92,6 +94,14 @@ export class AstSandbox {
             });
         }
         return this.initGate;
+    }
+
+    shutdown(): void {
+        this.pool.shutdown();
+        this.languageCache.clear();
+        this.initialized = false;
+        this.initGate = null;
+        this.loadGate = Promise.resolve();
     }
 
     /** Get supported language names. */

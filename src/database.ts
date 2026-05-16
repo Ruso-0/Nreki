@@ -18,6 +18,7 @@ import fs from "fs";
 import path from "path";
 import { logger } from "./utils/logger.js";
 import { escapeRegExp } from "./utils/imports.js";
+import { registerTestResource } from "./utils/test-resource-registry.js";
 
 // ─── Motores de Búsqueda (Segregación de Dominio) ───
 import { KeywordIndex } from "./search/keyword-index.js";
@@ -95,6 +96,7 @@ export class NrekiDB {
     private dbPath: string;
     private initPromise: Promise<void> | null = null;
     private _ready = false;
+    private closed = false;
     private _hasIndexedFiles = false;
     private fastGrepStmt: SqlJsStatement | null = null;
     private usageStmt: SqlJsStatement | null = null;
@@ -138,6 +140,7 @@ export class NrekiDB {
 
     constructor(dbPath: string = ".nreki.db") {
         this.dbPath = dbPath;
+        registerTestResource(this);
     }
 
     /** Async initialization - must be called before any DB operation. */
@@ -147,6 +150,7 @@ export class NrekiDB {
             this.initPromise = this._init();
         }
         await this.initPromise;
+        this.closed = false;
     }
 
     private async _init(): Promise<void> {
@@ -1274,13 +1278,16 @@ export class NrekiDB {
     }
 
     close(): void {
-        if (!this.db) return;
+        if (this.closed || !this.db) return;
         // save() releases cached statements internally before export.
         // We keep an explicit second release after save() in case future
         // operations between save() and db.close() re-prepare anything.
         this.save();
         this.releaseCachedStatements();
         this.db.close();
+        this.closed = true;
+        this._ready = false;
+        this.initPromise = null;
     }
 }
 

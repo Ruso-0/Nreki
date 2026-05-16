@@ -27,11 +27,91 @@ export interface CrossFileChunk {
     shorthand: string;
     relation: "upstream" | "downstream";
     seedType: string;
+    source: "type-ledger" | "bm25-fallback";
+    score: number;
 }
 
 export interface CrossFileFovea {
     path: string;
     symbolName: string;
+}
+
+type CrossFileSource = CrossFileChunk["source"];
+
+interface CollectedCrossFile {
+    chunkId: number;
+    relation: "upstream" | "downstream";
+    seedType: string;
+    source: CrossFileSource;
+    score: number;
+}
+
+interface BM25FallbackHit {
+    chunkId: number;
+    score: number;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === "object" && value !== null;
+}
+
+function numberField(row: Record<string, unknown>, keys: string[]): number | null {
+    for (const key of keys) {
+        const value = row[key];
+        if (typeof value === "number" && Number.isFinite(value)) return value;
+    }
+    return null;
+}
+
+function stringField(row: Record<string, unknown>, keys: string[]): string | null {
+    for (const key of keys) {
+        const value = row[key];
+        if (typeof value === "string") return value;
+    }
+    return null;
+}
+
+function toFallbackHit(row: unknown, engine: NrekiEngine): BM25FallbackHit | null {
+    if (!isRecord(row)) return null;
+
+    let chunkId = numberField(row, ["chunkId", "id", "rowid"]);
+    if (chunkId === null) {
+        const path = stringField(row, ["path"]);
+        const symbol = stringField(row, ["symbolName", "symbol_name"]);
+        if (path !== null && symbol !== null) {
+            chunkId = engine.getChunkIdByPathAndSymbol(path, symbol);
+        }
+    }
+    if (chunkId === null) return null;
+
+    const score = numberField(row, ["score", "rrf_score"]) ?? 0;
+    return { chunkId, score };
+}
+
+function runBM25Fallback(engine: NrekiEngine, symbolName: string): BM25FallbackHit[] {
+    const unsafeEngine = engine as unknown as {
+        db?: { searchKeywordOnly?: (query: string, limit: number) => unknown };
+        search?: (query: string, limit: number) => unknown;
+    };
+
+    const dbSearch = unsafeEngine.db?.searchKeywordOnly;
+    const raw = typeof dbSearch === "function"
+        ? dbSearch.call(unsafeEngine.db, symbolName, 3)
+        : (
+            typeof unsafeEngine.search === "function" &&
+            unsafeEngine.search.constructor.name !== "AsyncFunction"
+                ? unsafeEngine.search.call(engine, symbolName, 3)
+                : []
+        );
+
+    if (!Array.isArray(raw)) return [];
+    return raw
+        .map(row => toFallbackHit(row, engine))
+        .filter((hit): hit is BM25FallbackHit => hit !== null);
+}
+
+function sourcePriority(source: CrossFileSource): number {
+    return source === "type-ledger" ? 1 : 0;
 }
 
 /**
@@ -56,16 +136,29 @@ export function extractTypeLedgerParafovea(
     // Foveas paths set: filter chunks in same file as ANY fovea.
     const foveaPaths = new Set(foveas.map(f => f.path));
 
-    // Collect (chunkId, relation, seedType) tuples per fovea.
-    const collected: Array<{
-        chunkId: number;
-        relation: "upstream" | "downstream";
-        seedType: string;
-    }> = [];
+    // Collect chunk candidates per fovea, tagged by retrieval source.
+    const collected: CollectedCrossFile[] = [];
 
     for (const fovea of foveas) {
         const foveaChunkId = engine.getChunkIdByPathAndSymbol(fovea.path, fovea.symbolName);
-        if (foveaChunkId === null) continue; // Furia #7 fail-open
+        if (foveaChunkId === null) {
+            try {
+                const fallbackResults = runBM25Fallback(engine, fovea.symbolName);
+                for (const fb of fallbackResults) {
+                    if (collected.some(c => c.chunkId === fb.chunkId)) continue;
+                    collected.push({
+                        chunkId: fb.chunkId,
+                        relation: "downstream",
+                        seedType: fovea.symbolName,
+                        source: "bm25-fallback",
+                        score: fb.score * 0.5,
+                    });
+                }
+            } catch {
+                // BM25 fallback is best-effort only.
+            }
+            continue;
+        }
 
         const io = engine.getSymbolIOByChunkId(foveaChunkId);
 
@@ -73,7 +166,13 @@ export function extractTypeLedgerParafovea(
         for (const producedType of io.produces) {
             for (const consumerId of engine.getChunksByConsumedType(producedType)) {
                 if (consumerId === foveaChunkId) continue;
-                collected.push({ chunkId: consumerId, relation: "upstream", seedType: producedType });
+                collected.push({
+                    chunkId: consumerId,
+                    relation: "upstream",
+                    seedType: producedType,
+                    source: "type-ledger",
+                    score: 1,
+                });
             }
         }
 
@@ -81,7 +180,13 @@ export function extractTypeLedgerParafovea(
         for (const consumedType of io.consumes) {
             for (const producerId of engine.getChunksByProducedType(consumedType)) {
                 if (producerId === foveaChunkId) continue;
-                collected.push({ chunkId: producerId, relation: "downstream", seedType: consumedType });
+                collected.push({
+                    chunkId: producerId,
+                    relation: "downstream",
+                    seedType: consumedType,
+                    source: "type-ledger",
+                    score: 1,
+                });
             }
         }
     }
@@ -101,8 +206,32 @@ export function extractTypeLedgerParafovea(
 
     if (crossFileIds.length === 0) return [];
 
-    // Anti-hub: rank unique cross-file ids by inDegree DESC.
-    const ranked = rankByInDegree(engine, crossFileIds);
+    // Anti-hub: rank unique cross-file ids by direct source, score, then inDegree.
+    const inDegreeRanked = rankByInDegree(engine, crossFileIds);
+    const inDegreeIndex = new Map(inDegreeRanked.map((id, index) => [id, index]));
+    const bestById = new Map<number, { source: CrossFileSource; score: number }>();
+    for (const c of collected) {
+        if (!crossFileIds.includes(c.chunkId)) continue;
+        const current = bestById.get(c.chunkId);
+        if (
+            current === undefined ||
+            sourcePriority(c.source) > sourcePriority(current.source) ||
+            (c.source === current.source && c.score > current.score)
+        ) {
+            bestById.set(c.chunkId, { source: c.source, score: c.score });
+        }
+    }
+    const ranked = [...inDegreeRanked].sort((a, b) => {
+        const aBest = bestById.get(a);
+        const bBest = bestById.get(b);
+        const sourceDelta =
+            sourcePriority(bBest?.source ?? "bm25-fallback") -
+            sourcePriority(aBest?.source ?? "bm25-fallback");
+        if (sourceDelta !== 0) return sourceDelta;
+        const scoreDelta = (bBest?.score ?? 0) - (aBest?.score ?? 0);
+        if (scoreDelta !== 0) return scoreDelta;
+        return (inDegreeIndex.get(a) ?? 0) - (inDegreeIndex.get(b) ?? 0);
+    });
 
     // Truncate UNIQUE chunks to maxCrossFile (each unique chunk counts once
     // toward budget regardless of how many relations it has).
@@ -124,6 +253,8 @@ export function extractTypeLedgerParafovea(
                 shorthand: record.shorthand,
                 relation: c.relation,
                 seedType: c.seedType,
+                source: c.source,
+                score: c.score,
             });
         }
     }
