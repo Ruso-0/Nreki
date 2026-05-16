@@ -458,31 +458,43 @@ export class ASTParser {
 
                 let consumes: string[] | undefined;
                 let produces: string[] | undefined;
-                // Phase 5 C.4.A.9 (Furia round 22 follow-up): widened from
-                // the original func/method gate to cover modern TS idioms.
+                // Type Ledger pollution guard (v11.0.x multi-language activation).
+                // extractTypeIO uses regex heuristics designed for TypeScript/JavaScript
+                // type syntax (`: T`, `=> T`, generics with `<T>`). Running it on Kotlin,
+                // Java, or C++ code produces phantom type extractions (e.g. matching
+                // `: String` in Kotlin as if it were a TS annotation) that contaminate
+                // the symbol_io table. Downstream readers including TFC-Pro
+                // cross-file injection (src/compressor-foveal-cross-file.ts),
+                // type-graph handler (src/handlers/type-graph.ts), and in-degree
+                // ranking (src/search/in-degree.ts) join symbol_io WITHOUT filtering
+                // by language (database.ts:1115), so phantom types from non-TS code
+                // would semantically corrupt cross-file retrieval.
                 //
-                // Arrow-const (normalised to "var") + class declarations
-                // are signature-bearing chunks; extractTypeIO's
-                // splitSignatureIO walker is signature-agnostic (looks
-                // for the first `(...)` then `: T` return) so it works
-                // on `const foo = (x: A): B => {...}` and `class C(...)`
-                // alike with no changes to the extractor.
-                //
-                // Interface and type-alias declarations DECLARE the type
-                // they name: their produces = [symbol_name]. Consumes
-                // would require structural analysis of the body
-                // (out-of-scope for this gate widening) -- left for a
-                // separate sprint if needed.
+                // Guard: extractTypeIO only fires for TS/JS family extensions where
+                // the regex heuristics are designed to operate. Other languages get
+                // foveal compression and AST chunking but NO Type Ledger participation.
+                // This is consistent with Section 6.4 of the Phase 5 paper:
+                // "The Type Ledger architectural component remains TypeScript-specific
+                //  by design."
+                const TYPE_LEDGER_EXTENSIONS = new Set([
+                    ".ts", ".tsx", ".mts", ".cts",
+                    ".js", ".jsx", ".mjs", ".cjs",
+                ]);
+                const inTypeLedger = TYPE_LEDGER_EXTENSIONS.has(ext);
+
                 if (
-                    nodeType === "func" ||
-                    nodeType === "method" ||
-                    nodeType === "var" ||
-                    nodeType === "class"
+                    inTypeLedger && (
+                        nodeType === "func" ||
+                        nodeType === "method" ||
+                        nodeType === "var" ||
+                        nodeType === "class"
+                    )
                 ) {
                     const io = extractTypeIO(rawCode);
                     consumes = io.consumes;
                     produces = io.produces;
                 } else if (
+                    inTypeLedger &&
                     (nodeType === "interface" || nodeType === "type") &&
                     symbolName.length > 0
                 ) {
