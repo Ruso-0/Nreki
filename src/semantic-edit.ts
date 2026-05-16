@@ -89,6 +89,29 @@ function extractName(chunk: ParsedChunk): string {
     m = /type\s+(\w+)/.exec(raw);
     if (m) return m[1];
 
+    // C / C++ : (modifiers)* return-type (*)*NAME(
+    // Handles:
+    //   - void foo(...)
+    //   - static int bar(...)
+    //   - inline const char *baz(...)
+    //   - struct Point *create(...)
+    const CKEYWORDS = new Set([
+        "void", "int", "char", "short", "long", "float", "double",
+        "unsigned", "signed", "static", "extern", "const", "inline",
+        "return", "if", "else", "while", "for", "do", "switch",
+        "case", "default", "break", "continue", "goto",
+        "struct", "union", "enum", "typedef", "sizeof", "auto",
+        "register", "volatile", "restrict",
+        "true", "false", "NULL", "bool",
+        "class", "namespace", "template", "typename", "public",
+        "private", "protected", "virtual", "explicit", "operator",
+        "new", "delete", "this", "throw", "try", "catch",
+        "nullptr", "constexpr", "noexcept", "decltype", "using",
+        "friend", "mutable",
+    ]);
+    m = /(?:^|\s)(?:(?:static|extern|inline|const|volatile|register|auto|signed|unsigned)\s+)*(?:struct\s+|union\s+|enum\s+)?[\w]+(?:\s*\*+\s*|\s+)([a-zA-Z_]\w*)\s*\(/.exec(raw);
+    if (m && !CKEYWORDS.has(m[1])) return m[1];
+
     // Fallback
     m = /(\w+)/.exec(raw);
     return m ? m[1] : "";
@@ -120,6 +143,8 @@ function detectLanguage(filePath: string): string | null {
         ".hpp": "cpp",
         ".hh": "cpp",
         ".hxx": "cpp",
+        ".c": "c",
+        ".h": "c",
     };
     return map[ext] ?? null;
 }
