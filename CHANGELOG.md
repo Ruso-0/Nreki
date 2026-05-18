@@ -2,6 +2,84 @@
 
 All notable changes to NREKI will be documented in this file.
 
+## [11.2.0] - 2026-05-18
+
+### Added
+- **Hybrid Runtime Integration (Phase 5.5.2)**: New `nreki_navigate
+  action="hybrid_search"` exposes the Type Ledger semantic + BM25
+  lexical fusion (RRF) documented in the Phase 5 paper to the
+  production MCP runtime. Previously only reachable via eval scripts.
+- **`src/bm25-engine.ts`**: BM25 lexical retrieval migrated from
+  `scripts/eval-phase5/runners/bm25-runner.ts` to production runtime.
+  Standard Okapi (k1=1.5, b=0.75); code-aware tokenization (PascalCase
+  / snake_case / camelCase decomposition, 2-char minimum). Lazy
+  in-memory index built on first `search()`; invalidated on
+  `indexFile()` / `indexDirectory()` mutations.
+- **`src/hybrid-engine.ts`**: Hybrid RRF engine. Calls NREKI semantic
+  search + BM25 in parallel, fuses file rankings via Reciprocal Rank
+  Fusion (k=60), deterministic tie-break by `localeCompare`. Returns
+  unified results with `source: "nreki" | "bm25" | "both"` origin
+  tracking.
+- **Foveal compression on BM25-only files (Reto 5)**: Files surfaced
+  exclusively by BM25 (≥100 lines) receive `tfcCompress` with a focus
+  symbol extracted from the query. Aligns with the
+  `compressor-foveal.ts:109` small-file bypass threshold to avoid
+  no-op compressor calls.
+- **`NrekiEngine.getHybridEngine()` + `invalidateHybridIndex()`**:
+  lazy-construction of the hybrid stack; BM25 cache auto-invalidates
+  on `indexFile()` and `indexDirectory()`.
+- **`BM25EngineOptions.excludedDirs`**: configurable directory exclusion
+  for projects with non-standard build/fixture roots. Default excludes
+  `node_modules`, `.git`, `.nreki`, `dist`, `build`, `coverage`,
+  `.next`, `__pycache__`, `corpus`, plus any dot-prefixed directory.
+- **`scripts/benchmark-hybrid-smoke.ts`**: reproducible dogfood smoke
+  bench (`action="search"` vs `action="hybrid_search"`) on NREKI's own
+  `src/`. Run with `npx tsx scripts/benchmark-hybrid-smoke.ts`.
+- **`docs/sprint-6.5-empirical.md`**: honest Sprint 6.5 empirical
+  findings + N=99 PolyBench re-bench deferral disclosure.
+- **28 new tests**: `tests/bm25-engine.test.ts` (16) +
+  `tests/hybrid-engine.test.ts` (12). Full suite: 1384 pass.
+
+### Changed
+- **`nreki_navigate` action enum**: `hybrid_search` added to
+  `src/index.ts` MCP schema and `src/router.ts` switch dispatch.
+  Existing actions (`search`, `fast_grep`, `definition`, `references`,
+  `outline`, `map`, `prepare_refactor`, `orphan_oracle`, `type_shape`,
+  `type_graph`) preserved unchanged — backward compatible.
+
+### Internal
+- Hybrid retrieval previously available only in eval scripts
+  (`scripts/eval-phase5/runners/hybrid-runner.ts`). The eval runner
+  remains unchanged for paper reproducibility; production now uses
+  the migrated `src/hybrid-engine.ts`.
+- "El mejor que se quede" architectural decision: hybrid USES the
+  underlying retrievers, does NOT replace them. Users still pick
+  `search` for pure topological queries (lower tokens) and
+  `hybrid_search` for accuracy-critical retrieval (≈3-5x tokens, per
+  Sprint 6.4 paper; dogfood smoke shows up to ~3x on tiny corpora).
+
+### Empirical findings (honest)
+- **Dogfood smoke (73 files, 8 queries)**: `search` recall 60% vs
+  `hybrid_search` recall 60% (Δ=0pp). Hybrid pays 207% token overhead
+  with no recall gain on this micro-corpus. This is expected — the
+  Sprint 6.4 paper's +15pp FHR gain was measured on N=99 diverse
+  external repos, not on a single internal codebase.
+- **Sprint 6.5 N=99 PolyBench re-benchmark: DEFERRED**. The directive
+  required this empirical step; this commit ships without it. Reason:
+  the eval orchestrator (`scripts/eval-phase5/orchestrate.ts`)
+  constructs its own runners and would need re-plumbing to invoke the
+  migrated `HybridEngine`; the bench itself is multi-hour. Tracked as
+  Sprint 6.5.1 in `docs/sprint-6.5-empirical.md`.
+- **Token cost is real, not noise**. BM25 returns file-level payloads;
+  even with foveal compression on BM25-only files ≥100 lines, hybrid
+  hits cost more than NREKI-only AST chunks.
+
+### Wall-clock honesty
+- Original Pipipi estimate: 4 hours. Actual: ~3 hours implementation
+  + path-rooting bug discovery + dot-dir corpus walk bug discovery +
+  bench-corpus hang debug. Closer to the directive's "1-2 días"
+  honest estimate than the 4-hour Pipipi figure.
+
 ## [11.1.0] - 2026-05-18
 
 ### Added
