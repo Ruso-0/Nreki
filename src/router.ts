@@ -12,7 +12,8 @@
  *   handlers use `import type` from router.ts (erased at compile time)
  *
  * 3 router tools replace 16 individual tools:
- *   nreki_navigate → search, definition, references, outline, map, prepare_refactor
+ *   nreki_navigate → search, definition, references, outline, map, prepare_refactor,
+ *                    orphan_oracle, type_shape, fast_grep, hybrid_search, type_graph
  *   nreki_code     → read, compress, edit, batch_edit, undo, filter_output
  *   nreki_guard    → pin, unpin, status, report, reset, set_plan, memorize, audit
  */
@@ -361,12 +362,13 @@ export async function handleNavigate(
         case "orphan_oracle": response = await nav.handleOrphanOracle(params, deps); break;
         case "type_shape": response = await nav.handleTypeShape(params, deps); break;
         case "fast_grep": response = await nav.handleFastGrep(params, deps); break;
+        case "hybrid_search": response = await nav.handleHybridSearch(params, deps); break;
         case "type_graph": response = await handleTypeGraph(params, deps); break;
         default:
             return {
                 content: [{
                     type: "text" as const,
-                    text: `Unknown nreki_navigate action: "${action}". Valid actions: search, definition, references, outline, map, prepare_refactor, orphan_oracle, type_shape, fast_grep, type_graph.`,
+                    text: `Unknown nreki_navigate action: "${action}". Valid actions: search, definition, references, outline, map, prepare_refactor, orphan_oracle, type_shape, fast_grep, hybrid_search, type_graph.`,
                 }],
                 isError: true,
             };

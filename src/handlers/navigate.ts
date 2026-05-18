@@ -885,6 +885,128 @@ export async function handleTypeShape(
     };
 }
 
+// ─── Hybrid Search (Phase 5.5.2) ─────────────────────────────────────
+
+/**
+ * hybrid_search: NREKI Type Ledger semantic + BM25 lexical fused via
+ * Reciprocal Rank Fusion at file level. Reto 5 architectural integration
+ * applies foveal compression to BM25-only files so token cost stays
+ * close to NREKI-standalone while accuracy reaches the empirical
+ * Sprint 6.4 ceiling (FHR 0.566 vs 0.414 NREKI vs 0.374 BM25).
+ *
+ * When to choose vs action="search":
+ *   - hybrid_search: accuracy-critical retrieval (lexical signal helps
+ *     when symbol names appear verbatim in the query / issue body).
+ *     Token cost ~3-5x action="search" empirically (Sprint 6.4 N=99).
+ *   - search:        pure topological queries / when lexical noise hurts
+ *     (call by Type Ledger consumes/produces edges).
+ */
+export async function handleHybridSearch(
+    params: NavigateParams,
+    deps: RouterDependencies,
+): Promise<McpToolResponse> {
+    const { engine } = deps;
+    await engine.initialize();
+
+    const query = params.query ?? "";
+    if (!query.trim()) {
+        return {
+            content: [{ type: "text" as const, text: `Error: "query" is required for hybrid_search.` }],
+            isError: true,
+        };
+    }
+
+    if (!engine.hasIndexedFiles()) {
+        logger.info("First-time project indexing for hybrid_search...");
+        await engine.indexDirectory(engine.getProjectRoot());
+    }
+
+    const topK = typeof params.limit === "number" ? Math.min(20, Math.max(1, params.limit)) : 10;
+
+    const hybrid = await engine.getHybridEngine();
+    const results = await hybrid.search(query, {
+        topK,
+        applyFovealOnBm25: true,
+    });
+
+    if (results.length === 0) {
+        return {
+            content: [{
+                type: "text" as const,
+                text:
+                    `No hybrid results for: "${query}"\n\n` +
+                    `Indexed ${engine.getStats().filesIndexed} files. ` +
+                    `Try a more specific query or broaden the project root.`,
+            }],
+        };
+    }
+
+    // Group by file for human-readable output. Within a file we sort by
+    // startLine so the reader sees chunks in source order.
+    const byFile = new Map<string, typeof results>();
+    for (const r of results) {
+        const arr = byFile.get(r.path) ?? [];
+        arr.push(r);
+        byFile.set(r.path, arr);
+    }
+    for (const arr of byFile.values()) {
+        arr.sort((a, b) => a.startLine - b.startLine);
+    }
+
+    // Files preserve fusion order from the input list (first hit per file).
+    const orderedFiles: string[] = [];
+    const seenForOrder = new Set<string>();
+    for (const r of results) {
+        if (seenForOrder.has(r.path)) continue;
+        seenForOrder.add(r.path);
+        orderedFiles.push(r.path);
+    }
+
+    const sourceTally = { nreki: 0, bm25: 0, both: 0 };
+    const lines: string[] = [
+        `## Hybrid Search: "${query}"`,
+        `${results.length} chunk(s) across ${byFile.size} file(s) (Type Ledger + BM25 fused via RRF)`,
+        ``,
+    ];
+
+    let i = 0;
+    for (const filePath of orderedFiles) {
+        i++;
+        const chunks = byFile.get(filePath)!;
+        const first = chunks[0];
+        sourceTally[first.source]++;
+        const score = first.score.toFixed(4);
+        const ext = path.extname(filePath).slice(1).toLowerCase() || "txt";
+
+        lines.push(`### ${i}. ${filePath}  [source: ${first.source} | RRF: ${score}]`);
+
+        for (const c of chunks) {
+            const rangeTag = c.nodeType === "bm25_file"
+                ? `L1-L${c.endLine} (foveal-compressed)`
+                : `L${c.startLine}-L${c.endLine} (${c.nodeType})`;
+            lines.push(`  ${rangeTag}`);
+            lines.push("```" + ext);
+            lines.push(c.content);
+            lines.push("```");
+        }
+        lines.push("");
+    }
+
+    lines.push(
+        `*Origin tally: ${sourceTally.nreki} NREKI-only, ${sourceTally.bm25} BM25-only, ` +
+        `${sourceTally.both} both. Foveal compression applied to BM25-only files (Reto 5).*`,
+    );
+
+    const finalText = lines.join("\n");
+    const responseTokens = estimateTokens(finalText);
+
+    engine.logUsage("nreki_navigate:hybrid_search", responseTokens, responseTokens, 0);
+
+    return {
+        content: [{ type: "text" as const, text: finalText }],
+    };
+}
+
 /**
  * fast_grep: Ultra-fast exact substring match returning AST-aware coordinates.
  * Uses SQLite INSTR over the chunks.raw_code column. Each hit is reported with

@@ -189,6 +189,10 @@ export class NrekiEngine {
     /** Cryptographic tickets for in-flight internal edits (expected disk hash). */
     private expectedInternalHashes = new Map<string, string>();
 
+    /** Phase 5.5.2: lazy-loaded hybrid retrieval stack (BM25 + RRF + foveal). */
+    private cachedHybridEngine: import("./hybrid-engine.js").HybridEngine | null = null;
+    private cachedBM25Engine: import("./bm25-engine.js").BM25Engine | null = null;
+
     constructor(config: EngineConfig = {}) {
         this.config = {
             dbPath: config.dbPath ?? ".nreki.db",
@@ -273,6 +277,8 @@ export class NrekiEngine {
         this.fgCache.tombstoneByPath(filePath);
         const rows = this.db.exportChunksByPath(filePath);
         this.fgCache.appendChunks(rows);
+        // Phase 5.5.2: invalidate BM25 since file content changed.
+        this.invalidateHybridIndex();
         return result;
     }
 
@@ -280,6 +286,8 @@ export class NrekiEngine {
         await this.initialize();
         const result = await this.indexer.indexDirectory(dirPath);
         this.fgCache.populateFromDatabase(this.db);
+        // Phase 5.5.2: invalidate BM25 since corpus mutated.
+        this.invalidateHybridIndex();
         return result;
     }
 
@@ -288,6 +296,33 @@ export class NrekiEngine {
     async search(query: string, limit: number = 10) {
         await this.initialize();
         return this.searcher.search(query, limit);
+    }
+
+    // ─── Hybrid retrieval (Phase 5.5.2) ─────────────────────────────
+
+    /**
+     * Lazy-construct the HybridEngine (NREKI semantic + BM25 lexical via RRF).
+     * The BM25 index walks the project root on first access; subsequent
+     * calls reuse the cached index until invalidateHybridIndex() fires.
+     *
+     * Async because hybrid-engine + bm25-engine modules are loaded lazily
+     * via dynamic import() to avoid a top-of-file cycle (hybrid-engine
+     * imports the NrekiEngine type).
+     */
+    async getHybridEngine(): Promise<import("./hybrid-engine.js").HybridEngine> {
+        if (this.cachedHybridEngine) return this.cachedHybridEngine;
+        const [{ BM25Engine }, { HybridEngine }] = await Promise.all([
+            import("./bm25-engine.js"),
+            import("./hybrid-engine.js"),
+        ]);
+        this.cachedBM25Engine = new BM25Engine(this.getProjectRoot());
+        this.cachedHybridEngine = new HybridEngine(this, this.cachedBM25Engine);
+        return this.cachedHybridEngine;
+    }
+
+    /** Drop the cached BM25 index (call when files mutate on disk). */
+    invalidateHybridIndex(): void {
+        this.cachedBM25Engine?.invalidate();
     }
 
     // ─── Compression ───────────────────────────────────────────────

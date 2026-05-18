@@ -437,9 +437,10 @@ server.tool(
     "AST-powered code navigation and semantic search. Use for finding code, understanding project structure, and locating symbols.",
     {
         action: z
-            .enum(["search", "definition", "references", "outline", "map", "prepare_refactor", "orphan_oracle", "type_shape", "fast_grep", "type_graph"])
+            .enum(["search", "definition", "references", "outline", "map", "prepare_refactor", "orphan_oracle", "type_shape", "fast_grep", "hybrid_search", "type_graph"])
             .describe(
-                "search: hybrid semantic+keyword search across codebase. " +
+                "search: Type Ledger semantic + keyword fallback across codebase (single retriever). " +
+                "hybrid_search: Type Ledger semantic + BM25 lexical fused via RRF (Sprint 6.4: FHR 0.566 vs 0.414/0.374 standalone; 3-5x tokens vs search). Use for accuracy-critical retrieval. " +
                 "definition: go-to-definition by symbol name. " +
                 "references: find all usages of a symbol. " +
                 "outline: list all symbols in a file. " +
@@ -453,7 +454,7 @@ server.tool(
         query: z
             .string()
             .optional()
-            .describe("For search and fast_grep: the query string."),
+            .describe("For search, hybrid_search, and fast_grep: the query string."),
         symbol: z
             .string()
             .optional()
