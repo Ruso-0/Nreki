@@ -75,6 +75,14 @@ export interface SessionReport {
         originalTokens: number;
         ratio: number;
     }>;
+    /** Per-file-size breakdown (Phase 5.5.1 empirical verify). */
+    bySize: Array<{
+        bucket: string;
+        count: number;
+        tokensSaved: number;
+        originalTokens: number;
+        ratio: number;
+    }>;
     /** Number of auto-context injections in this session */
     autoContextInjections: number;
 }

@@ -101,6 +101,34 @@ export async function tfcCompress(
 ): Promise<TfcResultPayload> {
     const originalSize = content.length;
 
+    // Phase 5.5.1 defense-in-depth: small-file bypass at compressor level.
+    // Handler-level bypass (read.ts:84) handles the common path, but this
+    // protects against direct tfcCompress calls with tiny files where
+    // compression header overhead would exceed savings.
+    const lineCount = content.split("\n").length;
+    if (lineCount < 100 || originalSize < 1024) {
+        return {
+            kind: "success",
+            data: {
+                compressed: content,
+                originalSize,
+                compressedSize: originalSize,
+                ratio: 0,
+                tokensSaved: 0,
+                zones: {
+                    foveas: focusInput.split(",").map(s => s.trim()).filter(Boolean),
+                    localParafovea: 0,
+                    externalParafovea: 0,
+                    upstream: 0,
+                    darkMatterLines: 0,
+                    crossFileUpstream: 0,
+                    crossFileDownstream: 0,
+                    crossFileTruncated: 0,
+                },
+            },
+        };
+    }
+
     // O(1) parse cache by content hash
     const contentHash = crypto.createHash("sha256").update(content).digest("hex");
     let parseResult: ParseResult;

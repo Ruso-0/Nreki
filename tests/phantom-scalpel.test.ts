@@ -257,9 +257,11 @@ describe("Phantom Scalpel: Patch Mode", () => {
 
 describe("Phantom Scalpel: Zero-Bounce I/O", () => {
     it("10. zero-bounce: auto-compress file >12k tokens with compress:false", async () => {
-        // Create a large file (~15k tokens)
+        // Create a large file safely above the 12k BPE threshold (Phase 5.5.1:
+        // real tiktoken cl100k_base produces fewer tokens than the old chars/3.5
+        // heuristic, so 500 lines fell to ~11.5k; 600 lines yields ~13.8k).
         const lines: string[] = [];
-        for (let i = 0; i < 500; i++) {
+        for (let i = 0; i < 600; i++) {
             lines.push(`export const variable_${i} = "value_${i}_with_some_extra_text_to_pad_out_the_token_count_significantly";`);
         }
         const largeContent = lines.join("\n") + "\n";

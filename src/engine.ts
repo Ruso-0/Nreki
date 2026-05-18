@@ -76,10 +76,11 @@ class SessionTracker {
     private totalTokensSaved = 0;
     private totalOriginalTokens = 0;
     private compressionsByType = new Map<string, { count: number; saved: number; original: number }>();
+    private compressionsBySize = new Map<string, { count: number; saved: number; original: number }>();
     private startTime = Date.now();
     private autoContextInjections = 0;
 
-    public recordCompression(ext: string, originalTokens: number, savedTokens: number): void {
+    public recordCompression(ext: string, originalTokens: number, savedTokens: number, lineCount: number = 0): void {
         this.totalTokensSaved += savedTokens;
         this.totalOriginalTokens += originalTokens;
         const entry = this.compressionsByType.get(ext) ?? { count: 0, saved: 0, original: 0 };
@@ -87,6 +88,15 @@ class SessionTracker {
         entry.saved += savedTokens;
         entry.original += originalTokens;
         this.compressionsByType.set(ext, entry);
+
+        const sizeBucket = lineCount < 100 ? "<100L" :
+            lineCount < 300 ? "100-299L" :
+            lineCount < 1000 ? "300-999L" : "≥1000L";
+        const sizeEntry = this.compressionsBySize.get(sizeBucket) ?? { count: 0, saved: 0, original: 0 };
+        sizeEntry.count++;
+        sizeEntry.saved += savedTokens;
+        sizeEntry.original += originalTokens;
+        this.compressionsBySize.set(sizeBucket, sizeEntry);
     }
 
     public incrementAutoContext(): void {
@@ -111,6 +121,21 @@ class SessionTracker {
         }
         byFileType.sort((a, b) => b.tokensSaved - a.tokensSaved);
 
+        const bySize: SessionReport["bySize"] = [];
+        for (const [bucket, data] of this.compressionsBySize) {
+            bySize.push({
+                bucket,
+                count: data.count,
+                tokensSaved: data.saved,
+                originalTokens: data.original,
+                ratio: data.original > 0 ? 1 - (data.original - data.saved) / data.original : 0,
+            });
+        }
+        bySize.sort((a, b) => {
+            const order = ["<100L", "100-299L", "300-999L", "≥1000L"];
+            return order.indexOf(a.bucket) - order.indexOf(b.bucket);
+        });
+
         return {
             durationMinutes: Math.round(durationMinutes * 10) / 10,
             totalTokensSaved: totalSaved,
@@ -119,6 +144,7 @@ class SessionTracker {
             savedUsdSonnet: (totalSaved / 1_000_000) * 3,
             savedUsdOpus: (totalSaved / 1_000_000) * 15,
             byFileType,
+            bySize,
             autoContextInjections: this.autoContextInjections,
         };
     }
@@ -320,9 +346,10 @@ export class NrekiEngine {
         const content = preloadedContent ?? readSource(filePath);
         const result = await this.advancedCompressor.compress(filePath, content, level);
 
-        // Track session savings
+        // Track session savings (Phase 5.5.1: +lineCount for bySize tracking)
         const ext = path.extname(filePath).toLowerCase() || ".unknown";
-        this.sessionTracker.recordCompression(ext, estimateTokens(content), result.tokensSaved);
+        const lineCount = content.split("\n").length;
+        this.sessionTracker.recordCompression(ext, estimateTokens(content), result.tokensSaved, lineCount);
 
         return result;
     }
