@@ -2,6 +2,58 @@
 
 All notable changes to NREKI will be documented in this file.
 
+## [11.1.0] - 2026-05-18
+
+### Added
+- **Real BPE tokenizer**: tiktoken cl100k_base integration via
+  `src/utils/token-estimator.ts`. Replaces chars/3.5 heuristic for
+  token cost estimation. Heuristic preserved as fallback (zero-downtime).
+  Empirical verification: 72-file benchmark 276,516 raw → 60,732
+  compressed = 78% savings sostained con real BPE tokenizer.
+- **Defense-in-depth conditional compression**: compressor-level
+  bypass for files <100 lines OR <1024 bytes (`src/compressor-foveal.ts`
+  :102-123). Complements existing handler-level bypass
+  (`src/handlers/code/read.ts:84`). Zero overhead instances confirmed
+  empirically across all file-size buckets (72 files tested).
+- **`bySize` SessionReport field**: per-file-size tracking buckets
+  (<100L, 100-299L, 300-999L, ≥1000L) in `engine.getSessionReport()`
+  output. Enables empirical analysis of compression effectiveness by
+  file size class.
+- **Empirical benchmark scripts**: `scripts/benchmark-token-economics.ts`
+  + `scripts/simulate-claude-session.ts` for ongoing verification.
+- **Token economics empirical verify documentation**:
+  `docs/token-economics-empirical-verify.md` documents Sprint Empirical
+  Verify findings honest including methodology caveats.
+
+### Changed
+- **Template adelgazamiento**:
+  `templates/CLAUDE.md` 3,965 → 1,670 bytes (495 BPE tokens, ~58% reduction)
+  `templates/AGENTS.md` 3,885 → 1,253 bytes (372 BPE tokens, ~68% reduction)
+  Combined 867 BPE tokens (~61% reduction, ~8% over Apr 2026 target
+  of 800 combined tokens, honest disclosure of remaining gap).
+- **Token cost estimation accuracy**: real BPE tokenizer measurement
+  replaces direccional-but-imprecise chars/3.5 heuristic. Heuristic
+  validated within ~10% magnitude accuracy of real BPE empírico.
+
+### Internal
+- Sprint Empirical Token Economics Verify executed pre-Phase 5.5.1:
+  - 72-file per-bucket benchmark
+  - 45-file session simulation
+  - Zero overhead instances confirmed empírico
+  - Claim "29 calls vs 5-7 without TFC-Pro" marked UNVERIFIABLE
+    (no measurement code exists)
+- Reto 8 Causal Program Slicing Phase 0 design committed
+  (`docs/adrs/reto-8-causal-slicing/`, strategic pause Nova Phase 8.2-8.5
+  prerequisite for Reto 7 Compiler-Hijacking)
+
+### Deferred
+- **Phase 5.5.2**: Hybrid runtime integration (Reto 5).
+  Migrate `scripts/eval-phase5/runners/hybrid-runner.ts` →
+  `src/hybrid-engine.ts`. Foveal compression on BM25-fused files.
+- **Phase 5.5.3**: Comparative head-to-head benchmarks
+  (NREKI vs Corsa, Zilliz Claude Context, codebase-memory-mcp, GitNexus).
+  Currently disclosed as research gap.
+
 ## [11.0.2] - 2026-05-16
 
 Mini-sprint closure for v11.0.1 cabos sueltos. No new features; only
