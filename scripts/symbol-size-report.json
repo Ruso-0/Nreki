@@ -1,0 +1,489 @@
+{
+  "samples": [
+    {
+      "sample": "nreki-src",
+      "root": "src",
+      "fileCount": 75,
+      "symbolCount": 724,
+      "meanLines": 28.94,
+      "medianLines": 12,
+      "p75": 31,
+      "p90": 65,
+      "p95": 105,
+      "p99": 283,
+      "maxLines": 479,
+      "buckets": [
+        {
+          "range": "0-20L",
+          "count": 445
+        },
+        {
+          "range": "20-40L",
+          "count": 138
+        },
+        {
+          "range": "40-60L",
+          "count": 57
+        },
+        {
+          "range": "60-80L",
+          "count": 25
+        },
+        {
+          "range": "80-100L",
+          "count": 18
+        },
+        {
+          "range": "100-150L",
+          "count": 18
+        },
+        {
+          "range": "150-200L",
+          "count": 12
+        },
+        {
+          "range": ">=200L",
+          "count": 11
+        }
+      ],
+      "blockedPctByThreshold": {
+        "40": {
+          "count": 138,
+          "pct": 19.06
+        },
+        "50": {
+          "count": 107,
+          "pct": 14.78
+        },
+        "60": {
+          "count": 83,
+          "pct": 11.46
+        },
+        "70": {
+          "count": 64,
+          "pct": 8.84
+        },
+        "80": {
+          "count": 58,
+          "pct": 8.01
+        },
+        "100": {
+          "count": 40,
+          "pct": 5.52
+        },
+        "120": {
+          "count": 29,
+          "pct": 4.01
+        },
+        "150": {
+          "count": 23,
+          "pct": 3.18
+        }
+      }
+    },
+    {
+      "sample": "zod",
+      "root": "node_modules\\zod\\src",
+      "fileCount": 99,
+      "symbolCount": 1439,
+      "meanLines": 15.19,
+      "medianLines": 6,
+      "p75": 14,
+      "p90": 36,
+      "p95": 54,
+      "p99": 117,
+      "maxLines": 503,
+      "buckets": [
+        {
+          "range": "0-20L",
+          "count": 1179
+        },
+        {
+          "range": "20-40L",
+          "count": 128
+        },
+        {
+          "range": "40-60L",
+          "count": 66
+        },
+        {
+          "range": "60-80L",
+          "count": 9
+        },
+        {
+          "range": "80-100L",
+          "count": 10
+        },
+        {
+          "range": "100-150L",
+          "count": 43
+        },
+        {
+          "range": "150-200L",
+          "count": 0
+        },
+        {
+          "range": ">=200L",
+          "count": 4
+        }
+      ],
+      "blockedPctByThreshold": {
+        "40": {
+          "count": 129,
+          "pct": 8.96
+        },
+        "50": {
+          "count": 79,
+          "pct": 5.49
+        },
+        "60": {
+          "count": 65,
+          "pct": 4.52
+        },
+        "70": {
+          "count": 62,
+          "pct": 4.31
+        },
+        "80": {
+          "count": 57,
+          "pct": 3.96
+        },
+        "100": {
+          "count": 46,
+          "pct": 3.2
+        },
+        "120": {
+          "count": 11,
+          "pct": 0.76
+        },
+        "150": {
+          "count": 4,
+          "pct": 0.28
+        }
+      }
+    },
+    {
+      "sample": "ajv",
+      "root": "node_modules\\ajv\\lib",
+      "fileCount": 106,
+      "symbolCount": 662,
+      "meanLines": 11.46,
+      "medianLines": 6,
+      "p75": 13,
+      "p90": 25,
+      "p95": 39,
+      "p99": 76,
+      "maxLines": 123,
+      "buckets": [
+        {
+          "range": "0-20L",
+          "count": 571
+        },
+        {
+          "range": "20-40L",
+          "count": 58
+        },
+        {
+          "range": "40-60L",
+          "count": 21
+        },
+        {
+          "range": "60-80L",
+          "count": 6
+        },
+        {
+          "range": "80-100L",
+          "count": 5
+        },
+        {
+          "range": "100-150L",
+          "count": 1
+        },
+        {
+          "range": "150-200L",
+          "count": 0
+        },
+        {
+          "range": ">=200L",
+          "count": 0
+        }
+      ],
+      "blockedPctByThreshold": {
+        "40": {
+          "count": 32,
+          "pct": 4.83
+        },
+        "50": {
+          "count": 22,
+          "pct": 3.32
+        },
+        "60": {
+          "count": 12,
+          "pct": 1.81
+        },
+        "70": {
+          "count": 9,
+          "pct": 1.36
+        },
+        "80": {
+          "count": 6,
+          "pct": 0.91
+        },
+        "100": {
+          "count": 1,
+          "pct": 0.15
+        },
+        "120": {
+          "count": 1,
+          "pct": 0.15
+        },
+        "150": {
+          "count": 0,
+          "pct": 0
+        }
+      }
+    },
+    {
+      "sample": "eventsource",
+      "root": "node_modules\\eventsource\\src",
+      "fileCount": 4,
+      "symbolCount": 29,
+      "meanLines": 11.52,
+      "medianLines": 8,
+      "p75": 12,
+      "p90": 23,
+      "p95": 27,
+      "p99": 78,
+      "maxLines": 78,
+      "buckets": [
+        {
+          "range": "0-20L",
+          "count": 26
+        },
+        {
+          "range": "20-40L",
+          "count": 2
+        },
+        {
+          "range": "40-60L",
+          "count": 0
+        },
+        {
+          "range": "60-80L",
+          "count": 1
+        },
+        {
+          "range": "80-100L",
+          "count": 0
+        },
+        {
+          "range": "100-150L",
+          "count": 0
+        },
+        {
+          "range": "150-200L",
+          "count": 0
+        },
+        {
+          "range": ">=200L",
+          "count": 0
+        }
+      ],
+      "blockedPctByThreshold": {
+        "40": {
+          "count": 1,
+          "pct": 3.45
+        },
+        "50": {
+          "count": 1,
+          "pct": 3.45
+        },
+        "60": {
+          "count": 1,
+          "pct": 3.45
+        },
+        "70": {
+          "count": 1,
+          "pct": 3.45
+        },
+        "80": {
+          "count": 0,
+          "pct": 0
+        },
+        "100": {
+          "count": 0,
+          "pct": 0
+        },
+        "120": {
+          "count": 0,
+          "pct": 0
+        },
+        "150": {
+          "count": 0,
+          "pct": 0
+        }
+      }
+    },
+    {
+      "sample": "ajv-formats",
+      "root": "node_modules\\ajv-formats\\src",
+      "fileCount": 3,
+      "symbolCount": 26,
+      "meanLines": 9.81,
+      "medianLines": 6,
+      "p75": 14,
+      "p90": 19,
+      "p95": 19,
+      "p99": 49,
+      "maxLines": 49,
+      "buckets": [
+        {
+          "range": "0-20L",
+          "count": 25
+        },
+        {
+          "range": "20-40L",
+          "count": 0
+        },
+        {
+          "range": "40-60L",
+          "count": 1
+        },
+        {
+          "range": "60-80L",
+          "count": 0
+        },
+        {
+          "range": "80-100L",
+          "count": 0
+        },
+        {
+          "range": "100-150L",
+          "count": 0
+        },
+        {
+          "range": "150-200L",
+          "count": 0
+        },
+        {
+          "range": ">=200L",
+          "count": 0
+        }
+      ],
+      "blockedPctByThreshold": {
+        "40": {
+          "count": 1,
+          "pct": 3.85
+        },
+        "50": {
+          "count": 0,
+          "pct": 0
+        },
+        "60": {
+          "count": 0,
+          "pct": 0
+        },
+        "70": {
+          "count": 0,
+          "pct": 0
+        },
+        "80": {
+          "count": 0,
+          "pct": 0
+        },
+        "100": {
+          "count": 0,
+          "pct": 0
+        },
+        "120": {
+          "count": 0,
+          "pct": 0
+        },
+        "150": {
+          "count": 0,
+          "pct": 0
+        }
+      }
+    }
+  ],
+  "aggregate": {
+    "sample": "AGGREGATE",
+    "symbolCount": 2880,
+    "meanLines": 17.7,
+    "medianLines": 7,
+    "p75": 17,
+    "p90": 42,
+    "p95": 66,
+    "p99": 146,
+    "maxLines": 503,
+    "buckets": [
+      {
+        "range": "0-20L",
+        "count": 2246
+      },
+      {
+        "range": "20-40L",
+        "count": 326
+      },
+      {
+        "range": "40-60L",
+        "count": 145
+      },
+      {
+        "range": "60-80L",
+        "count": 41
+      },
+      {
+        "range": "80-100L",
+        "count": 33
+      },
+      {
+        "range": "100-150L",
+        "count": 62
+      },
+      {
+        "range": "150-200L",
+        "count": 12
+      },
+      {
+        "range": ">=200L",
+        "count": 15
+      }
+    ],
+    "blockedPctByThreshold": {
+      "40": {
+        "count": 301,
+        "pct": 10.45
+      },
+      "50": {
+        "count": 209,
+        "pct": 7.26
+      },
+      "60": {
+        "count": 161,
+        "pct": 5.59
+      },
+      "70": {
+        "count": 136,
+        "pct": 4.72
+      },
+      "80": {
+        "count": 121,
+        "pct": 4.2
+      },
+      "100": {
+        "count": 87,
+        "pct": 3.02
+      },
+      "120": {
+        "count": 41,
+        "pct": 1.42
+      },
+      "150": {
+        "count": 27,
+        "pct": 0.94
+      }
+    }
+  },
+  "generatedAt": "2026-05-19T19:36:30.277Z"
+}
