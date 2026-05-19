@@ -704,3 +704,62 @@ describe("memory safety", () => {
         // If we get here without crash, tree.delete() is working
     });
 });
+
+// ─── SYMBOL_REPLACE_LIMIT (v11.3.1 empirical recalibration) ─────────
+
+describe("SYMBOL_REPLACE_LIMIT", () => {
+    it("should ALLOW replace on 55L symbol (legacy 40L would have blocked this)", async () => {
+        const body = Array.from({ length: 52 }, (_, i) => `    const v${i} = ${i};`).join("\n");
+        const file = writeTmp("mid-symbol.ts", `function processText(): void {\n${body}\n}`);
+
+        const result = await semanticEdit(
+            file,
+            "processText",
+            `function processText(): void {\n    return;\n}`,
+            parser,
+            sandbox,
+            tmpDir,
+        );
+
+        expect(result.success).toBe(true);
+        expect(result.oldLines).toBeGreaterThan(40);
+        expect(result.oldLines).toBeLessThanOrEqual(100);
+    });
+
+    it("should still BLOCK replace on 120L god-function", async () => {
+        const body = Array.from({ length: 118 }, (_, i) => `    const v${i} = ${i};`).join("\n");
+        const file = writeTmp("god-symbol.ts", `function huge(): void {\n${body}\n}`);
+
+        const result = await semanticEdit(
+            file,
+            "huge",
+            `function huge(): void {\n    return;\n}`,
+            parser,
+            sandbox,
+            tmpDir,
+        );
+
+        expect(result.success).toBe(false);
+        expect(result.error).toMatch(/Use mode:"patch"/);
+        expect(result.error).toMatch(/NREKI_SYMBOL_LIMIT/);
+    });
+
+    it("error message should reflect dynamic threshold from constant", async () => {
+        const { SYMBOL_REPLACE_LIMIT } = await import("../src/limits.js");
+        const oversized = SYMBOL_REPLACE_LIMIT + 10;
+        const body = Array.from({ length: oversized - 2 }, (_, i) => `    const v${i} = ${i};`).join("\n");
+        const file = writeTmp("dyn-msg.ts", `function dyn(): void {\n${body}\n}`);
+
+        const result = await semanticEdit(
+            file,
+            "dyn",
+            `function dyn(): void {\n    return;\n}`,
+            parser,
+            sandbox,
+            tmpDir,
+        );
+
+        expect(result.success).toBe(false);
+        expect(result.error).toContain(`>${SYMBOL_REPLACE_LIMIT}L`);
+    });
+});

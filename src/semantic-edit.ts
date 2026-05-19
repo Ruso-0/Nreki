@@ -21,6 +21,7 @@ import { readSource } from "./utils/read-source.js";
 import { saveBackup, getBackupPath } from "./undo.js";
 import { extractSignature, cleanSignature, extractImports, extractExports } from "./repo-map.js";
 import { logger } from "./utils/logger.js";
+import { SYMBOL_REPLACE_LIMIT } from "./limits.js";
 import crypto from "crypto";
 
 // ─── Types ───────────────────────────────────────────────────────────
@@ -634,10 +635,10 @@ export async function batchSemanticEdit(
                     };
                 }
 
-                if ((batchMode === "replace") && batchOldLines > 40) {
+                if ((batchMode === "replace") && batchOldLines > SYMBOL_REPLACE_LIMIT) {
                     return {
                         success: false, editCount: edits.length, fileCount: editsByFile.size, files: [],
-                        error: `Blocked: Symbol "${symName}" is ${batchOldLines}L (>40L). Use mode:"patch" with search_text and replace_text.`,
+                        error: `Blocked: Symbol "${symName}" is ${batchOldLines}L (>${SYMBOL_REPLACE_LIMIT}L). Use mode:"patch" with search_text and replace_text, or override via NREKI_SYMBOL_LIMIT env.`,
                     };
                 }
 
@@ -1026,11 +1027,11 @@ export async function semanticEdit(
         };
     }
     // Filo 2: Bloquea rewrite de símbolos grandes
-    if ((mode === "replace" || !mode) && oldLines > 40) {
+    if ((mode === "replace" || !mode) && oldLines > SYMBOL_REPLACE_LIMIT) {
         return {
             success: false, filePath, symbolName, oldLines,
             newLines: 0, tokensAvoided: 0, syntaxValid: false,
-            error: `Blocked: Symbol >40L. Use mode:"patch" with search_text and replace_text.`,
+            error: `Blocked: Symbol is ${oldLines}L (>${SYMBOL_REPLACE_LIMIT}L). Use mode:"patch" with search_text and replace_text, or override via NREKI_SYMBOL_LIMIT env.`,
         };
     }
 
