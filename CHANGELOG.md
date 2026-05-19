@@ -2,6 +2,29 @@
 
 All notable changes to NREKI will be documented in this file.
 
+## [11.4.0] - 2026-05-19
+
+### Fixed
+
+- **EISDIR crash on `nreki_code action:"read"` / `action:"compress"` with a directory path.** Both handlers previously called `fs.readFileSync` without a stat guard; passing a directory surfaced an opaque `EISDIR: illegal operation on a directory` error from the MCP server. v11.4.0 explicitly checks `stat.isDirectory()` and returns a structured error that points to the correct tool: `nreki_navigate action:"outline"` for per-file overview, `action:"fast_grep" / "search"` for cross-tree lookup. `ENOENT` (missing file) is now also caught with a structured "Path not found" message instead of an uncaught stack trace.
+- **Regression guard for pre-existing TS errors in edited files.** A user reported (2026-05-19) that NREKI rolled back unrelated edits in `fillTemplate.ts` because of pre-existing TS1259/TS2802 errors elsewhere in the same file. The differential check (`count > baseline.get(fingerprint)` in `src/kernel/backends/ts-compiler-wrapper.ts:611`) was already in place and works correctly in v11.3.x — the user's binary was likely an older release (the globally installed `@ruso-0/nreki@10.19.0`). v11.4.0 closes the gap by adding four explicit regression tests in [`tests/kernel-pre-existing-errors.test.ts`](tests/kernel-pre-existing-errors.test.ts) that pin the exact same-file scenario the user described (existing kernel tests only covered separate-file pre-existing errors).
+
+### Added
+
+- **`tests/read-compress-directory.test.ts`** — 4 tests covering directory + missing-file inputs to both `handleRead` and `handleCompress`. Confirms EISDIR is gone, error messages name the correct alternative tool, and the response shape is `isError: true` (not a crash).
+- **`tests/kernel-pre-existing-errors.test.ts`** — 4 tests pinning the same-file pre-existing-error scenario (TS2322, TS1192-family, same-symbol edit, counter-test of genuine new error).
+- **`docs/furia-v11.4.0-review.md`** — adversarial Q1-Q5 review documenting (Q1) why Phase 1 contributes only regression guards, (Q2) why the EISDIR fix returns an explicit error instead of auto-redirecting, (Q3) zero perf overhead, (Q4) anti-silent-failure audit, (Q5) two residual gaps logged for a future iteration (FIFO/device-file handling, push the guard into `readSource` itself).
+
+### Templates
+
+- `templates/CLAUDE.md`, `templates/AGENTS.md`, `templates/SKILL.md` updated with:
+  - A new "Pre-existing TS errors are NOT blockers (differential check)" note in section 5.
+  - A new section 6 ("Input validation") explaining that `read` / `compress` are file operations and directory inputs should use `nreki_navigate`.
+
+### Migration
+
+- No API change, no file-format change, no breaking signature. Users on v11.3.1 see the EISDIR fix automatically. Behavior on valid file paths is unchanged.
+
 ## [11.3.1] - 2026-05-19
 
 ### Changed
