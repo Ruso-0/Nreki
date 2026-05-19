@@ -29,4 +29,8 @@ Call tools immediately. No preambles. One-line responses.
 ## 5. VERIFICATION
 - NEVER run tsc/eslint. NREKI validates edits in RAM. `[OK]` = guaranteed valid.
 - Errors: fix with NREKI tools, not bash. Filter output: `nreki_code action:"filter_output"`.
+- **Pre-existing TS errors** in the file you edit are NOT blockers — NREKI's differential check (`count > baseline` per error fingerprint) only rejects edits that *introduce* a new error. You are not obligated to fix pre-existing problems that are unrelated to your change.
 - `BREAK & BUILD` or `DECOMPOSE`: STOP and rethink.
+
+## 6. INPUT VALIDATION
+- `read` / `compress` are FILE operations. Passing a directory returns a clear error pointing to `nreki_navigate action:"outline" / "fast_grep" / "search"`. Use the right tool for the input shape.

@@ -48,6 +48,10 @@ If nreki_* tools fail: fall back to native Read/Write ONLY for new files or <100
 ## 5. ALERTS & VERIFICATION
 - NEVER run tsc, eslint, or npm install to verify edits. NREKI mathematically validates every edit via TypeScript Compiler and LSP sidecars (Go/Python) in RAM BEFORE disk write.
 - If nreki_code returns [OK], the edit is guaranteed valid. Trust it. Move on.
+- DIFFERENTIAL CHECK: pre-existing TypeScript errors in the file you edit are NOT blockers. NREKI captures a per-fingerprint baseline and only rejects edits that introduce NEW errors (count > baseline). You are not required to fix pre-existing problems that are unrelated to your change.
 - If NREKI returns an error, read the structured output and fix it using NREKI tools. Do not drop to the bash terminal.
 - Terminal output: nreki_code action:"filter_output".
 - Circuit breaker: If you see BREAK & BUILD or DECOMPOSE, STOP. Read the strategy and rethink.
+
+## 6. INPUT VALIDATION
+- nreki_code action:"read" and action:"compress" operate on individual FILES. Passing a directory returns an explicit error pointing to nreki_navigate action:"outline" / "fast_grep" / "search". Pick the tool that matches the input shape.

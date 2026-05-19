@@ -23,4 +23,8 @@ Call tools immediately. No preambles. One-line responses.
 
 ## 5. VERIFICATION
 - NEVER run tsc/eslint. NREKI validates in RAM. `[OK]` = valid. Errors → fix via NREKI.
+- Pre-existing TS errors in edited files are NOT blockers (differential check filters by fingerprint). Only NEW errors trigger rollback.
 - Filter: `nreki_code action:"filter_output"`. Circuit breaker → STOP and rethink.
+
+## 6. INPUT VALIDATION
+- `read` / `compress` are FILE ops. Directory paths return a clear error → use `nreki_navigate action:"outline" / "fast_grep" / "search"`.
