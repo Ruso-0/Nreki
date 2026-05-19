@@ -2,6 +2,27 @@
 
 All notable changes to NREKI will be documented in this file.
 
+## [11.4.1] - 2026-05-19
+
+### Added
+
+- **Hologram-mode regression tests** (Phase 1.5 follow-up to v11.4.0). Four new tests in [`tests/kernel-pre-existing-errors-hologram.test.ts`](tests/kernel-pre-existing-errors-hologram.test.ts) that literally reproduce **TS1259** (`esModuleInterop:true` + `allowSyntheticDefaultImports:false` + `export =` source) and **TS2802** (`target:ES5` + `downlevelIteration:false` + `Set` iteration) — the exact codes the user originally reported — in hologram mode, the production MCP runtime path. The v11.4.0 suite had pinned only project mode and only triggered TS1192 (not TS1259) despite the CHANGELOG claim of "exact scenario" coverage.
+- [`docs/hologram-mode-verify.md`](docs/hologram-mode-verify.md) — empirical PASS report from the hologram-mode round: differential filter works in hologram, including the JIT-specific subcase where the target file enters `rootNames` only at edit time.
+- [`docs/v11.4.0-self-exploration.md`](docs/v11.4.0-self-exploration.md) — 10-finding pre-Furia self-audit that drove the Phase 1.5 round (process documentation; honest list of what I was uncomfortable with after v11.4.0).
+
+### Verified empirically (no code fix required)
+
+- The differential pre-existing-error check (`count > baseline.get(fingerprint)` at [`src/kernel/backends/ts-compiler-wrapper.ts:611`](src/kernel/backends/ts-compiler-wrapper.ts#L611)) holds in hologram mode for the user's exact TS1259 and TS2802 cases. The user's original report most likely ran against the globally installed `@ruso-0/nreki@10.19.0` (the binary that was active when the report was filed); the fix had already shipped in an earlier release.
+
+### Internal
+
+- v11.4.0's CHANGELOG entry overstated test coverage. v11.4.1 is the honest closure: same release intent, but with the hologram suite that actually pins the user-reported codes, and a self-exploration document that names what the original sprint missed.
+- All v11.4.0 deliverables remain shipped on the `v11.4.0` tag at commit `984c781`. v11.4.1 strictly adds tests + docs on top; no runtime behavior change.
+
+### Tests
+
+- 1 427 passed, 3 skipped, 0 failed (+4 vs v11.4.0).
+
 ## [11.4.0] - 2026-05-19
 
 ### Fixed
