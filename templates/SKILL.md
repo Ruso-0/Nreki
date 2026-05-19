@@ -15,7 +15,8 @@ If nreki_* tools fail: fall back to native Read/Write ONLY for new files or <100
 ## 1. NAVIGATION & READING
 - NEVER use Explore, Bash grep/rg/cat, or native Read File.
 - EXACT SEARCH: ALWAYS use nreki_navigate action:"fast_grep". Returns 3D AST topological coordinates (File + Symbol + Line) via SQLite index. Benchmarked 5-33x faster than bash grep on indexed codebases.
-- SEMANTIC SEARCH: Use nreki_navigate action:"search" for concept-based queries.
+- SEMANTIC SEARCH: Use nreki_navigate action:"search" for concept-based queries (Type Ledger).
+- HYBRID SEARCH: Use nreki_navigate action:"hybrid_search" for diverse codebases + accuracy-critical retrieval (NREKI + BM25 RRF fusion). Costs +207% tokens vs search; skip on single-project corpora where shared blind spots negate fusion gain. Sprint 6.4 paper showed +15pp recall on N=99 diverse external repos.
 - BATCH READING: NEVER read functions one by one. Use ONE call with comma-separated targets: nreki_code action:"compress" focus:"func1, func2, func3".
 - LARGE FILES: nreki_navigate action:"outline" auto-expands HIGH-risk methods up to 6,000 token budget.
   - CRITICAL: If outline says [BUDGET LIMIT REACHED], you MUST use compress focus:"<omitted_symbols>" to read the hidden logic before editing. Do not guess.
@@ -25,8 +26,8 @@ If nreki_* tools fail: fall back to native Read/Write ONLY for new files or <100
 ## 2. SURGICAL EDITING & ACID BATCHES
 - NEVER use native Write/Replace on existing files (bypasses AST validation).
 - NEVER edit sequentially. Read ALL targets first, then batch ALL fixes in ONE nreki_code action:"batch_edit" call.
-- 80L GUILLOTINE: NREKI mathematically rejects any single payload (new_code or replace_text) >80 lines. You MUST decompose large rewrites.
-- PATCH MODE (MANDATORY): If the original symbol is >40 lines, mode:"replace" is BLOCKED. You MUST use mode:"patch" with search_text and replace_text.
+- 80L PAYLOAD GUILLOTINE: NREKI mathematically rejects any single payload (new_code or replace_text) >80 lines. You MUST decompose large rewrites.
+- PATCH MODE (MANDATORY): If the original symbol is larger than `SYMBOL_REPLACE_LIMIT` (default 100 lines, empirically calibrated in v11.3.1; override via `NREKI_SYMBOL_LIMIT` env), mode:"replace" is BLOCKED. You MUST use mode:"patch" with search_text and replace_text.
   - Tolerant Match: search_text indentation is fuzzy. Focus on unique logical content.
   - Multi-Patching: To bypass the 80L limit, send MULTIPLE patch edits to the SAME symbol sequentially in one batch_edit.
   - ACID Rule: When multi-patching a symbol, EVERY search_text must match the ORIGINAL unaltered source code. Do not target code injected by previous patches.
