@@ -37,7 +37,38 @@ export async function handleRead(
     }
 
     try {
-        const stat = fs.statSync(resolvedPath);
+        let stat;
+        try {
+            stat = fs.statSync(resolvedPath);
+        } catch (statErr) {
+            const code = (statErr as NodeJS.ErrnoException).code;
+            if (code === "ENOENT") {
+                return {
+                    content: [{
+                        type: "text" as const,
+                        text:
+                            `Path not found: ${path.relative(engine.getProjectRoot(), resolvedPath) || file_path}\n` +
+                            `Hint: use nreki_navigate action:"fast_grep" or action:"outline" to locate files.`,
+                    }],
+                    isError: true,
+                };
+            }
+            throw statErr;
+        }
+
+        if (stat.isDirectory()) {
+            return {
+                content: [{
+                    type: "text" as const,
+                    text:
+                        `Path is a directory, not a file: ${path.relative(engine.getProjectRoot(), resolvedPath) || file_path}\n` +
+                        `Hint: nreki_code action:"read" / "compress" operates on individual files.\n` +
+                        `For a directory overview, use nreki_navigate action:"outline" path:"<file>" on specific files, ` +
+                        `or nreki_navigate action:"fast_grep" / "search" to locate symbols across the tree.`,
+                }],
+                isError: true,
+            };
+        }
 
         const filterResult = shouldProcess(resolvedPath, stat.size);
         if (!filterResult.process) {
@@ -215,6 +246,39 @@ export async function handleCompress(
     }
 
     try {
+        let stat;
+        try {
+            stat = fs.statSync(resolvedPath);
+        } catch (statErr) {
+            const code = (statErr as NodeJS.ErrnoException).code;
+            if (code === "ENOENT") {
+                return {
+                    content: [{
+                        type: "text" as const,
+                        text:
+                            `Path not found: ${path.relative(engine.getProjectRoot(), resolvedPath) || file_path}\n` +
+                            `Hint: use nreki_navigate action:"fast_grep" or action:"outline" to locate files.`,
+                    }],
+                    isError: true,
+                };
+            }
+            throw statErr;
+        }
+
+        if (stat.isDirectory()) {
+            return {
+                content: [{
+                    type: "text" as const,
+                    text:
+                        `Path is a directory, not a file: ${path.relative(engine.getProjectRoot(), resolvedPath) || file_path}\n` +
+                        `Hint: nreki_code action:"compress" operates on individual files.\n` +
+                        `For a directory overview, use nreki_navigate action:"outline" on specific files, ` +
+                        `or nreki_navigate action:"fast_grep" / "search" to locate symbols across the tree.`,
+                }],
+                isError: true,
+            };
+        }
+
         const compression_level = typeof params.level === "string" &&
             ["light", "medium", "aggressive"].includes(params.level)
             ? params.level as CompressionLevel
