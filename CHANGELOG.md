@@ -2,6 +2,34 @@
 
 All notable changes to NREKI will be documented in this file.
 
+## [11.3.0] - 2026-05-19
+
+### Added
+
+- **Agent-aware `nreki init` CLI** — pre-v11.3.0 `nreki init` unconditionally wrote `CLAUDE.md`, `AGENTS.md`, `SKILL.md` plus a Claude Code-specific PreToolUse hook into every project regardless of which AI coding agent the user actually ran. v11.3.0 detects the agent from filesystem signals (`.claude/` / `CLAUDE.md` → claude, `.cursor/` / `.cursorrules` → cursor, `.clinerules` → cline, `.github/copilot-instructions.md` → copilot) and installs only the files that agent reads:
+  - **claude**: `CLAUDE.md`, `SKILL.md`, `.claude/hooks/nreki-enforcer.mjs`, `.claude/settings.json` PreToolUse merge.
+  - **cursor**: `.cursor/rules/nreki.mdc` with `alwaysApply: true` frontmatter.
+  - **cline**: `.clinerules/nreki.md`.
+  - **copilot**: `.github/copilot-instructions.md` (appended if pre-existing).
+  - **generic** (no signal): `AGENTS.md` + an honest disclosure pointing at the `--agent` flag.
+  Flags: `--agent <claude|cursor|cline|copilot|generic>` overrides detection; `--force` rewrites an existing NREKI block; `--dry-run` previews the plan without filesystem writes. The pre-existing NREKI marker check is preserved per file, so `nreki init` remains idempotent.
+- **`tests/cli-init.test.ts`** — 28 filesystem-based tests covering detection priority, all agent install paths, idempotency (marker-based skip), `--force` rewrite, `--dry-run` no-op semantics, and end-to-end auto-detection.
+
+### Changed
+
+- The Claude Code enforcer hook moved from a TypeScript template literal in `src/index.ts` (`getEnforcerScriptContent()`) to a real file at `templates/hooks/nreki-enforcer.mjs`. Template content is read at runtime via `fs.readFileSync`, so future edits to the hook source no longer require navigating nested backslash-escape gymnastics. The runtime behavior of the hook is unchanged.
+- `nreki --help` now documents the `init` subcommand flags.
+
+### Internal
+
+- `src/init/agent-detect.ts` — pure detector returning `{ agent, reason, detected }`.
+- `src/init/init-runner.ts` — orchestrator with `parseInitArgs`, `runInit`, and `formatAction`. Pure functions over the filesystem so tests can `mkdtemp` and assert against on-disk outcomes. The Claude-Code-only `.claude/settings.json` merge is conservative: it preserves user-added PreToolUse matchers and only inserts the ones NREKI owns; malformed JSON aborts the merge with a clear message instead of clobbering the file.
+
+### Migration notes
+
+- Existing Claude Code installs are unaffected: the detector sees their `.claude/` directory and continues to install the same Claude-Code files. Re-running `nreki init` on a v11.2.x Claude Code project will report all four target files as `[skip]` (markers already present).
+- Cursor / Cline / Copilot users on v11.2.x who ran `nreki init` and ended up with stray `CLAUDE.md` / `SKILL.md` files can safely delete them — v11.3.0 will now write the correct agent-specific files for them on the next run.
+
 ## [11.2.1] - 2026-05-19
 
 Hot-fix release. v11.2.0 surfaced an EOF-style MCP crash on real-world

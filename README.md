@@ -24,11 +24,24 @@ claude mcp add nreki -- npx -y @ruso-0/nreki
 # Cursor / any MCP client - add to mcp.json:
 { "mcpServers": { "nreki": { "command": "npx", "args": ["-y", "@ruso-0/nreki"] } } }
 
-# Optional: installs CLAUDE.md instructions + CLI hook firewall
-npx @ruso-0/nreki init
+# Optional: agent-aware instructions install (v11.3.0+)
+npx @ruso-0/nreki init               # auto-detect agent (Claude Code / Cursor / Cline / Copilot / generic)
+npx @ruso-0/nreki init --agent cursor # explicit; valid: claude, cursor, cline, copilot, generic
+npx @ruso-0/nreki init --dry-run     # preview the plan, write nothing
+npx @ruso-0/nreki init --force       # rewrite an existing NREKI block
 ```
 
-First run indexes the project automatically. Zero config for TS/JS; point a `tsconfig.json` at your code and NREKI detects the right validation mode.
+What `nreki init` writes per agent:
+
+| Agent     | Detected via                          | Files installed                                                       |
+|-----------|----------------------------------------|-----------------------------------------------------------------------|
+| `claude`  | `.claude/` or `CLAUDE.md`              | `CLAUDE.md`, `SKILL.md`, `.claude/hooks/nreki-enforcer.mjs`, `.claude/settings.json` |
+| `cursor`  | `.cursor/` or `.cursorrules`           | `.cursor/rules/nreki.mdc` (with `alwaysApply: true` frontmatter)      |
+| `cline`   | `.clinerules` (file or dir)            | `.clinerules/nreki.md`                                                |
+| `copilot` | `.github/copilot-instructions.md`      | `.github/copilot-instructions.md` (appended)                          |
+| `generic` | none of the above                      | `AGENTS.md`                                                           |
+
+First MCP run indexes the project automatically in the background — `hybrid_search` returns BM25 results immediately while NREKI's semantic index warms (v11.2.1+). Zero config for TS/JS; point a `tsconfig.json` at your code and NREKI detects the right validation mode.
 
 ## How it works
 

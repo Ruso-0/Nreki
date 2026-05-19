@@ -79,14 +79,21 @@ if (args.includes("--version") || args.includes("-v")) {
 
 if (args.includes("--help") || args.includes("-h")) {
     console.log(`
-NREKI v${VERSION} - Semantic validation for Claude Code
+NREKI v${VERSION} - Semantic validation MCP server for AI coding agents
 
 Usage:
-  npx @ruso-0/nreki [options]
-  npx @ruso-0/nreki init      # Creates optimal CLAUDE.md instructions
-  npx @ruso-0/nreki deinit    # Safely removes NREKI hooks before npm uninstall
+  npx @ruso-0/nreki                       Start MCP server (default)
+  npx @ruso-0/nreki init [options]        Install per-agent instructions
+  npx @ruso-0/nreki deinit                Safely remove NREKI hooks before uninstall
 
-Options:
+\`init\` options:
+  --agent <name>        Force agent: claude | cursor | cline | copilot | generic
+                        (default: auto-detect via .claude/, .cursor/, .clinerules,
+                         .github/copilot-instructions.md; falls back to generic)
+  --force               Rewrite existing NREKI block (default: skip if marker present)
+  --dry-run             Print plan only, no filesystem writes
+
+Global flags:
   --help, -h            Show this help message
   --version, -v         Show version
     `);
@@ -237,112 +244,38 @@ if (args[0] === "deinit") {
 // ─── Init Subcommand ────────────────────────────────────────────────
 
 if (args[0] === "init") {
-    const claudePath = path.join(process.cwd(), "CLAUDE.md");
-    const marker = "# NREKI ACTIVE";
+    // v11.3.0: agent-aware init. Detects Claude Code / Cursor / Cline /
+    // Copilot via filesystem signals and only writes the files that
+    // agent actually reads. --agent overrides detection, --force
+    // rewrites existing NREKI blocks, --dry-run previews the plan.
+    const { parseInitArgs, runInit, formatAction } = await import("./init/init-runner.js");
+    const parsed = parseInitArgs(args.slice(1));
+    if (parsed.error) {
+        process.stderr.write(`nreki init: ${parsed.error}\n`);
+        process.stderr.write(
+            "\nUsage: nreki init [--agent <claude|cursor|cline|copilot|generic>] [--force] [--dry-run]\n",
+        );
+        process.exit(2);
+    }
 
-    if (fs.existsSync(claudePath)) {
-        const existing = fs.readFileSync(claudePath, "utf-8");
-        if (existing.includes(marker)) {
-            logger.info("CLAUDE.md already contains NREKI instructions. Skipping CLAUDE.md update.");
-        } else {
-            // Append to existing CLAUDE.md
-            fs.appendFileSync(claudePath, "\n\n" + getClaudeMdContent(), "utf-8");
-            logger.info("Appended NREKI instructions to existing CLAUDE.md");
+    try {
+        const result = runInit(parsed.opts);
+        process.stderr.write(`nreki init: ${result.reason}\n`);
+        process.stderr.write(`  agent: ${result.agent}${parsed.opts.dryRun ? " (dry-run)" : ""}\n`);
+        for (const action of result.actions) {
+            process.stderr.write(`  ${formatAction(action)}\n`);
         }
-    } else {
-        fs.writeFileSync(claudePath, getClaudeMdContent(), "utf-8");
-        logger.info("Created CLAUDE.md in " + process.cwd());
-    }
-
-    // ─── AGENTS.md (AI coding agents via MCP: Codex, Gemini, others) ───
-    const agentsPath = path.join(process.cwd(), "AGENTS.md");
-    const agentsMarker = "# Instructions for AI coding agents consuming NREKI via MCP";
-
-    if (fs.existsSync(agentsPath)) {
-        const existing = fs.readFileSync(agentsPath, "utf-8");
-        if (existing.includes(agentsMarker)) {
-            logger.info("AGENTS.md already contains NREKI instructions. Skipping AGENTS.md update.");
-        } else {
-            fs.appendFileSync(agentsPath, "\n\n" + getAgentsMdContent(), "utf-8");
-            logger.info("Appended NREKI instructions to existing AGENTS.md");
+        if (result.agent === "generic" && !parsed.opts.agent) {
+            process.stderr.write(
+                "\nNo agent-specific config detected. If you use Claude Code / Cursor / Cline / Copilot,\n" +
+                "re-run with --agent <name> to install the agent-specific files.\n",
+            );
         }
-    } else {
-        fs.writeFileSync(agentsPath, getAgentsMdContent(), "utf-8");
-        logger.info("Created AGENTS.md in " + process.cwd());
+        process.exit(0);
+    } catch (err) {
+        process.stderr.write(`nreki init failed: ${(err as Error).message}\n`);
+        process.exit(1);
     }
-
-    // ─── SKILL.md (Claude Code Skills system auto-discovery via YAML frontmatter) ───
-    const skillPath = path.join(process.cwd(), "SKILL.md");
-    const skillMarker = "name: nreki-optimizer";
-
-    if (fs.existsSync(skillPath)) {
-        const existing = fs.readFileSync(skillPath, "utf-8");
-        if (existing.includes(skillMarker)) {
-            logger.info("SKILL.md already contains NREKI optimizer skill. Skipping SKILL.md update.");
-        } else {
-            fs.appendFileSync(skillPath, "\n\n" + getSkillMdContent(), "utf-8");
-            logger.info("Appended NREKI optimizer skill to existing SKILL.md");
-        }
-    } else {
-        fs.writeFileSync(skillPath, getSkillMdContent(), "utf-8");
-        logger.info("Created SKILL.md in " + process.cwd());
-    }
-
-    // ─── INSTALADOR CLI HOOK (Capa 1: Perro Guardián) ───
-    const claudeHooksDir = path.join(process.cwd(), ".claude", "hooks");
-    if (!fs.existsSync(claudeHooksDir)) fs.mkdirSync(claudeHooksDir, { recursive: true });
-
-    const hookScriptPath = path.join(claudeHooksDir, "nreki-enforcer.mjs");
-    fs.writeFileSync(hookScriptPath, getEnforcerScriptContent(), "utf-8");
-
-    const settingsPath = path.join(process.cwd(), ".claude", "settings.json");
-    let settings: ClaudeSettings = {};
-    if (fs.existsSync(settingsPath)) {
-        try {
-            const parsed = JSON.parse(fs.readFileSync(settingsPath, "utf-8")) as unknown;
-            if (parsed && typeof parsed === "object") {
-                settings = parsed as ClaudeSettings;
-            }
-        } catch { /* malformed JSON — fall through with empty default */ }
-    }
-    if (!settings.hooks) settings.hooks = {};
-    if (!settings.hooks.PreToolUse) settings.hooks.PreToolUse = [];
-
-    const toolsToBlock = ["Read", "ReadFile", "View", "ViewFile", "Write", "WriteFile", "Edit", "EditFile", "Replace"];
-    for (const tool of toolsToBlock) {
-        const exists = settings.hooks.PreToolUse.some(h => h.matcher === tool);
-        if (!exists) {
-            settings.hooks.PreToolUse.push({
-                matcher: tool,
-                hooks: [{ type: "command", command: "node .claude/hooks/nreki-enforcer.mjs" }]
-            });
-        }
-    }
-    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), "utf-8");
-    logger.info("NREKI CLI Hook (Capa 1) installed.");
-
-    process.exit(0);
-}
-
-function getClaudeMdContent(): string {
-    return fs.readFileSync(
-        new URL("../templates/CLAUDE.md", import.meta.url),
-        "utf-8"
-    );
-}
-
-function getAgentsMdContent(): string {
-    return fs.readFileSync(
-        new URL("../templates/AGENTS.md", import.meta.url),
-        "utf-8"
-    );
-}
-
-function getSkillMdContent(): string {
-    return fs.readFileSync(
-        new URL("../templates/SKILL.md", import.meta.url),
-        "utf-8"
-    );
 }
 
 // ─── Initialization ─────────────────────────────────────────────────
@@ -774,12 +707,18 @@ async function main(): Promise<void> {
     }
 
     // ─── AUTO-PATCH SECURITY HOOK (v10.x) ───
+    // v11.3.0: enforcer template now lives at templates/hooks/nreki-enforcer.mjs
+    // (read at runtime) instead of being inlined as a TS string literal.
     try {
         const hookScriptPath = path.join(process.cwd(), ".claude", "hooks", "nreki-enforcer.mjs");
         if (fs.existsSync(hookScriptPath)) {
             const currentHook = fs.readFileSync(hookScriptPath, "utf-8");
             if (!currentHook.includes("cwdPosix")) {
-                fs.writeFileSync(hookScriptPath, getEnforcerScriptContent(), "utf-8");
+                const upstreamHook = fs.readFileSync(
+                    new URL("../templates/hooks/nreki-enforcer.mjs", import.meta.url),
+                    "utf-8",
+                );
+                fs.writeFileSync(hookScriptPath, upstreamHook, "utf-8");
                 logger.info("Auto-patched legacy nreki-enforcer hook for security.");
             }
         }
@@ -832,86 +771,6 @@ async function main(): Promise<void> {
             }
         });
     }
-}
-
-function getEnforcerScriptContent(): string {
-    return `#!/usr/bin/env node
-import fs from "fs";
-import path from "path";
-let stdin = "";
-process.stdin.setEncoding("utf8");
-process.stdin.on("data", chunk => stdin += chunk);
-process.stdin.on("end", () => {
-    try {
-        const payload = JSON.parse(stdin);
-        const tool = payload.tool_name || payload.name || "";
-        const input = payload.tool_input || payload.input || {};
-        const targetPath = input.file_path || input.path || input.file || input.target_file || input.absolute_path;
-        if (!targetPath) process.exit(0);
-        let absPath;
-        let size = 0;
-        try {
-            absPath = path.resolve(process.cwd(), targetPath).replace(/\\\\/g, "/");
-            const cwdPosix = process.cwd().replace(/\\\\/g, "/");
-            // v10.13.1: Windows path.resolve no normaliza case del drive letter.
-            // Comparar case-insensitive SOLO en win32 evita falsos positivos con
-            // "d:/Nreki/..." vs "D:/Nreki/..." sin afectar semántica en POSIX.
-            const isWin = process.platform === "win32";
-            const checkAbs = isWin ? absPath.toLowerCase() : absPath;
-            const checkCwd = isWin ? cwdPosix.toLowerCase() : cwdPosix;
-            if (!checkAbs.startsWith(checkCwd + "/") && checkAbs !== checkCwd) {
-                console.error("Blocked: Path traversal attempt.");
-                process.exit(2);
-            }
-            size = fs.statSync(absPath).size;
-        } catch {
-            process.exit(0);
-        }
-        if (size < 1024) process.exit(0);
-        if (size > 500000) {
-            if (/^(Write|Edit|Replace)(File)?$/i.test(tool)) {
-                console.error("Blocked: native writes forbidden on >100 line files.\n" +
-                    "Required: use NREKI semantic editing. Emit:\n" +
-                    "nreki_code action:\"edit\" path:\"" + targetPath + "\" symbol:\"<symbol_name_from_outline>\"\n" +
-                    "Run nreki_navigate action:\"outline\" path:\"" + targetPath + "\" first to find symbol names.");
-                process.exit(2);
-            }
-            if (/^(Read|View)(File)?$/i.test(tool) || tool === "read_file") {
-                console.error("Blocked: file is >100 lines. Raw read would burn context budget.\n" +
-                    "Required: focused compression. Emit:\n" +
-                    "nreki_code action:\"compress\" path:\"" + targetPath + "\" focus:\"<symbol_name_from_outline>\"\n" +
-                    "Run nreki_navigate action:\"outline\" path:\"" + targetPath + "\" first to find symbol names.");
-                process.exit(2);
-            }
-            process.exit(0);
-        }
-        const buf = fs.readFileSync(absPath);
-        let lines = 1;
-        for (let i = 0; i < buf.length; i++) {
-            if (buf[i] === 10) lines++;
-            if (lines >= 100) break;
-        }
-        if (lines < 100) process.exit(0);
-        if (/^(Write|Edit|Replace)(File)?$/i.test(tool)) {
-            console.error("Blocked: native writes forbidden on >100 line files.\n" +
-                "Required: use NREKI semantic editing. Emit:\n" +
-                "nreki_code action:\"edit\" path:\"" + targetPath + "\" symbol:\"<symbol_name_from_outline>\"\n" +
-                "Run nreki_navigate action:\"outline\" path:\"" + targetPath + "\" first to find symbol names.");
-            process.exit(2);
-        }
-        if (/^(Read|View)(File)?$/i.test(tool) || tool === "read_file") {
-            console.error("Blocked: file is >100 lines. Raw read would burn context budget.\n" +
-                "Required: focused compression. Emit:\n" +
-                "nreki_code action:\"compress\" path:\"" + targetPath + "\" focus:\"<symbol_name_from_outline>\"\n" +
-                "Run nreki_navigate action:\"outline\" path:\"" + targetPath + "\" first to find symbol names.");
-            process.exit(2);
-        }
-        process.exit(0);
-    } catch (e) {
-        process.exit(0);
-    }
-});
-`;
 }
 
 // v11.2.1: defensive process-level handlers. The MCP transport speaks
