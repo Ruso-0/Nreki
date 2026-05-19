@@ -788,9 +788,21 @@ async function main(): Promise<void> {
     // Connect and serve
     await server.connect(transport);
 
+    // v11.2.1: do NOT block server startup on the file watcher's initial
+    // scan. chokidar's ready event waits for the directory walk to settle,
+    // which on real projects with heavy non-ignored trees can take tens of
+    // seconds — during which the MCP transport is alive but the watcher
+    // CPU work prevents tool handlers from making forward progress, and
+    // Claude Code surfaces the silence as "connection closed: EOF". The
+    // watcher is for reactive re-indexing; tool handlers call
+    // engine.indexDirectory() directly on first use and do not depend on
+    // it being ready.
     if (engine) {
-        await engine.startWatcher();
-        logger.info("File watcher started (reactive mode).");
+        const watcherReady = engine.startWatcher();
+        watcherReady.then(
+            () => logger.info("File watcher started (reactive mode)."),
+            (err: Error) => logger.error(`File watcher failed (non-fatal): ${err.message}`),
+        );
     }
 
     // Engine initialization is lazy - each tool calls engine.initialize()
@@ -901,6 +913,19 @@ process.stdin.on("end", () => {
 });
 `;
 }
+
+// v11.2.1: defensive process-level handlers. The MCP transport speaks
+// JSON-RPC over stdio, so any unhandled rejection or uncaught exception
+// that escapes a tool handler would otherwise terminate the process and
+// surface to Claude Code as a "connection closed: EOF" crash. We log to
+// stderr (never stdout — would corrupt JSON-RPC) and keep serving.
+process.on("unhandledRejection", (reason) => {
+    const detail = reason instanceof Error ? (reason.stack ?? reason.message) : String(reason);
+    logger.error(`Unhandled promise rejection (suppressed to keep MCP alive): ${detail}`);
+});
+process.on("uncaughtException", (err) => {
+    logger.error(`Uncaught exception (suppressed to keep MCP alive): ${err.stack ?? err.message}`);
+});
 
 main().catch((err) => {
     logger.error(`Fatal error: ${err.message}`);

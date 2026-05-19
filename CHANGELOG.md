@@ -2,6 +2,55 @@
 
 All notable changes to NREKI will be documented in this file.
 
+## [11.2.1] - 2026-05-19
+
+Hot-fix release. v11.2.0 surfaced an EOF-style MCP crash on real-world
+repositories when Claude Code invoked `nreki_navigate action="hybrid_search"`
+(and to a lesser extent `search`, `map`, `orphan_oracle`, `fast_grep`).
+Empirical reproduction via stdio probe in this repo (D:/Nreki, ~12k source
+files, heavy dot-trees `.eval-phase5-cache/` and `.venv-aider/`) showed the
+server never responded inside the client's tool-call timeout window — Claude
+Code surfaced this as `connection closed: calling tools/call: client is closing: EOF`.
+
+### Fixed
+
+- **MCP EOF on first `hybrid_search` / `search` on real repos** — three
+  independent directory walks (NREKI indexer `walkDirectory`, the Phase 5
+  repo-map `walkFiles`, and chokidar's initial scan) used synchronous
+  `fs.readdirSync` and did NOT skip dot-prefixed directories. Heavy
+  dot-trees (`.venv*`, `.cache`, `.turbo`, `.parcel-cache`, `.pytest_cache`,
+  `.mypy_cache`, `.ruff_cache`, `.eval-phase5-cache`, `.nreki-runtime`,
+  etc.) blocked the MCP event loop for tens of seconds to minutes. All
+  three walkers now mirror `BM25Engine.walkSourceFiles`'s policy and skip
+  any dot-prefixed directory.
+- **Watcher initialization no longer blocks server startup** — pre-v11.2.1
+  `await engine.startWatcher()` ran inside `main()` AFTER `server.connect(transport)`,
+  so the MCP transport accepted requests but the watcher's chokidar scan
+  prevented handlers from making forward progress. The watcher now starts
+  in the background; readiness is logged when chokidar emits `ready`.
+- **First-call full-project indexing no longer awaited inside tool
+  handlers** — `hybrid_search`, `search`, `map`, and `orphan_oracle` now
+  kick off `engine.indexDirectory()` in the background via
+  `engine.ensureIndexedBackground()` and return immediately with whatever
+  the current index supports. `hybrid_search` surfaces useful BM25 results
+  on the first call even while NREKI's semantic index warms up; `search`
+  returns a "warming" hint guiding the user to `hybrid_search` / `fast_grep`
+  for an immediate answer. `fast_grep` keeps its existing synchronous
+  bootstrap because the RAM cache contract depends on it.
+- **Defensive `unhandledRejection` / `uncaughtException` handlers** —
+  unexpected async errors no longer terminate the MCP process. Both are
+  logged to stderr (never stdout, which would corrupt JSON-RPC) and the
+  server keeps serving.
+
+### Internal
+
+- `NrekiEngine.ensureIndexedBackground()` coalesces concurrent
+  first-call indexing requests onto a single in-flight promise.
+- chokidar v4 `ignored` option migrated from an array of glob strings
+  (a v3 form not natively interpreted by v4) to a predicate function
+  that combines dot-prefix skipping with the configured glob list via
+  `picomatch.isMatch`.
+
 ## [11.2.0] - 2026-05-18
 
 ### Added

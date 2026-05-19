@@ -170,6 +170,16 @@ export class IndexPipeline {
                 const relativePath = path.relative(dirPath, fullPath).replace(/\\/g, "/");
 
                 if (entry.isDirectory()) {
+                    // v11.2.1: skip dot-prefixed directories (mirrors
+                    // BM25Engine.walkSourceFiles policy at bm25-engine.ts:281).
+                    // Covers .git, .next, .venv*, .eval-phase5-cache, .turbo,
+                    // .cache, .parcel-cache, .pytest_cache, .mypy_cache,
+                    // .ruff_cache, .idea, .vscode, .ipynb_checkpoints, .nreki,
+                    // .nreki-runtime without enumeration. Pre-v11.2.1 these
+                    // were walked synchronously by fs.readdirSync, blocking the
+                    // MCP event loop for tens of seconds on heavy dot-dirs and
+                    // surfacing to Claude Code as a tools/call EOF.
+                    if (entry.name.startsWith(".")) continue;
                     if (!isIgnored(entry.name) && !isIgnored(relativePath) && !isIgnored(relativePath + "/")) {
                         walk(fullPath);
                     }

@@ -14,6 +14,7 @@
 import fs from "fs";
 import path from "path";
 import chokidar, { type FSWatcher } from "chokidar";
+import picomatch from "picomatch";
 
 import { NrekiDB, type ChunkRecord, type FastGrepHit } from "./database.js";
 import { estimateTokens } from "./utils/token-estimator.js";
@@ -289,6 +290,32 @@ export class NrekiEngine {
         // Phase 5.5.2: invalidate BM25 since corpus mutated.
         this.invalidateHybridIndex();
         return result;
+    }
+
+    /**
+     * v11.2.1: kick off a full project index in the background and return
+     * immediately. MCP tool handlers call this on first request so they
+     * can respond inside Claude Code's tool-call timeout window instead
+     * of blocking on a multi-minute walk that surfaces as "connection
+     * closed: EOF" on large repos. Concurrent calls coalesce on the
+     * single in-flight promise; once it settles the next call kicks a
+     * fresh pass (so newly-added trees are eventually picked up).
+     */
+    private backgroundIndexPromise: Promise<void> | null = null;
+    ensureIndexedBackground(): boolean {
+        if (this.backgroundIndexPromise) return false;
+        if (this.hasIndexedFiles()) return false;
+        this.backgroundIndexPromise = this.indexDirectory(this.getProjectRoot())
+            .then((stats) => {
+                logger.info(`Background index complete: ${stats.indexed} indexed, ${stats.skipped} skipped, ${stats.errors} errors.`);
+            })
+            .catch((err) => {
+                logger.error(`Background indexing failed: ${(err as Error).message}`);
+            })
+            .finally(() => {
+                this.backgroundIndexPromise = null;
+            });
+        return true;
     }
 
     // ─── Search (delegated to SearchEngine) ─────────────────────────
@@ -625,8 +652,30 @@ export class NrekiEngine {
 
         const shouldWatchFile = (fp: string) => this.config.extensions.includes(path.extname(fp).toLowerCase());
 
+        // v11.2.1: combine the configured globs with a dot-prefix predicate so
+        // chokidar's initial scan does not enumerate heavy dot-directories
+        // (.venv*, .eval-phase5-cache, .turbo, .cache, .parcel-cache,
+        // .pytest_cache, .nreki-runtime, etc.) Pre-v11.2.1 the watcher walked
+        // these synchronously during scan, holding the event loop and surfacing
+        // to MCP tool callers as an EOF crash.
+        const ignoredGlobs = this.config.ignorePaths;
+        const ignoredMatcher = (filePath: string): boolean => {
+            const base = path.basename(filePath);
+            if (base.startsWith(".")) {
+                // Always allow the project root itself even if it sits inside
+                // a dot-path the user explicitly chose to watch.
+                const isWatchRoot = this.config.watchPaths.some(w => path.resolve(w) === path.resolve(filePath));
+                if (!isWatchRoot) return true;
+            }
+            // Defer to the configured glob list for the remaining ignores.
+            for (const g of ignoredGlobs) {
+                if (picomatch.isMatch(filePath, g)) return true;
+            }
+            return false;
+        };
+
         this.watcher = chokidar.watch(this.config.watchPaths, {
-            ignored: this.config.ignorePaths,
+            ignored: ignoredMatcher,
             persistent: true,
             ignoreInitial: true, // prevent race with handler bootstrap
         });

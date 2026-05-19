@@ -37,15 +37,29 @@ export async function handleSearch(
 
     const query = params.query ?? "";
 
-    if (!engine.hasIndexedFiles()) {
-        logger.info("First-time project indexing — this may take a moment for large repos.");
-        await engine.indexDirectory(engine.getProjectRoot());
-    }
+    // v11.2.1: non-blocking lazy index. Pre-v11.2.1 this awaited a full
+    // walk that exceeded Claude Code's tool-call timeout on large repos
+    // and surfaced as EOF. The handler now returns early with a hint when
+    // the index is still warming; subsequent calls progressively gain
+    // coverage. fast_grep / hybrid_search remain usable in the meantime.
+    const indexStarted = !engine.hasIndexedFiles() && engine.ensureIndexedBackground();
 
     const limit = typeof params.limit === "number" ? Math.min(50, Math.max(1, params.limit)) : 10;
     const include_raw = params.include_raw === true;
 
     const results = await engine.search(query, limit);
+    if (indexStarted && results.length === 0) {
+        return {
+            content: [{
+                type: "text" as const,
+                text:
+                    `Index pending for: "${query}"\n\n` +
+                    `NREKI's semantic index is warming in the background. Try again in a few seconds, ` +
+                    `or use action:"hybrid_search" (BM25-backed, no wait) or action:"fast_grep" ` +
+                    `(exact substring) for immediate results.`,
+            }],
+        };
+    }
 
     if (results.length === 0) {
         return {
@@ -516,9 +530,11 @@ export async function handleMap(
     const { engine } = deps;
     await engine.initialize();
 
+    // v11.2.1: kick off indexing in the background instead of awaiting it
+    // — the repo map renders from whatever is already in the DB and the
+    // next call picks up the freshly-indexed entries.
     if (!engine.hasIndexedFiles()) {
-        logger.info("First-time project indexing — this may take a moment for large repos.");
-        await engine.indexDirectory(engine.getProjectRoot());
+        engine.ensureIndexedBackground();
     }
 
     const refresh = params.refresh === true;
@@ -719,9 +735,11 @@ export async function handleOrphanOracle(
     const { engine } = deps;
     await engine.initialize();
 
+    // v11.2.1: non-blocking lazy index. orphan_oracle reads whatever is
+    // already in the repo map; if the index is warming, the answer may be
+    // incomplete on this call but the next call will see new entries.
     if (!engine.hasIndexedFiles()) {
-        logger.info("First-time project indexing — this may take a moment for large repos.");
-        await engine.indexDirectory(engine.getProjectRoot());
+        engine.ensureIndexedBackground();
     }
 
     const { map } = await engine.getRepoMap();
@@ -916,9 +934,15 @@ export async function handleHybridSearch(
         };
     }
 
-    if (!engine.hasIndexedFiles()) {
-        logger.info("First-time project indexing for hybrid_search...");
-        await engine.indexDirectory(engine.getProjectRoot());
+    // v11.2.1: do NOT block on a full indexDirectory walk. On large repos
+    // that walk takes longer than Claude Code's tool-call timeout and
+    // surfaces as "connection closed: EOF". BM25 carries its own walker
+    // and can serve lexical results even while NREKI's semantic index
+    // populates in the background. Subsequent calls progressively gain
+    // semantic coverage.
+    const indexStarted = !engine.hasIndexedFiles() && engine.ensureIndexedBackground();
+    if (indexStarted) {
+        logger.info("hybrid_search: NREKI index pending; BM25 results only this call.");
     }
 
     const topK = typeof params.limit === "number" ? Math.min(20, Math.max(1, params.limit)) : 10;
