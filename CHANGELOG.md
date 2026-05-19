@@ -2,6 +2,32 @@
 
 All notable changes to NREKI will be documented in this file.
 
+## [11.3.1] - 2026-05-19
+
+### Changed
+
+- **`SYMBOL_REPLACE_LIMIT` default raised 40 L → 100 L.** The legacy 40 L guillotine on `mode:"replace"` was introduced in v9.1 (`3661c31`, 2026-04-13) as a magic number without empirical justification. Phase 1 measurement of 2 880 functions across 5 production TypeScript codebases (NREKI src/, zod, ajv, eventsource, ajv-formats) showed the 40 L cap blocked **10.45% of real-world functions** and **19.06% of NREKI's own source** — a self-inconsistency. The new default (100 L) blocks only 3.02% aggregate (true outliers) and matches NREKI's pre-existing outline auto-expand cutoff (`<=100L` in v10.1.1). The other 10 defense-in-depth gates (anti-sweep shield, kernel TS validation, TTRD, blast radius, Fiedler bridge, Chronos friction, auto-backup, ACID, file lock, topology invalidate) remain unchanged and continue to detect every defect class the size-only gate was incidentally catching.
+- Error message now reports the active threshold and points to the env override:
+  `Blocked: Symbol "X" is 55L (>100L). Use mode:"patch" with search_text and replace_text, or override via NREKI_SYMBOL_LIMIT env.`
+
+### Added
+
+- **`NREKI_SYMBOL_LIMIT` env override** — accepts any integer 1..1000. Parse failures fall back to the default and warn on stderr (never silently disable the gate). Backward-compat: users who prefer the legacy 40 L behavior can set `NREKI_SYMBOL_LIMIT=40`.
+- **`src/limits.ts`** — central, named export `SYMBOL_REPLACE_LIMIT` replaces the magic number `40` in two locations (`src/semantic-edit.ts:637` batch path, `src/semantic-edit.ts:1029` single-edit path).
+- **Empirical analysis docs**:
+  - `docs/threshold-empirical-analysis.md` — methodology, samples, percentile distribution, false-positive rates per threshold (40 / 50 / 60 / 70 / 80 / 100 / 120 / 150).
+  - `docs/furia-threshold-review.md` — adversarial Q1–Q5 review (arbitrariness check, risk surface analysis, ratio-vs-absolute, env-override constraints, legitimate-rewrite scenario).
+  - `scripts/analyze-symbol-sizes.mjs` — reproducible analysis script (TypeScript Compiler API), regenerable on demand.
+- **Tests** — `tests/semantic-edit.test.ts` adds three cases: (a) 55 L symbol is now allowed, (b) 120 L god-function still blocked, (c) error message dynamically reflects active threshold.
+
+### Templates
+
+- `templates/CLAUDE.md`, `templates/AGENTS.md`, `templates/SKILL.md` updated to document the new 100 L default and the `NREKI_SYMBOL_LIMIT` override.
+
+### Migration
+
+- **Existing users:** the only externally-visible change is that symbols 41–100 L now accept `mode:"replace"` where they were previously rejected. No file format change, no API change, no breaking signature. To restore exact pre-v11.3.1 behavior, set `NREKI_SYMBOL_LIMIT=40` in your environment.
+
 ## [11.3.0] - 2026-05-19
 
 ### Added
