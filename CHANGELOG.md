@@ -2,6 +2,34 @@
 
 All notable changes to NREKI will be documented in this file.
 
+## [11.4.2] - 2026-05-19
+
+User feedback against v11.4.1 surfaced two genuine bugs and two UX gaps that the v11.4.0 sprint missed. v11.4.2 closes them and centralizes the path-validation helper so future readSource callsites can't regress.
+
+### Fixed
+
+- **EISDIR crash on `nreki_guard action:"set_plan"` with a directory path.** Reproduced empirically against the installed v11.4.1 binary. [`src/handlers/guard.ts:359`](src/handlers/guard.ts#L359) called `readSource` after only `fs.existsSync`, with no `isDirectory` check; the resulting EISDIR escaped as an opaque MCP error. v11.4.2 routes through the new `validatePath` helper and returns a structured error pointing to "pass the path to your plan file, e.g. `set_plan text:\"PLAN.md\"`".
+- **EISDIR crash on `nreki_guard action:"engram"` with a directory path.** Same root cause at [`src/handlers/guard.ts:465`](src/handlers/guard.ts#L465). Same fix.
+- **`nreki_navigate action:"outline"` silent-failed on a directory path** with the misleading message "may be empty, unsupported, or contain no declarations". The directory crash was being absorbed by `getFileSymbols`'s internal try/catch. v11.4.2 validates the path at the outline handler entry and returns "outline operates on a single file. For directory-wide discovery, use nreki_navigate action:\"search\" / \"fast_grep\" / \"hybrid_search\"".
+- **`nreki_navigate action:"search"` "No results found" message gave no fallback hint.** Symmetric with the existing "Index pending" branch which already mentioned `fast_grep` and `hybrid_search`. v11.4.2 mirrors that wording: the empty-results response now lists `fast_grep`, `hybrid_search` (with the user's query pre-filled for copy-paste), "broaden the query", and `Bash grep` as last resort.
+
+### Added
+
+- [`src/utils/path-guard.ts`](src/utils/path-guard.ts) — `validatePath()` returns a structured `{ok, kind, error, hint}` result. Catches: ENOENT, EISDIR, FIFO/socket (would block readFileSync indefinitely on POSIX), block/character devices, symlink loops, and the catch-all "not a regular file". Hint text varies by `toolName` ("read", "compress", "outline", "set_plan", "engram", "prepare_refactor") so each handler tells the user the right alternative tool.
+- [`tests/path-guard.test.ts`](tests/path-guard.test.ts) — 6 unit tests covering the public contract (+ 1 POSIX-only FIFO test, skipped on Windows).
+- [`tests/handlers-eisdir-coverage.test.ts`](tests/handlers-eisdir-coverage.test.ts) — 5 router-level regression tests: set_plan/dir, set_plan/missing, engram/dir, outline/dir, plus a regression guard confirming read/compress/dir still works (no rollback of v11.4.0 fix).
+- [`tests/search-no-results-hint.test.ts`](tests/search-no-results-hint.test.ts) — 2 tests pinning the new "No semantic results" fallback wording and confirming the "Index pending" branch is not regressed.
+- [`docs/user-feedback-v11.4.1-investigation.md`](docs/user-feedback-v11.4.1-investigation.md) — empirical investigation report. Each user claim probed against the installed binary, with classification (already fixed / genuine bug / UX gap / as-designed).
+
+### Internal — honest process disclosure
+
+- v11.4.0's EISDIR fix covered only `handleRead` and `handleCompress`. v11.4.2 audited every `readSource` callsite in `src/handlers/` and `src/router.ts`; the unguarded set was 4 callsites in 2 files. The audit step belonged in v11.4.0 and was skipped — disclosed in `docs/user-feedback-v11.4.1-investigation.md` §3.
+- Subagent investigation surfaced three kernel "bypass" hypotheses for the differential pre-existing-error filter. Two (`purgeCache` wipes baseline; healing cascade not re-filtered) were rejected after reading the source. One (hologram scope mismatch) is plausible but unreproduced; logged for a future round if user reports recur.
+
+### Templates
+
+- `templates/CLAUDE.md`, `AGENTS.md`, `SKILL.md` updated with a one-line note that "No semantic results" responses now include a fallback list, plus a reminder that set_plan/engram/outline reject directory paths with a tool-specific hint.
+
 ## [11.4.1] - 2026-05-19
 
 ### Added
