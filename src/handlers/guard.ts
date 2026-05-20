@@ -7,12 +7,12 @@
  */
 
 import crypto from "crypto";
-import fs from "fs";
 import path from "path";
 import type { McpToolResponse, GuardParams, RouterDependencies } from "../router.js";
 import { estimateTokens } from "../utils/token-estimator.js";
 import { safePath } from "../utils/path-jail.js";
 import { readSource } from "../utils/read-source.js";
+import { validatePath } from "../utils/path-guard.js";
 import { addPin, removePin, listPins } from "../pin-memory.js";
 import { latencyTracker } from "../utils/latency-tracker.js";
 import { logger } from "../utils/logger.js";
@@ -348,10 +348,25 @@ export async function handleSetPlan(
     let resolvedPath: string;
     try {
         resolvedPath = safePath(deps.engine.getProjectRoot(), params.text);
-        if (!fs.existsSync(resolvedPath)) throw new Error("File does not exist.");
     } catch (err) {
         return {
             content: [{ type: "text" as const, text: `## Set Plan: FAILED\n\n${(err as Error).message}` }],
+            isError: true,
+        };
+    }
+
+    const planGuard = validatePath({
+        absolutePath: resolvedPath,
+        userPath: params.text,
+        projectRoot: deps.engine.getProjectRoot(),
+        toolName: "set_plan",
+    });
+    if (!planGuard.ok) {
+        return {
+            content: [{
+                type: "text" as const,
+                text: `## Set Plan: FAILED\n\n${planGuard.error}\nHint: ${planGuard.hint}`,
+            }],
             isError: true,
         };
     }
@@ -458,6 +473,22 @@ export async function handleEngram(
     } catch (err) {
         return {
             content: [{ type: "text" as const, text: `Security error: ${(err as Error).message}` }],
+            isError: true,
+        };
+    }
+
+    const engramGuard = validatePath({
+        absolutePath: resolvedPath,
+        userPath: file,
+        projectRoot: root,
+        toolName: "engram",
+    });
+    if (!engramGuard.ok) {
+        return {
+            content: [{
+                type: "text" as const,
+                text: `Engram failed: ${engramGuard.error}\nHint: ${engramGuard.hint}`,
+            }],
             isError: true,
         };
     }

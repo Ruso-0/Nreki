@@ -13,6 +13,7 @@ import type { McpToolResponse, NavigateParams, RouterDependencies } from "../rou
 import { estimateTokens } from "../utils/token-estimator.js";
 import { safePath } from "../utils/path-jail.js";
 import { readSource } from "../utils/read-source.js";
+import { validatePath } from "../utils/path-guard.js";
 import {
     findDefinition,
     findReferences,
@@ -66,9 +67,13 @@ export async function handleSearch(
             content: [{
                 type: "text" as const,
                 text:
-                    `No results found for: "${query}"\n\n` +
-                    `Indexed ${engine.getStats().filesIndexed} files with ${engine.getStats().totalChunks} chunks.\n` +
-                    `Try a broader query or index more directories.`,
+                    `No semantic results found for: "${query}"\n\n` +
+                    `Indexed ${engine.getStats().filesIndexed} files with ${engine.getStats().totalChunks} chunks.\n\n` +
+                    `Fallback options:\n` +
+                    `  - nreki_navigate action:"fast_grep" query:"<exact text>"  — exact substring match (RAM-resident, ~ms latency).\n` +
+                    `  - nreki_navigate action:"hybrid_search" query:"${query}"  — semantic + BM25 fusion (+207% tokens, better recall on heterogeneous repos).\n` +
+                    `  - Broaden the query (drop adjectives, use base word) and retry.\n` +
+                    `  - As a last resort: Bash grep over the project root.`,
             }],
         };
     }
@@ -351,6 +356,22 @@ export async function handleOutline(
                 type: "text" as const,
                 text: `Security error: ${(err as Error).message}`,
             }],
+        };
+    }
+
+    const outlineGuard = validatePath({
+        absolutePath: resolvedPath,
+        userPath: file,
+        projectRoot: root,
+        toolName: "outline",
+    });
+    if (!outlineGuard.ok) {
+        return {
+            content: [{
+                type: "text" as const,
+                text: `${outlineGuard.error}\nHint: ${outlineGuard.hint}`,
+            }],
+            isError: true,
         };
     }
 
