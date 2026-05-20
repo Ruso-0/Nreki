@@ -54,4 +54,6 @@ If nreki_* tools fail: fall back to native Read/Write ONLY for new files or <100
 - Circuit breaker: If you see BREAK & BUILD or DECOMPOSE, STOP. Read the strategy and rethink.
 
 ## 6. INPUT VALIDATION
-- nreki_code action:"read" and action:"compress" operate on individual FILES. Passing a directory returns an explicit error pointing to nreki_navigate action:"outline" / "fast_grep" / "search". Pick the tool that matches the input shape.
+- nreki_code action:"read" and action:"compress" operate on individual FILES. Passing a directory returns an explicit error pointing to nreki_navigate action:"outline" / "fast_grep" / "search".
+- nreki_navigate action:"outline" and nreki_guard action:"set_plan" / "engram" likewise operate on single FILE paths. Pass a directory and the response will name the correct alternative tool.
+- When semantic search returns no results, the response lists fallbacks: fast_grep, hybrid_search, broaden-query, Bash grep. Follow that list in order.
