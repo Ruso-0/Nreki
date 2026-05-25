@@ -265,6 +265,23 @@ export async function handleCompress(
 
         // TFC-PRO INJECTION
         if (focus) {
+            // Sprint 8.0 control arm (eval-only): FOVEAL_OFF=1 skips the
+            // tfcCompress invocation entirely and returns the raw file so the
+            // foveal_off arm measures a vanilla read. When FOVEAL_OFF is unset
+            // or != "1" this branch is never taken and the path below is
+            // byte-identical to pre-Sprint-8.0 behaviour. See
+            // scripts/eval-phase8/prereg-erratum-01.md.
+            if (process.env.FOVEAL_OFF === "1") {
+                const rawForControl = readSource(resolvedPath);
+                engine.markFileRead(resolvedPath);
+                return {
+                    content: [{
+                        type: "text" as const,
+                        text: `${path.basename(resolvedPath)} (raw, FOVEAL_OFF control arm)\n\n\`\`\`\n${rawForControl}\n\`\`\``,
+                    }],
+                };
+            }
+
             const ext = path.extname(resolvedPath).toLowerCase();
             const isWeb = [".css", ".html", ".json"].includes(ext);
 

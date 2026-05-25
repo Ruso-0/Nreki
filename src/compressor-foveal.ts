@@ -101,12 +101,20 @@ export async function tfcCompress(
 ): Promise<TfcResultPayload> {
     const originalSize = content.length;
 
+    // Sprint 8.0 control arm (eval-only): FOVEAL_OFF=1 forces the bypass
+    // unconditionally so the foveal_off arm delivers raw content with zero
+    // compression. When FOVEAL_OFF is unset or any value other than "1",
+    // `fovealOff` is false and the condition below is byte-identical to the
+    // pre-Sprint-8.0 behaviour (prereg foveal_on arm frozen). See
+    // scripts/eval-phase8/prereg-erratum-01.md.
+    const fovealOff = process.env.FOVEAL_OFF === "1";
+
     // Phase 5.5.1 defense-in-depth: small-file bypass at compressor level.
     // Handler-level bypass (read.ts:84) handles the common path, but this
     // protects against direct tfcCompress calls with tiny files where
     // compression header overhead would exceed savings.
     const lineCount = content.split("\n").length;
-    if (lineCount < 100 || originalSize < 1024) {
+    if (fovealOff || lineCount < 100 || originalSize < 1024) {
         return {
             kind: "success",
             data: {
