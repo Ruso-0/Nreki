@@ -42,11 +42,16 @@ export async function handleSearch(
     // walk that exceeded Claude Code's tool-call timeout on large repos
     // and surfaced as EOF. The handler now returns early with a hint when
     // the index is still warming; subsequent calls progressively gain
-    // coverage. fast_grep / hybrid_search remain usable in the meantime.
+    // coverage. fast_grep remains usable in the meantime.
     const indexStarted = !engine.hasIndexedFiles() && engine.ensureIndexedBackground();
 
     const limit = typeof params.limit === "number" ? Math.min(50, Math.max(1, params.limit)) : 10;
-    const include_raw = params.include_raw === true;
+    // Sprint 8.0 control arm (eval-only): FOVEAL_OFF=1 forces full rawCode in
+    // search results so the foveal_off arm measures a vanilla retriever. When
+    // FOVEAL_OFF is unset or != "1", include_raw is governed solely by the
+    // caller param (byte-identical to pre-Sprint-8.0). See
+    // scripts/eval-phase8/prereg-erratum-01.md.
+    const include_raw = params.include_raw === true || process.env.FOVEAL_OFF === "1";
 
     const results = await engine.search(query, limit);
     if (indexStarted && results.length === 0) {
@@ -56,8 +61,7 @@ export async function handleSearch(
                 text:
                     `Index pending for: "${query}"\n\n` +
                     `NREKI's semantic index is warming in the background. Try again in a few seconds, ` +
-                    `or use action:"hybrid_search" (BM25-backed, no wait) or action:"fast_grep" ` +
-                    `(exact substring) for immediate results.`,
+                    `or use action:"fast_grep" (exact substring, RAM-resident) for immediate results.`,
             }],
         };
     }
@@ -71,9 +75,8 @@ export async function handleSearch(
                     `Indexed ${engine.getStats().filesIndexed} files with ${engine.getStats().totalChunks} chunks.\n\n` +
                     `Fallback options:\n` +
                     `  - nreki_navigate action:"fast_grep" query:"<exact text>"  — exact substring match (RAM-resident, ~ms latency).\n` +
-                    `  - nreki_navigate action:"hybrid_search" query:"${query}"  — semantic + BM25 fusion (+207% tokens, better recall on heterogeneous repos).\n` +
                     `  - Broaden the query (drop adjectives, use base word) and retry.\n` +
-                    `  - As a last resort: Bash grep over the project root.`,
+                    `  - As a last resort: host agent's grep over the project root.`,
             }],
         };
     }
@@ -483,10 +486,17 @@ export async function handleOutline(
     });
 
     // ─── DYNAMIC RISK EXPANSION (v10.x) ───
-    const MAX_EXPAND_TOKENS = 6000;
+    // Sprint 8.0 control arm (eval-only): FOVEAL_OFF=1 lifts the triage-risk
+    // filter and the token budget so outline returns the body of every method
+    // with no [BUDGET LIMIT REACHED] truncation (vanilla full dump). When
+    // FOVEAL_OFF is unset or != "1", MAX_EXPAND_TOKENS and `expandable` are
+    // byte-identical to pre-Sprint-8.0. See scripts/eval-phase8/prereg-erratum-01.md.
+    const fovealOff = process.env.FOVEAL_OFF === "1";
+    const MAX_EXPAND_TOKENS = fovealOff ? Number.POSITIVE_INFINITY : 6000;
 
-    const expandable = highRiskSymbols
-        .filter((sym) => (sym.endLine - sym.startLine + 1) <= 150)
+    const expandable = (fovealOff
+        ? symbols
+        : highRiskSymbols.filter((sym) => (sym.endLine - sym.startLine + 1) <= 150))
         .sort((a, b) => (b.endLine - b.startLine) - (a.endLine - a.startLine));
 
     const autoExpanded: typeof expandable = [];
@@ -921,134 +931,6 @@ export async function handleTypeShape(
             type: "text" as const,
             text: `Oracle: Type Shape for \`${symbol}\`\n\n\`\`\`typescript\ntype ${symbol} = ${shape}\n\`\`\``,
         }],
-    };
-}
-
-// ─── Hybrid Search (Phase 5.5.2) ─────────────────────────────────────
-
-/**
- * hybrid_search: NREKI Type Ledger semantic + BM25 lexical fused via
- * Reciprocal Rank Fusion at file level. Reto 5 architectural integration
- * applies foveal compression to BM25-only files so token cost stays
- * close to NREKI-standalone while accuracy reaches the empirical
- * Sprint 6.4 ceiling (FHR 0.566 vs 0.414 NREKI vs 0.374 BM25).
- *
- * When to choose vs action="search":
- *   - hybrid_search: accuracy-critical retrieval (lexical signal helps
- *     when symbol names appear verbatim in the query / issue body).
- *     Token cost ~3-5x action="search" empirically (Sprint 6.4 N=99).
- *   - search:        pure topological queries / when lexical noise hurts
- *     (call by Type Ledger consumes/produces edges).
- */
-export async function handleHybridSearch(
-    params: NavigateParams,
-    deps: RouterDependencies,
-): Promise<McpToolResponse> {
-    const { engine } = deps;
-    await engine.initialize();
-
-    const query = params.query ?? "";
-    if (!query.trim()) {
-        return {
-            content: [{ type: "text" as const, text: `Error: "query" is required for hybrid_search.` }],
-            isError: true,
-        };
-    }
-
-    // v11.2.1: do NOT block on a full indexDirectory walk. On large repos
-    // that walk takes longer than Claude Code's tool-call timeout and
-    // surfaces as "connection closed: EOF". BM25 carries its own walker
-    // and can serve lexical results even while NREKI's semantic index
-    // populates in the background. Subsequent calls progressively gain
-    // semantic coverage.
-    const indexStarted = !engine.hasIndexedFiles() && engine.ensureIndexedBackground();
-    if (indexStarted) {
-        logger.info("hybrid_search: NREKI index pending; BM25 results only this call.");
-    }
-
-    const topK = typeof params.limit === "number" ? Math.min(20, Math.max(1, params.limit)) : 10;
-
-    const hybrid = await engine.getHybridEngine();
-    const results = await hybrid.search(query, {
-        topK,
-        applyFovealOnBm25: true,
-    });
-
-    if (results.length === 0) {
-        return {
-            content: [{
-                type: "text" as const,
-                text:
-                    `No hybrid results for: "${query}"\n\n` +
-                    `Indexed ${engine.getStats().filesIndexed} files. ` +
-                    `Try a more specific query or broaden the project root.`,
-            }],
-        };
-    }
-
-    // Group by file for human-readable output. Within a file we sort by
-    // startLine so the reader sees chunks in source order.
-    const byFile = new Map<string, typeof results>();
-    for (const r of results) {
-        const arr = byFile.get(r.path) ?? [];
-        arr.push(r);
-        byFile.set(r.path, arr);
-    }
-    for (const arr of byFile.values()) {
-        arr.sort((a, b) => a.startLine - b.startLine);
-    }
-
-    // Files preserve fusion order from the input list (first hit per file).
-    const orderedFiles: string[] = [];
-    const seenForOrder = new Set<string>();
-    for (const r of results) {
-        if (seenForOrder.has(r.path)) continue;
-        seenForOrder.add(r.path);
-        orderedFiles.push(r.path);
-    }
-
-    const sourceTally = { nreki: 0, bm25: 0, both: 0 };
-    const lines: string[] = [
-        `## Hybrid Search: "${query}"`,
-        `${results.length} chunk(s) across ${byFile.size} file(s) (Type Ledger + BM25 fused via RRF)`,
-        ``,
-    ];
-
-    let i = 0;
-    for (const filePath of orderedFiles) {
-        i++;
-        const chunks = byFile.get(filePath)!;
-        const first = chunks[0];
-        sourceTally[first.source]++;
-        const score = first.score.toFixed(4);
-        const ext = path.extname(filePath).slice(1).toLowerCase() || "txt";
-
-        lines.push(`### ${i}. ${filePath}  [source: ${first.source} | RRF: ${score}]`);
-
-        for (const c of chunks) {
-            const rangeTag = c.nodeType === "bm25_file"
-                ? `L1-L${c.endLine} (foveal-compressed)`
-                : `L${c.startLine}-L${c.endLine} (${c.nodeType})`;
-            lines.push(`  ${rangeTag}`);
-            lines.push("```" + ext);
-            lines.push(c.content);
-            lines.push("```");
-        }
-        lines.push("");
-    }
-
-    lines.push(
-        `*Origin tally: ${sourceTally.nreki} NREKI-only, ${sourceTally.bm25} BM25-only, ` +
-        `${sourceTally.both} both. Foveal compression applied to BM25-only files (Reto 5).*`,
-    );
-
-    const finalText = lines.join("\n");
-    const responseTokens = estimateTokens(finalText);
-
-    engine.logUsage("nreki_navigate:hybrid_search", responseTokens, responseTokens, 0);
-
-    return {
-        content: [{ type: "text" as const, text: finalText }],
     };
 }
 

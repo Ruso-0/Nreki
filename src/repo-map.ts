@@ -287,8 +287,7 @@ function walkFiles(dirPath: string): string[] {
             const fullPath = path.join(dir, entry.name);
 
             if (entry.isDirectory()) {
-                // v11.2.1: skip dot-prefixed directories (mirrors
-                // BM25Engine.walkSourceFiles and indexer.walkDirectory).
+                // v11.2.1: skip dot-prefixed directories (mirrors indexer.walkDirectory).
                 // Pre-v11.2.1 the repo-map walk was synchronous and traversed
                 // heavy dot-trees (.venv*, .eval-phase5-cache, .turbo, .cache),
                 // blocking the MCP event loop on first search()/map() call.

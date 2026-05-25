@@ -1,14 +1,16 @@
 /**
- * search-no-results-hint.test.ts — v11.4.2 UX regression guard.
+ * search-no-results-hint.test.ts — v11.4.2 UX regression guard
+ * (v12.0.0 amputation update: hybrid_search removed; hints now point to
+ *  fast_grep and host-agent grep only).
  *
  * v11.4.1 user feedback: when semantic search returns empty, the user
  * resorted to native grep because the response gave no hint about
- * available fallbacks (fast_grep, hybrid_search). The "Index pending"
- * branch already suggested those — the "No results" branch was asymmetric.
+ * available fallbacks. The "Index pending" branch already suggested
+ * fallbacks — the "No results" branch was asymmetric.
  *
- * v11.4.2 adds the same fallback hints to the "No semantic results found"
- * branch. This test pins the new wording so a future refactor cannot drop
- * it silently.
+ * v11.4.2 added fallback hints to the "No semantic results found" branch.
+ * v12.0.0 amputated hybrid_search; the hint set is now {fast_grep,
+ * broaden query, host grep}.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -54,7 +56,7 @@ describe("v11.4.2 — search 'No results' fallback hint", () => {
 
     afterEach(() => { try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {} });
 
-    it("emits fallback hints (fast_grep, hybrid_search, broaden query, Bash grep) on empty results", async () => {
+    it("emits fallback hints (fast_grep, broaden query, host grep) on empty results", async () => {
         const deps = depsWithEmptySearch(tmpDir, /* hasIndexed */ true);
 
         const result = await handleNavigate("search", {
@@ -67,15 +69,13 @@ describe("v11.4.2 — search 'No results' fallback hint", () => {
         // Header retained
         expect(text).toMatch(/No semantic results found/i);
 
-        // All four fallback paths are mentioned by name
+        // Three remaining fallback paths
         expect(text).toMatch(/fast_grep/);
-        expect(text).toMatch(/hybrid_search/);
         expect(text).toMatch(/Broaden the query|broader query/i);
-        expect(text).toMatch(/Bash grep/);
+        expect(text).toMatch(/grep/);
 
-        // Confirm the query string is echoed in the hybrid_search suggestion
-        // so the user can copy-paste.
-        expect(text).toMatch(/hybrid_search.*nonexistent-symbol-xyz/);
+        // Anti-regression: hybrid_search must NOT reappear (v12.0.0 amputation).
+        expect(text).not.toMatch(/hybrid_search/);
     });
 
     it("does NOT regress 'Index pending' branch when index is warming", async () => {
@@ -89,7 +89,8 @@ describe("v11.4.2 — search 'No results' fallback hint", () => {
 
         const text = (result.content[0] as { text: string }).text;
         expect(text).toMatch(/Index pending/i);
-        expect(text).toMatch(/hybrid_search/);
         expect(text).toMatch(/fast_grep/);
+        // v12.0.0 anti-regression: hybrid_search must NOT appear here either.
+        expect(text).not.toMatch(/hybrid_search/);
     });
 });

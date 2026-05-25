@@ -146,8 +146,8 @@ function directoryHint(toolName: string): string {
                 `or nreki_navigate action:"fast_grep" / "search" to locate symbols across the tree.`;
         case "outline":
             return `outline operates on a single file. ` +
-                `For directory-wide discovery, use nreki_navigate action:"search" (semantic), ` +
-                `action:"fast_grep" (exact substring), or action:"hybrid_search" (BM25-backed).`;
+                `For directory-wide discovery, use nreki_navigate action:"search" (semantic) ` +
+                `or action:"fast_grep" (exact substring).`;
         case "set_plan":
             return `set_plan expects a Markdown plan file, not a directory. ` +
                 `Pass the path to your plan file, e.g. set_plan text:"PLAN.md".`;

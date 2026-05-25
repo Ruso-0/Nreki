@@ -360,7 +360,8 @@ const server = new McpServer({
 });
 
 logger.info(
-    "Running in Lite mode (BM25 keyword search). v11.0.0 amputated ONNX embeddings.",
+    "NREKI edit-safety MCP. Retrieval via search (Type Ledger) + fast_grep (RAM-resident). "
+    + "v11.0.0 amputated ONNX embeddings; v12.0.0 amputated hybrid_search/BM25.",
 );
 
 // ─── Tool 1: nreki_navigate ───────────────────────────────────────────
@@ -370,10 +371,9 @@ server.tool(
     "AST-powered code navigation and semantic search. Use for finding code, understanding project structure, and locating symbols.",
     {
         action: z
-            .enum(["search", "definition", "references", "outline", "map", "prepare_refactor", "orphan_oracle", "type_shape", "fast_grep", "hybrid_search", "type_graph"])
+            .enum(["search", "definition", "references", "outline", "map", "prepare_refactor", "orphan_oracle", "type_shape", "fast_grep", "type_graph"])
             .describe(
                 "search: Type Ledger semantic + keyword fallback across codebase (single retriever). " +
-                "hybrid_search: Type Ledger semantic + BM25 lexical fused via RRF (Sprint 6.4: FHR 0.566 vs 0.414/0.374 standalone; 3-5x tokens vs search). Use for accuracy-critical retrieval. " +
                 "definition: go-to-definition by symbol name. " +
                 "references: find all usages of a symbol. " +
                 "outline: list all symbols in a file. " +
@@ -382,12 +382,12 @@ server.tool(
                 "orphan_oracle: identify files with zero static reachability (candidates for dead code review). " +
                 "type_shape: invoke TS compiler for exact resolved type shape without reading file (requires TypeScript project with tsconfig.json). " +
                 "fast_grep: ultra-fast exact substring match returning AST-aware topological coordinates (replaces native grep). Best for finding hardcoded strings or exact syntax. " +
-                "type_graph: walk the Type Ledger graph from a seed type (chunks that consume/produce it). Pure semantic walker, no BM25/RRF fallback. Requires type_name param.",
+                "type_graph: walk the Type Ledger graph from a seed type (chunks that consume/produce it). Pure semantic walker. Requires type_name param.",
             ),
         query: z
             .string()
             .optional()
-            .describe("For search, hybrid_search, and fast_grep: the query string."),
+            .describe("For search and fast_grep: the query string."),
         symbol: z
             .string()
             .optional()

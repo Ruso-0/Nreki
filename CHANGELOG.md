@@ -2,6 +2,55 @@
 
 All notable changes to NREKI will be documented in this file.
 
+## [12.0.0] - 2026-05-24
+
+> Pre-release: published to npm under dist-tag `next` as `12.0.0-rc.1`. `latest` remains on v11.x until promotion.
+
+**BREAKING CHANGE: `hybrid_search` action amputated.** NREKI is repositioned as an edit-safety MCP. Host agents (Claude Code, Cursor, Continue.dev, Windsurf, Aider, Copilot Chat) bring their own retrieval; NREKI exposes `search` (Type Ledger semantic) and `fast_grep` (RAM-resident exact substring) as local-contingency lexical paths only. The +10pp Recall@5 gain from BM25 RRF fusion did not justify the 4.3× tokens-per-correct-hit overhead (Sprint 6.8 measurement), and Sprint 7.0-pre Furia counter-audit confirmed no real MCP-consuming agent exists that would access `hybrid_search` while lacking BOTH native grep AND `fast_grep` — the two NREKI actions ship in the same tool, so there is no stranded-agent justification.
+
+### Removed
+
+- **`nreki_navigate action:"hybrid_search"`** — the BM25 + RRF fusion action is gone from the MCP schema, the router switch, and the navigate handler.
+- **`src/bm25-engine.ts`** (BM25Engine class with code-aware tokenizer + per-project index).
+- **`src/hybrid-engine.ts`** (RRF fusion + foveal-on-BM25 layer).
+- **`NrekiEngine.getHybridEngine()`** and **`NrekiEngine.invalidateHybridIndex()`** — public surface removed; any consumer importing these will fail to compile (intentional v12.0.0 break).
+- **`scripts/benchmark-hybrid-smoke.ts`** — the dogfood smoke bench for the hybrid runtime.
+- **28 tests**: `tests/bm25-engine.test.ts` (16) + `tests/hybrid-engine.test.ts` (12).
+- **`.nreki-bench-hybrid.db`** — leftover index from prior hybrid smoke runs.
+
+### Why now
+
+Sprint 6.6 / 6.7 / 6.8 measurement trajectory:
+
+- 6.6: NREKI hybrid loses ~28pp Recall@5 (micro) / ~51pp (macro) vs voyage-code-3 dense embedding. NREKI's retrieval moat against dense embedders is empirically absent.
+- 6.7: The type-aware retrieval niche, as operationalized, contains 1% of PolyBench TS tasks. Hypothesis untestable on this corpus.
+- 6.8: Hybrid's TPCH (per correct hit) is 4.3× **worse** than NREKI standalone, despite +10pp R@5. The recall improvement does not pay for the doubled per-query payload cost.
+
+Combined with the Sprint 7.0-pre Furia audit (no agent exists that has `hybrid_search` access AND lacks `fast_grep` access — they ship in the same MCP tool), the action is pure overhead. v12.0.0 amputates it cleanly, following the same precedent as the v11.0.0 ONNX-embeddings amputation.
+
+### Migration
+
+If you were calling `nreki_navigate action:"hybrid_search"`:
+- **Replace with `action:"search"`** for semantic-first queries. Recall is ~10pp lower at K=5, but token cost drops by ~50% and latency stays under 2s.
+- **Or replace with `action:"fast_grep"`** for exact-substring queries. RAM-resident, sub-ms latency.
+- **Or use your host agent's native grep/ripgrep** when the query is lexically literal and the index isn't warm yet.
+
+The MCP schema rejects `action:"hybrid_search"` with "Unknown action" listing the valid set. The unknown-action error message is the canonical signal that you are on v12.0.0+.
+
+### Positioning
+
+NREKI is now positioned as an **edit-safety MCP**:
+- `nreki_code` (batch_edit ACID + ast-sandbox + TTRD + foveal compression)
+- `nreki_guard` (plans, engrams, memorize, audit, circuit-breaker)
+- `nreki_navigate` (search, fast_grep, definition, references, outline, map, prepare_refactor, orphan_oracle, type_shape, type_graph)
+
+The retrieval surface is intentionally narrow: NREKI does not compete with Claude Context / voyage-code-3 / Cursor's semantic search. It complements them by providing safe edits + local lexical contingency.
+
+### Added (eval-only, dormant in production)
+
+- **`FOVEAL_OFF=1` control-arm gate** in `src/compressor-foveal.ts`, `src/handlers/code/read.ts`, and `src/handlers/navigate.ts` (`handleSearch` + `handleOutline`). When the env var is set to `"1"`, foveal compression is bypassed (raw passthrough) so the Sprint 8.0 measurement harness can compare foveal_on vs foveal_off. **When `FOVEAL_OFF` is unset or any value other than `"1"`, every gated path is byte-identical to pre-v12 behaviour** — the production foveal arm is frozen (Sprint 8.0 pre-registration). Verified by `tests/sprint80-foveal-epicenter.test.ts` (tests D + E). The gate is NOT wired into `edit.ts` because `edit.ts` never invokes `tfcCompress` (see `scripts/eval-phase8/prereg-erratum-01.md`).
+- **Internal measurement suite** under `scripts/eval-phase6..8/` + `docs/sprint-6.6..8.0*.md` (retrieval comparison, type-aware niche test, token economics, foveal net-savings). Not shipped in the npm tarball.
+
 ## [11.4.2] - 2026-05-19
 
 User feedback against v11.4.1 surfaced two genuine bugs and two UX gaps that the v11.4.0 sprint missed. v11.4.2 closes them and centralizes the path-validation helper so future readSource callsites can't regress.

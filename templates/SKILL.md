@@ -16,7 +16,6 @@ If nreki_* tools fail: fall back to native Read/Write ONLY for new files or <100
 - NEVER use Explore, Bash grep/rg/cat, or native Read File.
 - EXACT SEARCH: ALWAYS use nreki_navigate action:"fast_grep". Returns 3D AST topological coordinates (File + Symbol + Line) via SQLite index. Benchmarked 5-33x faster than bash grep on indexed codebases.
 - SEMANTIC SEARCH: Use nreki_navigate action:"search" for concept-based queries (Type Ledger).
-- HYBRID SEARCH: Use nreki_navigate action:"hybrid_search" for diverse codebases + accuracy-critical retrieval (NREKI + BM25 RRF fusion). Costs +207% tokens vs search; skip on single-project corpora where shared blind spots negate fusion gain. Sprint 6.4 paper showed +15pp recall on N=99 diverse external repos.
 - BATCH READING: NEVER read functions one by one. Use ONE call with comma-separated targets: nreki_code action:"compress" focus:"func1, func2, func3".
 - LARGE FILES: nreki_navigate action:"outline" auto-expands HIGH-risk methods up to 6,000 token budget.
   - CRITICAL: If outline says [BUDGET LIMIT REACHED], you MUST use compress focus:"<omitted_symbols>" to read the hidden logic before editing. Do not guess.
@@ -56,4 +55,4 @@ If nreki_* tools fail: fall back to native Read/Write ONLY for new files or <100
 ## 6. INPUT VALIDATION
 - nreki_code action:"read" and action:"compress" operate on individual FILES. Passing a directory returns an explicit error pointing to nreki_navigate action:"outline" / "fast_grep" / "search".
 - nreki_navigate action:"outline" and nreki_guard action:"set_plan" / "engram" likewise operate on single FILE paths. Pass a directory and the response will name the correct alternative tool.
-- When semantic search returns no results, the response lists fallbacks: fast_grep, hybrid_search, broaden-query, Bash grep. Follow that list in order.
+- When semantic search returns no results, the response lists fallbacks: fast_grep, broaden-query, host-agent grep. Follow that list in order.

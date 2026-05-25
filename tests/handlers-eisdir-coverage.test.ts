@@ -128,7 +128,7 @@ describe("v11.4.2 — outline directory hint (was silent 'no symbols found' in v
         const text = (result.content[0] as { text: string }).text;
         expect(text).toMatch(/Path is a directory/i);
         expect(text).toMatch(/single file/i);
-        expect(text).toMatch(/search|fast_grep|hybrid_search/i);
+        expect(text).toMatch(/search|fast_grep/i);
         // Must NOT regress to v11.4.1 silent-fail wording:
         expect(text).not.toMatch(/may be empty, unsupported, or contain no declarations/i);
     });

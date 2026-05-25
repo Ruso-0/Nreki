@@ -170,8 +170,7 @@ export class IndexPipeline {
                 const relativePath = path.relative(dirPath, fullPath).replace(/\\/g, "/");
 
                 if (entry.isDirectory()) {
-                    // v11.2.1: skip dot-prefixed directories (mirrors
-                    // BM25Engine.walkSourceFiles policy at bm25-engine.ts:281).
+                    // v11.2.1: skip dot-prefixed directories.
                     // Covers .git, .next, .venv*, .eval-phase5-cache, .turbo,
                     // .cache, .parcel-cache, .pytest_cache, .mypy_cache,
                     // .ruff_cache, .idea, .vscode, .ipynb_checkpoints, .nreki,

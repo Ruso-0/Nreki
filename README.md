@@ -2,7 +2,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/npm/v/@ruso-0/nreki?style=for-the-badge&color=blue" alt="npm version">
-  <img src="https://img.shields.io/badge/Tests-783-brightgreen?style=for-the-badge" alt="783 Tests">
+  <img src="https://img.shields.io/badge/Tests-1418-brightgreen?style=for-the-badge" alt="1418 Tests">
   <img src="https://img.shields.io/badge/AHI-9.7%2F10-brightgreen?style=for-the-badge" alt="AHI 9.7/10">
   <img src="https://img.shields.io/badge/Languages-TS%20%7C%20JS%20%7C%20Go%20%7C%20Python%20%7C%20Kotlin%20%7C%20Java%20%7C%20C%2B%2B-blue?style=for-the-badge" alt="Multi-language">
   <img src="https://img.shields.io/badge/Cloud-Zero-orange?style=for-the-badge" alt="Zero Cloud">
@@ -11,7 +11,7 @@
 
 **MCP plugin that validates AI agent edits in RAM before they touch disk.** When Claude Code, Cursor, or Copilot changes a function signature in one file and breaks 30 others, NREKI catches it in milliseconds - the file is never written. If the error is structural (missing import, forgotten `await`), NREKI auto-fixes it in RAM. Zero tokens wasted on fix-retry doom loops.
 
-**v10.7 - The NREKI Way.** Parasitic signals now ride inside `outline`: a defect radar flags LLM-rush patterns (`⚠️ [empty catch, any escape]`), a ghost oracle tags unreferenced exports (`👻 [0 ext refs]`), and engrams prefixed `ASSERT` survive code mutation. Zero added tokens per call - the signals live in surfaces the agent already reads.
+**v12.0.0 — Edit-Safety MCP (BREAKING).** NREKI is an edit-safety layer: it validates and atomically commits agent edits, and provides local code navigation. Host agents bring their own semantic retrieval. **`hybrid_search` (NREKI + BM25 RRF fusion) was removed** — its +10pp recall did not justify the ~4.3× token cost for a use case that does not exist when the agent already has grep. `search` (Type Ledger semantic) and `fast_grep` (RAM-resident exact substring) cover local navigation; `nreki_code` batch-edits with in-RAM compiler/LSP validation. See [CHANGELOG.md](CHANGELOG.md#1200) for the migration path. (v11.0.0 amputated ONNX embeddings; v12.0.0 amputates BM25/hybrid — same precedent.)
 
 <p align="center"><img src="docs/demo.gif" alt="NREKI outline with defect + ghost tags"></p>
 
@@ -41,7 +41,7 @@ What `nreki init` writes per agent:
 | `copilot` | `.github/copilot-instructions.md`      | `.github/copilot-instructions.md` (appended)                          |
 | `generic` | none of the above                      | `AGENTS.md`                                                           |
 
-First MCP run indexes the project automatically in the background — `hybrid_search` returns BM25 results immediately while NREKI's semantic index warms (v11.2.1+). Zero config for TS/JS; point a `tsconfig.json` at your code and NREKI detects the right validation mode.
+First MCP run indexes the project automatically in the background — `fast_grep` returns RAM-resident substring matches immediately while NREKI's semantic index warms (v11.2.1+). Zero config for TS/JS; point a `tsconfig.json` at your code and NREKI detects the right validation mode.
 
 ## How it works
 
@@ -55,7 +55,7 @@ AI proposes edit -> NREKI intercepts in RAM -> Compiler/LSP validates
   |        Some remain? -> Full rollback. Disk untouched. Errors returned to agent.
 ```
 
-Three tools (`nreki_navigate`, `nreki_code`, `nreki_guard`), 23 actions, 4 languages (TS/JS, Go via gopls, Python via pyright). Works with any MCP-compatible agent. Apache 2.0.
+Three tools (`nreki_navigate`, `nreki_code`, `nreki_guard`), 25 actions (10 navigate + 6 code + 9 guard), 4 languages (TS/JS, Go via gopls, Python via pyright). Works with any MCP-compatible agent. Apache 2.0.
 
 ## Highlights
 

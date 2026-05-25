@@ -6,8 +6,7 @@ Call tools immediately. No preambles. One-line responses.
 
 ## 1. NAVIGATION & READING
 - NEVER use Bash grep/rg or native Read. Use `nreki_navigate action:"fast_grep"` for exact search, `action:"search"` for semantic (Type Ledger).
-- If `search` returns "No semantic results found", **read the fallback list in the response** — it names `fast_grep` (exact substring, RAM-resident) and `hybrid_search` (semantic+BM25, +207% tokens). Use them before reaching for `Bash grep`.
-- Diverse codebase + accuracy critical: `action:"hybrid_search"` (NREKI + BM25 fusion). Costs +207% tokens; skip on single-project corpora.
+- If `search` returns "No semantic results found", **read the fallback list in the response** — it names `fast_grep` (exact substring, RAM-resident) and broaden-query before reaching for the host agent's grep.
 - Batch reads: `nreki_code action:"compress" focus:"sym1, sym2"`.
 - Large files: `nreki_navigate action:"outline"` first. If `[BUDGET LIMIT REACHED]`, use `compress focus`. Heed ⚠️ and 👻 markers.
 - Small files: `nreki_code action:"read"`.
