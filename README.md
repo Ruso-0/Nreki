@@ -18,11 +18,18 @@
 ## Install
 
 ```bash
-# Claude Code
+# Claude Code (macOS / Linux)
 claude mcp add nreki -- npx -y @ruso-0/nreki
 
+# Claude Code (Windows) — wrap with `cmd /c`, otherwise Claude Code warns
+# that the server failed to start (npx is a .cmd shim on Windows):
+claude mcp add nreki -- cmd /c npx -y @ruso-0/nreki
+
 # Cursor / any MCP client - add to mcp.json:
+# macOS/Linux:
 { "mcpServers": { "nreki": { "command": "npx", "args": ["-y", "@ruso-0/nreki"] } } }
+# Windows:
+{ "mcpServers": { "nreki": { "command": "cmd", "args": ["/c", "npx", "-y", "@ruso-0/nreki"] } } }
 
 # Optional: agent-aware instructions install (v11.3.0+)
 npx @ruso-0/nreki init               # auto-detect agent (Claude Code / Cursor / Cline / Copilot / generic)
