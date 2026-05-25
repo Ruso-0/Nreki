@@ -1,0 +1,19 @@
+{
+  "version": "sprint-6.8-phase3",
+  "tokenizer": "tiktoken cl100k_base",
+  "per_runner": {
+    "nreki-mbf-on": {
+      "compressed_tokens_total": 319439,
+      "raw_tokens_total": 1939103,
+      "ideal_compression_ratio_global": 0.16473544726608128,
+      "ideal_savings_pct_global": 0.8352645527339188,
+      "ratio_per_task_mean": 0.2430252281209587,
+      "ratio_per_task_median": 0.214862470376339,
+      "recall_at_5": 0.36,
+      "effective_savings_pct": 0.30069523898421074,
+      "n_tasks_in_ratio": 100,
+      "n_files_measured": 805,
+      "n_files_missing_on_disk": 0
+    }
+  }
+}

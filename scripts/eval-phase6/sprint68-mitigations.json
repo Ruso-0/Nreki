@@ -1,0 +1,105 @@
+{
+  "version": "sprint-6.8-mitigations",
+  "K": 5,
+  "Q3_apples_to_apples": {
+    "subset_n": 16,
+    "subset_instance_ids": [
+      "microsoft__vscode-106767",
+      "microsoft__vscode-108964",
+      "microsoft__vscode-109750",
+      "microsoft__vscode-110094",
+      "microsoft__vscode-113837",
+      "microsoft__vscode-122991",
+      "mui__material-ui-11451",
+      "mui__material-ui-12968",
+      "mui__material-ui-14364",
+      "mui__material-ui-15526",
+      "mui__material-ui-18257",
+      "mui__material-ui-19257",
+      "mui__material-ui-20252",
+      "mui__material-ui-42412",
+      "tailwindlabs__tailwindcss-116",
+      "coder__code-server-3277"
+    ],
+    "per_runner": {
+      "nreki-mbf-on": {
+        "n": 16,
+        "hits_at_5": 6,
+        "recall_at_5": 0.375,
+        "tokens_sum": 35035,
+        "tokens_mean": 2189.6875,
+        "tpch_n_retry_0": 5839.166666666667,
+        "tpch_n_retry_1": 9705.0,
+        "tpch_n_retry_2": 13570.833333333334
+      },
+      "hybrid-rrf": {
+        "n": 16,
+        "hits_at_5": 9,
+        "recall_at_5": 0.5625,
+        "tokens_sum": 482981,
+        "tokens_mean": 30186.3125,
+        "tpch_n_retry_0": 53664.555555555555,
+        "tpch_n_retry_1": 81081.22222222222,
+        "tpch_n_retry_2": 108497.88888888889
+      },
+      "bm25": {
+        "n": 16,
+        "hits_at_5": 5,
+        "recall_at_5": 0.3125,
+        "tokens_sum": 806562,
+        "tokens_mean": 50410.125,
+        "tpch_n_retry_0": 161312.4,
+        "tpch_n_retry_1": 295117.2,
+        "tpch_n_retry_2": 428922.0
+      },
+      "ripgrep": {
+        "n": 16,
+        "hits_at_5": 5,
+        "recall_at_5": 0.3125,
+        "tokens_sum": 3696180,
+        "tokens_mean": 231011.25,
+        "tpch_n_retry_0": 739236.0,
+        "tpch_n_retry_1": 1350630.0,
+        "tpch_n_retry_2": 1962024.0
+      },
+      "voyage-3": {
+        "n": 16,
+        "hits_at_5": 12,
+        "recall_at_5": 0.75,
+        "tokens_sum": 62407,
+        "tokens_mean": 3900.4375,
+        "tpch_n_retry_0": 5200.583333333333,
+        "tpch_n_retry_1": 6493.25,
+        "tpch_n_retry_2": 7785.916666666667
+      },
+      "aider": {
+        "n": 7,
+        "hits_at_5": 1,
+        "recall_at_5": 0.14285714285714285,
+        "tokens_sum": 17142,
+        "tokens_mean": 2448.8571428571427,
+        "tpch_n_retry_0": 17142.0,
+        "tpch_n_retry_1": 31195.0,
+        "tpch_n_retry_2": 45248.0
+      }
+    }
+  },
+  "Q2_breakeven": {
+    "voyage_tpch_n0": 5200.583333333333,
+    "voyage_tpch_n1": 6493.25,
+    "voyage_tpch_n2": 7785.916666666667,
+    "nreki_tokens_mean_full100": 3194.39,
+    "nreki_breakeven_recall_at_5_N_retry_0": 0.614236864454308,
+    "nreki_breakeven_recall_at_5_N_retry_1": 0.6594774372292942,
+    "nreki_breakeven_recall_at_5_N_retry_2": 0.6760758431279776,
+    "current_nreki_recall_at_5": 0.37,
+    "gap_to_breakeven_N1_pp": 28.94774372292942
+  },
+  "Q4_foveal_ablation_top_K": {
+    "n_tasks": 100,
+    "tokens_with_foveal_total": 319439,
+    "tokens_without_foveal_total": 1410083,
+    "compression_ratio_global": 0.22653914698638308,
+    "savings_pct_global": 77.34608530136168
+  }
+}

@@ -1,0 +1,767 @@
+{
+  "version": "sprint-6.6",
+  "corpus": "PolyBench Verified TS (100 instances, 5 repos)",
+  "repos": [
+    "microsoft/vscode",
+    "sveltejs/svelte",
+    "serverless/serverless",
+    "prettier/prettier",
+    "mui/material-ui"
+  ],
+  "topK": 10,
+  "bootstrap_resamples": 10000,
+  "bootstrap_seed": 42,
+  "per_runner": {
+    "nreki-mbf-off": {
+      "n_attempted": 100,
+      "n_successful": 100,
+      "n_errors": 0,
+      "error_breakdown": {},
+      "metrics": {
+        "recall_at_1": {
+          "mean": 0.16,
+          "ci95": [
+            0.09,
+            0.24
+          ]
+        },
+        "recall_at_5": {
+          "mean": 0.37,
+          "ci95": [
+            0.28,
+            0.46
+          ]
+        },
+        "recall_at_10": {
+          "mean": 0.42,
+          "ci95": [
+            0.32,
+            0.52
+          ]
+        },
+        "mrr": {
+          "mean": 0.25123015873015875,
+          "ci95": [
+            0.18099206349206348,
+            0.32630952380952377
+          ]
+        },
+        "token_cost_p50": 2310.0,
+        "token_cost_p95": 8149.699999999999,
+        "token_cost_mean": 3077.74,
+        "latency_ms_p50": 8109.5,
+        "latency_ms_p95": 23953.45
+      }
+    },
+    "nreki-mbf-on": {
+      "n_attempted": 100,
+      "n_successful": 100,
+      "n_errors": 0,
+      "error_breakdown": {},
+      "metrics": {
+        "recall_at_1": {
+          "mean": 0.16,
+          "ci95": [
+            0.09,
+            0.24
+          ]
+        },
+        "recall_at_5": {
+          "mean": 0.37,
+          "ci95": [
+            0.28,
+            0.46
+          ]
+        },
+        "recall_at_10": {
+          "mean": 0.42,
+          "ci95": [
+            0.32,
+            0.52
+          ]
+        },
+        "mrr": {
+          "mean": 0.25123015873015875,
+          "ci95": [
+            0.18099206349206348,
+            0.32630952380952377
+          ]
+        },
+        "token_cost_p50": 2408.5,
+        "token_cost_p95": 8475.8,
+        "token_cost_mean": 3194.39,
+        "latency_ms_p50": 1356.5,
+        "latency_ms_p95": 4742.45
+      }
+    },
+    "hybrid-rrf": {
+      "n_attempted": 100,
+      "n_successful": 100,
+      "n_errors": 0,
+      "error_breakdown": {},
+      "metrics": {
+        "recall_at_1": {
+          "mean": 0.27,
+          "ci95": [
+            0.18,
+            0.36
+          ]
+        },
+        "recall_at_5": {
+          "mean": 0.47,
+          "ci95": [
+            0.37,
+            0.57
+          ]
+        },
+        "recall_at_10": {
+          "mean": 0.57,
+          "ci95": [
+            0.47,
+            0.67
+          ]
+        },
+        "mrr": {
+          "mean": 0.3612063492063492,
+          "ci95": [
+            0.281468253968254,
+            0.44520634920634916
+          ]
+        },
+        "token_cost_p50": 4720.5,
+        "token_cost_p95": 66825.24999999999,
+        "token_cost_mean": 15851.18,
+        "latency_ms_p50": 10873.0,
+        "latency_ms_p95": 32969.89999999999
+      }
+    },
+    "voyage-3": {
+      "n_attempted": 100,
+      "n_successful": 16,
+      "n_errors": 84,
+      "error_breakdown": {
+        "Voyage SKIPPED (not in subset) 21": 79,
+        "Voyage API error HTTP 400: {\"detail\":\"Request to m": 5
+      },
+      "metrics": {
+        "recall_at_1": {
+          "mean": 0.375,
+          "ci95": [
+            0.125,
+            0.625
+          ]
+        },
+        "recall_at_5": {
+          "mean": 0.75,
+          "ci95": [
+            0.5,
+            0.9375
+          ]
+        },
+        "recall_at_10": {
+          "mean": 0.8125,
+          "ci95": [
+            0.625,
+            1.0
+          ]
+        },
+        "mrr": {
+          "mean": 0.5526785714285715,
+          "ci95": [
+            0.3607142857142857,
+            0.7401785714285715
+          ]
+        },
+        "token_cost_p50": 4104.5,
+        "token_cost_p95": 4563.5,
+        "token_cost_mean": 3900.4375,
+        "latency_ms_p50": 230510.5,
+        "latency_ms_p95": 455764.5
+      }
+    },
+    "aider": {
+      "n_attempted": 100,
+      "n_successful": 13,
+      "n_errors": 87,
+      "error_breakdown": {
+        "Aider timeout: exceeded 120000ms (elapsed 120011ms": 2,
+        "Aider timeout: exceeded 120000ms (elapsed 120024ms": 5,
+        "Aider timeout: exceeded 120000ms (elapsed 120017ms": 3,
+        "Aider timeout: exceeded 120000ms (elapsed 120013ms": 3,
+        "Aider timeout: exceeded 120000ms (elapsed 120028ms": 3,
+        "Aider timeout: exceeded 120000ms (elapsed 120016ms": 4,
+        "Aider timeout: exceeded 120000ms (elapsed 120023ms": 7,
+        "Aider timeout: exceeded 120000ms (elapsed 120029ms": 2,
+        "Aider timeout: exceeded 120000ms (elapsed 120022ms": 5,
+        "Aider timeout: exceeded 120000ms (elapsed 120021ms": 6,
+        "Aider timeout: exceeded 120000ms (elapsed 120025ms": 5,
+        "Aider timeout: exceeded 120000ms (elapsed 120027ms": 4,
+        "Aider timeout: exceeded 120000ms (elapsed 120031ms": 1,
+        "Aider timeout: exceeded 120000ms (elapsed 120012ms": 5,
+        "Aider timeout: exceeded 120000ms (elapsed 120014ms": 5,
+        "Aider timeout: exceeded 120000ms (elapsed 120019ms": 6,
+        "Aider timeout: exceeded 120000ms (elapsed 120020ms": 4,
+        "Aider timeout: exceeded 120000ms (elapsed 120026ms": 5,
+        "Aider timeout: exceeded 120000ms (elapsed 120015ms": 4,
+        "Aider timeout: exceeded 120000ms (elapsed 120030ms": 1,
+        "Aider timeout: exceeded 120000ms (elapsed 120018ms": 5,
+        "Aider timeout: exceeded 120000ms (elapsed 120333ms": 1,
+        "Aider timeout: exceeded 120000ms (elapsed 120079ms": 1
+      },
+      "metrics": {
+        "recall_at_1": {
+          "mean": 0.0,
+          "ci95": [
+            0.0,
+            0.0
+          ]
+        },
+        "recall_at_5": {
+          "mean": 0.23076923076923078,
+          "ci95": [
+            0.0,
+            0.46153846153846156
+          ]
+        },
+        "recall_at_10": {
+          "mean": 0.23076923076923078,
+          "ci95": [
+            0.0,
+            0.46153846153846156
+          ]
+        },
+        "mrr": {
+          "mean": 0.08333333333333333,
+          "ci95": [
+            0.0,
+            0.1794871794871795
+          ]
+        },
+        "token_cost_p50": 2586,
+        "token_cost_p95": 3277.9999999999995,
+        "token_cost_mean": 2374.6153846153848,
+        "latency_ms_p50": 59597,
+        "latency_ms_p95": 71093.4
+      }
+    },
+    "ripgrep": {
+      "n_attempted": 100,
+      "n_successful": 100,
+      "n_errors": 0,
+      "error_breakdown": {},
+      "metrics": {
+        "recall_at_1": {
+          "mean": 0.04,
+          "ci95": [
+            0.01,
+            0.08
+          ]
+        },
+        "recall_at_5": {
+          "mean": 0.26,
+          "ci95": [
+            0.18,
+            0.35
+          ]
+        },
+        "recall_at_10": {
+          "mean": 0.31,
+          "ci95": [
+            0.22,
+            0.4
+          ]
+        },
+        "mrr": {
+          "mean": 0.11751190476190476,
+          "ci95": [
+            0.07442857142857143,
+            0.1659404761904762
+          ]
+        },
+        "token_cost_p50": 146762.5,
+        "token_cost_p95": 721893.3,
+        "token_cost_mean": 243726.02,
+        "latency_ms_p50": 71436.5,
+        "latency_ms_p95": 263095.25
+      }
+    },
+    "bm25": {
+      "n_attempted": 100,
+      "n_successful": 100,
+      "n_errors": 0,
+      "error_breakdown": {},
+      "metrics": {
+        "recall_at_1": {
+          "mean": 0.13,
+          "ci95": [
+            0.07,
+            0.2
+          ]
+        },
+        "recall_at_5": {
+          "mean": 0.3,
+          "ci95": [
+            0.21,
+            0.39
+          ]
+        },
+        "recall_at_10": {
+          "mean": 0.38,
+          "ci95": [
+            0.29,
+            0.47
+          ]
+        },
+        "mrr": {
+          "mean": 0.20712301587301588,
+          "ci95": [
+            0.14219444444444446,
+            0.27466666666666667
+          ]
+        },
+        "token_cost_p50": 11263.0,
+        "token_cost_p95": 183761.15,
+        "token_cost_mean": 35493.7,
+        "latency_ms_p50": 5629.5,
+        "latency_ms_p95": 17952.1
+      }
+    },
+    "fast_grep": {
+      "n_attempted": 100,
+      "n_successful": 100,
+      "n_errors": 0,
+      "error_breakdown": {},
+      "metrics": {
+        "recall_at_1": {
+          "mean": 0.06,
+          "ci95": [
+            0.02,
+            0.11
+          ]
+        },
+        "recall_at_5": {
+          "mean": 0.09,
+          "ci95": [
+            0.04,
+            0.15
+          ]
+        },
+        "recall_at_10": {
+          "mean": 0.14,
+          "ci95": [
+            0.08,
+            0.21
+          ]
+        },
+        "mrr": {
+          "mean": 0.07645634920634921,
+          "ci95": [
+            0.0325,
+            0.12840079365079365
+          ]
+        },
+        "token_cost_p50": 27300.5,
+        "token_cost_p95": 107126.09999999999,
+        "token_cost_mean": 44542.82,
+        "latency_ms_p50": 11603.0,
+        "latency_ms_p95": 33202.45
+      }
+    }
+  },
+  "subset_all_ran": {
+    "intersection_size": 7,
+    "instances": [
+      "microsoft__vscode-106767",
+      "microsoft__vscode-108964",
+      "microsoft__vscode-109750",
+      "microsoft__vscode-110094",
+      "microsoft__vscode-113837",
+      "mui__material-ui-11451",
+      "tailwindlabs__tailwindcss-116"
+    ],
+    "per_runner": {
+      "nreki-mbf-off": {
+        "n": 7,
+        "recall_at_1": 0.14285714285714285,
+        "recall_at_5": 0.5714285714285714,
+        "recall_at_10": 0.5714285714285714,
+        "mrr": 0.3333333333333333
+      },
+      "nreki-mbf-on": {
+        "n": 7,
+        "recall_at_1": 0.14285714285714285,
+        "recall_at_5": 0.5714285714285714,
+        "recall_at_10": 0.5714285714285714,
+        "mrr": 0.3333333333333333
+      },
+      "hybrid-rrf": {
+        "n": 7,
+        "recall_at_1": 0.2857142857142857,
+        "recall_at_5": 0.5714285714285714,
+        "recall_at_10": 0.5714285714285714,
+        "mrr": 0.42857142857142855
+      },
+      "voyage-3": {
+        "n": 7,
+        "recall_at_1": 0.42857142857142855,
+        "recall_at_5": 0.7142857142857143,
+        "recall_at_10": 0.8571428571428571,
+        "mrr": 0.5918367346938775
+      },
+      "aider": {
+        "n": 7,
+        "recall_at_1": 0.0,
+        "recall_at_5": 0.14285714285714285,
+        "recall_at_10": 0.14285714285714285,
+        "mrr": 0.047619047619047616
+      },
+      "ripgrep": {
+        "n": 7,
+        "recall_at_1": 0.0,
+        "recall_at_5": 0.2857142857142857,
+        "recall_at_10": 0.2857142857142857,
+        "mrr": 0.10714285714285714
+      },
+      "bm25": {
+        "n": 7,
+        "recall_at_1": 0.0,
+        "recall_at_5": 0.42857142857142855,
+        "recall_at_10": 0.42857142857142855,
+        "mrr": 0.19047619047619047
+      },
+      "fast_grep": {
+        "n": 7,
+        "recall_at_1": 0.0,
+        "recall_at_5": 0.14285714285714285,
+        "recall_at_10": 0.2857142857142857,
+        "mrr": 0.05
+      }
+    }
+  },
+  "paired_deltas": {
+    "nreki-mbf-on_vs_nreki-mbf-off": {
+      "n": 100,
+      "r1_delta": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "r5_delta": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "r10_delta": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "mrr_delta": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "nreki-mbf-on_vs_hybrid-rrf": {
+      "n": 100,
+      "r1_delta": [
+        -0.11,
+        -0.19,
+        -0.03
+      ],
+      "r5_delta": [
+        -0.1,
+        -0.19,
+        -0.01
+      ],
+      "r10_delta": [
+        -0.15,
+        -0.23,
+        -0.07
+      ],
+      "mrr_delta": [
+        -0.10997619047619046,
+        -0.1755079365079365,
+        -0.048190476190476186
+      ]
+    },
+    "nreki-mbf-on_vs_ripgrep": {
+      "n": 100,
+      "r1_delta": [
+        0.12,
+        0.05,
+        0.2
+      ],
+      "r5_delta": [
+        0.11,
+        -0.01,
+        0.23
+      ],
+      "r10_delta": [
+        0.11,
+        -0.02,
+        0.24
+      ],
+      "mrr_delta": [
+        0.13371825396825396,
+        0.05865079365079365,
+        0.21471825396825397
+      ]
+    },
+    "nreki-mbf-on_vs_bm25": {
+      "n": 100,
+      "r1_delta": [
+        0.03,
+        -0.06,
+        0.12
+      ],
+      "r5_delta": [
+        0.07,
+        -0.05,
+        0.18
+      ],
+      "r10_delta": [
+        0.04,
+        -0.08,
+        0.16
+      ],
+      "mrr_delta": [
+        0.04410714285714286,
+        -0.0414484126984127,
+        0.1299722222222222
+      ]
+    },
+    "nreki-mbf-on_vs_fast_grep": {
+      "n": 100,
+      "r1_delta": [
+        0.1,
+        0.02,
+        0.18
+      ],
+      "r5_delta": [
+        0.28,
+        0.18,
+        0.38
+      ],
+      "r10_delta": [
+        0.28,
+        0.18,
+        0.38
+      ],
+      "mrr_delta": [
+        0.1747738095238095,
+        0.0978015873015873,
+        0.25690079365079366
+      ]
+    }
+  },
+  "per_repo": {
+    "mui/material-ui": {
+      "n_total": 70,
+      "runners": {
+        "nreki-mbf-on": {
+          "n": 70,
+          "recall_at_5": 0.4142857142857143,
+          "mrr": 0.2946145124716553
+        },
+        "hybrid-rrf": {
+          "n": 70,
+          "recall_at_5": 0.5857142857142857,
+          "mrr": 0.4493424036281179
+        },
+        "voyage-3": {
+          "n": 8,
+          "recall_at_5": 0.75,
+          "mrr": 0.5625
+        },
+        "bm25": {
+          "n": 70,
+          "recall_at_5": 0.34285714285714286,
+          "mrr": 0.24946145124716557
+        },
+        "ripgrep": {
+          "n": 70,
+          "recall_at_5": 0.2857142857142857,
+          "mrr": 0.1287074829931973
+        },
+        "aider": {
+          "n": 3,
+          "recall_at_5": 0.0,
+          "mrr": 0.0
+        }
+      }
+    },
+    "microsoft/vscode": {
+      "n_total": 23,
+      "runners": {
+        "nreki-mbf-on": {
+          "n": 23,
+          "recall_at_5": 0.21739130434782608,
+          "mrr": 0.14492753623188406
+        },
+        "hybrid-rrf": {
+          "n": 23,
+          "recall_at_5": 0.13043478260869565,
+          "mrr": 0.11594202898550723
+        },
+        "voyage-3": {
+          "n": 6,
+          "recall_at_5": 0.6666666666666666,
+          "mrr": 0.47380952380952385
+        },
+        "bm25": {
+          "n": 23,
+          "recall_at_5": 0.043478260869565216,
+          "mrr": 0.021739130434782608
+        },
+        "ripgrep": {
+          "n": 23,
+          "recall_at_5": 0.08695652173913043,
+          "mrr": 0.01956521739130435
+        },
+        "aider": {
+          "n": 5,
+          "recall_at_5": 0.0,
+          "mrr": 0.0
+        }
+      }
+    },
+    "coder/code-server": {
+      "n_total": 3,
+      "runners": {
+        "nreki-mbf-on": {
+          "n": 3,
+          "recall_at_5": 0.6666666666666666,
+          "mrr": 0.2222222222222222
+        },
+        "hybrid-rrf": {
+          "n": 3,
+          "recall_at_5": 0.6666666666666666,
+          "mrr": 0.27777777777777773
+        },
+        "voyage-3": {
+          "n": 1,
+          "recall_at_5": 1.0,
+          "mrr": 0.5
+        },
+        "bm25": {
+          "n": 3,
+          "recall_at_5": 0.6666666666666666,
+          "mrr": 0.5
+        },
+        "ripgrep": {
+          "n": 3,
+          "recall_at_5": 0.6666666666666666,
+          "mrr": 0.4444444444444444
+        },
+        "aider": {
+          "n": 2,
+          "recall_at_5": 1.0,
+          "mrr": 0.375
+        }
+      }
+    },
+    "tailwindlabs/tailwindcss": {
+      "n_total": 3,
+      "runners": {
+        "nreki-mbf-on": {
+          "n": 3,
+          "recall_at_5": 0.3333333333333333,
+          "mrr": 0.16666666666666666
+        },
+        "hybrid-rrf": {
+          "n": 3,
+          "recall_at_5": 0.3333333333333333,
+          "mrr": 0.3888888888888889
+        },
+        "voyage-3": {
+          "n": 1,
+          "recall_at_5": 1.0,
+          "mrr": 1.0
+        },
+        "bm25": {
+          "n": 3,
+          "recall_at_5": 1.0,
+          "mrr": 0.4166666666666667
+        },
+        "ripgrep": {
+          "n": 3,
+          "recall_at_5": 0.6666666666666666,
+          "mrr": 0.27777777777777773
+        },
+        "aider": {
+          "n": 3,
+          "recall_at_5": 0.3333333333333333,
+          "mrr": 0.1111111111111111
+        }
+      }
+    },
+    "angular/angular": {
+      "n_total": 1,
+      "runners": {
+        "nreki-mbf-on": {
+          "n": 1,
+          "recall_at_5": 0.0,
+          "mrr": 0.0
+        },
+        "hybrid-rrf": {
+          "n": 1,
+          "recall_at_5": 0.0,
+          "mrr": 0.0
+        },
+        "voyage-3": {
+          "n": 0,
+          "recall_at_5": null,
+          "mrr": null
+        },
+        "bm25": {
+          "n": 1,
+          "recall_at_5": 0.0,
+          "mrr": 0.0
+        },
+        "ripgrep": {
+          "n": 1,
+          "recall_at_5": 0.0,
+          "mrr": 0.125
+        },
+        "aider": {
+          "n": 0,
+          "recall_at_5": null,
+          "mrr": null
+        }
+      }
+    }
+  },
+  "macro_per_repo": {
+    "nreki-mbf-on": {
+      "repos_covered": 5,
+      "macro_recall_at_5": 0.32633540372670805,
+      "macro_mrr": 0.16568618751848566
+    },
+    "hybrid-rrf": {
+      "repos_covered": 5,
+      "macro_recall_at_5": 0.34322981366459626,
+      "macro_mrr": 0.24639021985605836
+    },
+    "voyage-3": {
+      "repos_covered": 4,
+      "macro_recall_at_5": 0.8541666666666666,
+      "macro_mrr": 0.634077380952381
+    },
+    "bm25": {
+      "repos_covered": 5,
+      "macro_recall_at_5": 0.410600414078675,
+      "macro_mrr": 0.23757344966972296
+    },
+    "ripgrep": {
+      "repos_covered": 5,
+      "macro_recall_at_5": 0.34120082815734987,
+      "macro_mrr": 0.19909898452134475
+    },
+    "aider": {
+      "repos_covered": 4,
+      "macro_recall_at_5": 0.3333333333333333,
+      "macro_mrr": 0.12152777777777778
+    }
+  }
+}

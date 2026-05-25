@@ -1,0 +1,60 @@
+
+Sprint 7.0 sanity gates:
+  [PASS] aider --version present — aider 0.86.2
+  [PASS] node ≥ v18 — v24.12.0
+  [FAIL (HARD)] docker daemon reachable — spawnSync docker ENOENT
+  [FAIL (HARD)] ANTHROPIC_API_KEY ≥ 30 chars — len=0
+  [FAIL (HARD)] OPENAI_API_KEY ≥ 30 chars (Aider import requirement) — len=0
+  [PASS] task workspaces cached — 100 task dirs present (need ≥50)
+
+3/6 gates passed; 3 HARD blockers.
+→ Phase 2 BLOCKED. Do not invent numbers. Verdict slot = NOT MEASURED.
+{
+  "timestamp_utc": "2026-05-21T22:28:03.494Z",
+  "project_root": "D:\\Nreki",
+  "gates": [
+    {
+      "name": "aider --version present",
+      "pass": true,
+      "detail": "aider 0.86.2",
+      "blocker_level": "HARD"
+    },
+    {
+      "name": "node ≥ v18",
+      "pass": true,
+      "detail": "v24.12.0",
+      "blocker_level": "HARD"
+    },
+    {
+      "name": "docker daemon reachable",
+      "pass": false,
+      "detail": "spawnSync docker ENOENT",
+      "blocker_level": "HARD"
+    },
+    {
+      "name": "ANTHROPIC_API_KEY ≥ 30 chars",
+      "pass": false,
+      "detail": "len=0",
+      "blocker_level": "HARD"
+    },
+    {
+      "name": "OPENAI_API_KEY ≥ 30 chars (Aider import requirement)",
+      "pass": false,
+      "detail": "len=0",
+      "blocker_level": "HARD"
+    },
+    {
+      "name": "task workspaces cached",
+      "pass": true,
+      "detail": "100 task dirs present (need ≥50)",
+      "blocker_level": "HARD"
+    }
+  ],
+  "summary": {
+    "total": 6,
+    "passed": 3,
+    "failed": 3,
+    "hard_blockers": 3
+  },
+  "proceed_to_phase_2": false
+}
