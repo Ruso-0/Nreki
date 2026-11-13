@@ -215,7 +215,7 @@ export class NrekiDB {
         // manual .nreki.db deletion. Bumped in v10.18.1.
         // Bumped in v10.20.0 (symbol_io table added).
         // Bumped in v11.0.0 (embeddings amputated, .vec file deprecated).
-        // Bumped in v12.0.1 (top_level gap chunks + persisted context_comment:
+        // Bumped in v12.1.0 (top_level gap chunks + persisted context_comment:
         // without the bump, DBs indexed by 12.0.0 keep their old chunk set
         // forever because unchanged files never re-index).
         // Bumped again for qualified_name (engram matching in search, C-02).

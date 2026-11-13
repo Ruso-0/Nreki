@@ -1,5 +1,5 @@
 /**
- * Compressor fidelity regressions (v12.0.1).
+ * Compressor fidelity regressions (v12.1.0).
  *
  * Measured on v12.0.0: comment stripping by regex cut string literals
  * (`"https:`), turned `startsWith("//")` into `startsWith("")`, deleted whole

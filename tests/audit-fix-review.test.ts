@@ -1,5 +1,5 @@
 /**
- * Regressions for the follow-up audit that re-checked the v12.0.1 fixes
+ * Regressions for the follow-up audit that re-checked the v12.1.0 fixes
  * (I-01, I-02, T-01, T-02). Each test failed before its fix.
  */
 import { describe, it, expect, afterEach } from "vitest";

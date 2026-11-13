@@ -98,7 +98,7 @@ function planForAgent(agent: DetectedAgent): FileAction[] {
                 },
                 {
                     // Claude Code discovers project skills under .claude/skills/<name>/SKILL.md;
-                    // the pre-v12.0.1 repo-root SKILL.md was never loaded (NREKI-INS-01).
+                    // the pre-v12.1.0 repo-root SKILL.md was never loaded (NREKI-INS-01).
                     targetRel: path.join(".claude", "skills", "nreki-optimizer", "SKILL.md"),
                     content: readTemplate("SKILL.md"),
                     marker: "name: nreki-optimizer",
@@ -107,7 +107,7 @@ function planForAgent(agent: DetectedAgent): FileAction[] {
                 {
                     targetRel: path.join(".claude", "hooks", "nreki-enforcer.mjs"),
                     content: readTemplate(path.join("hooks", "nreki-enforcer.mjs")),
-                    // v12.0.1: marker bumped to the v3 enforcer (token-aware: only large
+                    // v12.1.0: marker bumped to the v3 enforcer (token-aware: only large
                     // reads are steered, offset/limit honored, edits allowed, symlink-aware,
                     // fail-open when NREKI is not running). Older enforcers on disk are
                     // upgraded; a current one is left alone.
@@ -217,7 +217,7 @@ function applyFileAction(
 
         if (userOwned) {
             if (hasMarker) {
-                // --force: rewrite the NREKI block in place. Pre-v12.0.1 this
+                // --force: rewrite the NREKI block in place. Pre-v12.1.0 this
                 // overwrote the WHOLE file, destroying the user's own content.
                 const replaced = replaceNrekiBlock(current, action.marker, payload);
                 if (replaced !== null) {

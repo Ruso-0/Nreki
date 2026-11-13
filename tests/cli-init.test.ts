@@ -147,7 +147,7 @@ describe("runInit — generic", () => {
         expect(fs.existsSync(path.join(tmpDir, "AGENTS.md"))).toBe(false);
     });
 
-    // Regression (pre-v12.0.1): --force rewrote the WHOLE user file.
+    // Regression (pre-v12.1.0): --force rewrote the WHOLE user file.
     it("--force replaces only a legacy NREKI block and keeps the user's content", () => {
         const legacy =
             "# Team rules\n- always write tests\n\n" +

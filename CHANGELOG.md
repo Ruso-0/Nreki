@@ -2,9 +2,9 @@
 
 All notable changes to NREKI will be documented in this file.
 
-## [12.0.1] - Unreleased
+## [12.1.0] - 2026-11-13
 
-Security & integrity patch from the first external audit of v12.0.0. **v11.4.2 (`latest`) shares the SEC-01, SEC-02 and SEC-03 code paths and needs the same backport.**
+Security and integrity fixes from the external audits of v12.0.0. Go/Python edits are now checked against their importers. The token cost was reworked and measured with Codex: the `context` action, smaller tool definitions and results, `Class.method` names, an optional Voyage index, and a footer that says when re-running tsc is redundant. **v11.4.2 (`latest`) shares the SEC-01, SEC-02 and SEC-03 code paths and needs the same backport.**
 
 ### Security
 
@@ -69,7 +69,7 @@ Security & integrity patch from the first external audit of v12.0.0. **v11.4.2 (
 - **`map` semantic purpose summaries.** `generateRepoMap` (`CACHE_FORMAT_VERSION = 4`) extracts each file's 1-line header purpose. `depth:"full"` shows it for every file; the default skeleton stays CORE/BRIDGE-only and appends it to those lines (2.6k → 3.6k tokens on NREKI itself; listing every leaf as well cost 8.1k).
 - **Cleanup.** Moved stranded `src/handlers/navigate.test.ts` to `tests/fastgrep-handler.test.ts` and removed unused `src/kernel/backends/ts-corsa-sidecar.ts`.
 
-### External audit of the 12.0.1 tree (Fable 5.2)
+### External audit of the 12.1.0 tree (Fable 5.2)
 
 Each finding was traced against the code before fixing; regression tests in `tests/audit-fable-fixes.test.ts`, `tests/engram-identity.test.ts`.
 

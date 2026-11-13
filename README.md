@@ -2,7 +2,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/npm/v/@ruso-0/nreki?style=for-the-badge&color=blue" alt="npm version">
-  <img src="https://img.shields.io/badge/Tests-1418-brightgreen?style=for-the-badge" alt="1418 Tests">
+  <img src="https://img.shields.io/badge/Tests-1664-brightgreen?style=for-the-badge" alt="1664 Tests">
   <img src="https://img.shields.io/badge/AHI-9.7%2F10-brightgreen?style=for-the-badge" alt="AHI 9.7/10">
   <img src="https://img.shields.io/badge/Languages-TS%20%7C%20JS%20%7C%20Go%20%7C%20Python%20%7C%20Kotlin%20%7C%20Java%20%7C%20C%2B%2B-blue?style=for-the-badge" alt="Multi-language">
   <img src="https://img.shields.io/badge/Cloud-Zero-orange?style=for-the-badge" alt="Zero Cloud by default">
@@ -10,6 +10,8 @@
 </p>
 
 **MCP plugin that validates AI agent edits in RAM before they touch disk.** When Claude Code, Cursor, or Copilot changes a function signature in one file and breaks 30 others, NREKI catches it in milliseconds - the file is never written. If the error is structural (missing import, forgotten `await`), NREKI auto-fixes it in RAM. Zero tokens wasted on fix-retry doom loops.
+
+**v12.1.0 — fewer turns, honest footers.** `nreki_navigate action:"context"` returns, in one call, the code a task names; for a task that names no code it returns the best hits of each issue. The `[Validated]` footer says when re-running tsc is redundant. `Class.method` names work everywhere, and an optional Voyage index adds semantic search. Measured with Codex on a new project: 33 % fewer tokens (one project, three pairs; see [Token cost](#token-cost)). Also included are the fixes from two external security and integrity audits. See [CHANGELOG.md](CHANGELOG.md#1210---2026-11-13).
 
 **v12.0.0 — Edit-Safety MCP (BREAKING).** NREKI is an edit-safety layer: it validates and atomically commits agent edits, and provides local code navigation. Host agents bring their own semantic retrieval. **`hybrid_search` (NREKI + BM25 RRF fusion) was removed** — its +10pp recall did not justify the ~4.3× token cost for a use case that does not exist when the agent already has grep. `search` (BM25 keywords + dependency topology, with an optional Voyage semantic index) and `fast_grep` (RAM-resident exact substring) cover local navigation; `nreki_code` batch-edits with in-RAM compiler/LSP validation. See [CHANGELOG.md](CHANGELOG.md#1200) for the migration path. (v11.0.0 removed ONNX embeddings; v12.0.0 removed the hybrid_search fusion — same precedent.)
 

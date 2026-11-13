@@ -242,7 +242,7 @@ describe("CognitiveEnforcer", () => {
         expect(result.blocked).toBe(false);
     });
 
-    // v12.0.1 (audit C-01): read is never blocked. handleRead returns small and
+    // v12.1.0 (audit C-01): read is never blocked. handleRead returns small and
     // medium files verbatim and AUTO-SHIELDs (compresses) files over 12k tokens;
     // the old block made "read" unreachable through MCP and cost 1-2 turns.
     it("allows read on large files (handleRead's auto-shield handles size)", () => {

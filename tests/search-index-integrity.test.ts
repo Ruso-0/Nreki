@@ -1,5 +1,5 @@
 /**
- * Regression tests for the v12.0.1 search/index verification pass:
+ * Regression tests for the v12.1.0 search/index verification pass:
  *  - context_comment is persisted, so a restarted engine ranks like a fresh one
  *  - the BM25 index is lazy (startup does not tokenize every chunk)
  *  - a schema-upgrade wipe also clears symbol_io (ids are reused afterwards)

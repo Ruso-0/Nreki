@@ -98,7 +98,7 @@ class DataProcessor:
 `;
 
 // ─── Preprocessing Tests (Stage 1) ──────────────────────────────────
-// v12.0.1: noise is located with tree-sitter (findNoiseRanges) and removed by
+// v12.1.0: noise is located with tree-sitter (findNoiseRanges) and removed by
 // preprocess(); preprocess() alone only normalizes whitespace.
 
 let stage1Parser: ASTParser;

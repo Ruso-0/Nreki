@@ -16,7 +16,7 @@ import { validatePath } from "../../utils/path-guard.js";
 
 // ─── Honest compression labels ──────────────────────────────────────
 //
-// v12.0.1: headers used to report a CHARACTER reduction and never said what
+// v12.1.0: headers used to report a CHARACTER reduction and never said what
 // was dropped, so a medium "read" (signatures + ≤5 key lines per symbol) was
 // easy to mistake for the file. Measured on 10 real files it answered 11/30
 // questions whose answer was in the code.
@@ -159,7 +159,7 @@ export async function handleRead(
             };
         }
 
-        // v12.0.1: verbatim by default. A skeleton is opt-in (compress:true or an
+        // v12.1.0: verbatim by default. A skeleton is opt-in (compress:true or an
         // explicit level); files >12k tokens still get the AUTO-SHIELD below.
         const compress = params.compress === true || typeof params.level === "string";
         const level: CompressionLevel = (typeof params.level === "string" &&

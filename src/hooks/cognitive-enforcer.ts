@@ -216,7 +216,7 @@ export class CognitiveEnforcer {
             return { blocked: false, penalty: 0.3 };
         }
 
-        // LEYES 1 y 2 (read / compress sin focus) retiradas en v12.0.1: bloqueaban
+        // LEYES 1 y 2 (read / compress sin focus) retiradas en v12.1.0: bloqueaban
         // TODO read y todo compress sin focus en archivos de código de 100+ líneas,
         // así que el contrato de read (verbatim por defecto; AUTO-SHIELD comprimido
         // por encima de 12k tokens, en handleRead) era inalcanzable por MCP, y cada

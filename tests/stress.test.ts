@@ -107,7 +107,7 @@ describe("Stress: Huge 500KB TypeScript file", () => {
     });
 
     it("CognitiveEnforcer lets a 500KB read through to handleRead's auto-shield", () => {
-        // v12.0.1 (audit C-01): size is handleRead's job (it returns a compressed
+        // v12.1.0 (audit C-01): size is handleRead's job (it returns a compressed
         // AUTO-SHIELD view above 12k tokens); blocking cost turns for nothing.
         const enforcer = new CognitiveEnforcer(TMP_DIR);
         const result = enforcer.evaluate("nreki_code", "read", { path: hugePath });
@@ -171,7 +171,7 @@ const emoji_var = "🎉🎊🎈";
 `;
 
     it("preprocess preserves unicode identifiers", async () => {
-        // v12.0.1: noise ranges come from the AST (tree-sitter indices are UTF-16
+        // v12.1.0: noise ranges come from the AST (tree-sitter indices are UTF-16
         // code units, so non-ASCII identifiers before a comment must not shift them).
         const { ASTParser } = await import("../src/parser.js");
         const { findNoiseRanges } = await import("../src/compressor.js");
@@ -249,7 +249,7 @@ describe("Stress: 100% comments file", () => {
 /* final comment */
 `;
 
-    // v12.0.1: comment ranges come from the AST; preprocess() alone only
+    // v12.1.0: comment ranges come from the AST; preprocess() alone only
     // normalizes whitespace (it no longer guesses with regexes).
     let parser: import("../src/parser.js").ASTParser;
     let astClean: (code: string, file: string) => Promise<{ cleaned: string; removed: number }>;

@@ -276,7 +276,7 @@ export class NrekiKernel {
 
         // One WAL per committing process (wal-<pid>.json) so concurrent NREKI
         // instances never recover or delete each other's log; "wal.json" is the
-        // pre-12.0.1 name.
+        // pre-12.1.0 name.
         let walFiles: string[] = [];
         try {
             walFiles = fs.readdirSync(txDir).filter(n => /^wal(?:-\d+)?\.json$/.test(n));

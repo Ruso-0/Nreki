@@ -1,5 +1,5 @@
 /**
- * Regressions for the external audit of the v12.0.1 working tree (Fable 5.2).
+ * Regressions for the external audit of the v12.1.0 working tree (Fable 5.2).
  * Each test reproduces the audit's scenario and failed before its fix.
  */
 import { describe, it, expect, afterEach } from "vitest";

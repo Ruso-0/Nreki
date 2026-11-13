@@ -249,7 +249,7 @@ describe("Pin Memory - Disk Persistence", () => {
         expect(fs.existsSync(pinsPath)).toBe(true);
 
         // Read directly from disk - simulates a fresh process. Signed format
-        // since v12.0.1 (NREKI-SEC-06): { version: 2, pins, tag }.
+        // since v12.1.0 (NREKI-SEC-06): { version: 2, pins, tag }.
         const rawData = JSON.parse(fs.readFileSync(pinsPath, "utf-8"));
         expect(rawData.version).toBe(2);
         expect(rawData.tag).toMatch(/^[0-9a-f]{64}$/);

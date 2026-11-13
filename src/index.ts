@@ -597,7 +597,7 @@ async function main(): Promise<void> {
     // ─── AUTO-PATCH SECURITY HOOK (v10.x) ───
     // v11.3.0: enforcer template now lives at templates/hooks/nreki-enforcer.mjs
     // (read at runtime) instead of being inlined as a TS string literal.
-    // v12.0.1: also upgrade the unmodified v1 enforcer (MultiEdit bypass, symlinks,
+    // v12.1.0: also upgrade the unmodified v1 enforcer (MultiEdit bypass, symlinks,
     // hard block when NREKI is down) and the unreleased v2 (blocked edits and
     // partial reads, costing turns) to v3. Hooks the user customized are left alone.
     try {

@@ -4,7 +4,7 @@
  * Pipeline:
  *   Stage 1: Noise removal, AST-exact (comments, docstrings, console/print,
  *            debugger) + whitespace normalization. Never touches strings.
- *   Stage 2: removed in v12.0.1. Self-information token filtering deleted
+ *   Stage 2: removed in v12.1.0. Self-information token filtering deleted
  *            words such as "never"/"not"/"before" (inverting the meaning of
  *            prose) and emitted lines that do not exist in the file.
  *            breakdown.tokenFilterReduction stays in the result (always 0).
@@ -121,7 +121,7 @@ function isRemovableBareString(stmt: Parser.SyntaxNode): boolean {
  * Locate removable noise with tree-sitter: comments, Python docstrings,
  * `debugger` statements and statement-level console.* / print(...) calls.
  *
- * AST-exact on purpose (NREKI v12.0.1): the previous regex stripping
+ * AST-exact on purpose (NREKI v12.1.0): the previous regex stripping
  * (`/\/\/[^\n]*\/g`, `/\/\*[\s\S]*?\*\/\/g`) did not know about strings, so
  * it cut `"https://…"`, turned `startsWith("//")` into `startsWith("")`,
  * emptied template literals and deleted whole lines of code between the

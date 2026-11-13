@@ -1,6 +1,6 @@
 # NREKI — Architecture Guide
 
-> **Version:** 12.0.1 (module tables refreshed; line counts are approximate)
+> **Version:** 12.1.0 (module tables refreshed; line counts are approximate)
 > **Author:** Jherson Eddie Tintaya Holguin (Ruso-0)  
 > **Purpose:** MCP server that validates AI agent code edits in RAM before they touch disk.
 
@@ -94,7 +94,7 @@ The codebase follows a strict **Directed Acyclic Graph** — no circular imports
 |--------|---------|-------|
 | `engine.ts` | File indexing, Merkle diffing, search (BM25 + topology, optional Voyage index), dependency graph | ~900 |
 | `semantic-edit.ts` | AST-targeted byte-index splicing, ACID batch edits | ~728 |
-| `compressor.ts` | Code compression: AST-exact noise removal (comments, docstrings, logging) → AST skeleton (token filter retired in 12.0.1) | ~900 |
+| `compressor.ts` | Code compression: AST-exact noise removal (comments, docstrings, logging) → AST skeleton (token filter retired in 12.1.0) | ~900 |
 | `repo-map.ts` | Deterministic repo map with PageRank tiering for prompt caching | ~709 |
 | `circuit-breaker.ts` | Loop detection: error hash, file modification, write-test-fail patterns | ~448 |
 | `chronos-memory.ts` | Technical debt tracking, file fragility (CFI scores), regression ledger | ~331 |
@@ -268,7 +268,7 @@ Nreki auto-selects based on project markers and size (TS/JS file count):
 | `project` | marker, 201-1000 files | Full project type checking. Complete cross-file semantics. |
 | `hologram` | > 1000 files | Shadow `.d.ts` generation. Only edited files + API surfaces loaded. |
 
-A project marker is `tsconfig.json`/`jsconfig.json`, `pyproject.toml`/`requirements.txt`/`setup.py`/`Pipfile` or `go.mod` in the project root. Any of them switches the kernel on whatever the size: until 12.0.1 a TypeScript project under 50 files got no type check.
+A project marker is `tsconfig.json`/`jsconfig.json`, `pyproject.toml`/`requirements.txt`/`setup.py`/`Pipfile` or `go.mod` in the project root. Any of them switches the kernel on whatever the size: until 12.1.0 a TypeScript project under 50 files got no type check.
 
 Go and Python are validated by their LSP sidecar in every mode. gopls/pyright only report open documents, so with each edit the kernel opens the edited files, the other files of the same Go package and the files that import them (≤ 50 per edit, ≤ 96 open at a time), and rejects the errors the edit adds. Importers come from the dependency graph (`repo-map.ts`: a Go import is module path + directory; Python relative and package imports are resolved).
 
