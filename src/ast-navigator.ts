@@ -12,6 +12,9 @@ import { ASTParser, type ParsedChunk } from "./parser.js";
 import { shouldProcess } from "./utils/file-filter.js";
 import { readSource } from "./utils/read-source.js";
 import { escapeRegExp } from "./utils/imports.js";
+import { qualifiedNames } from "./utils/engram-identity.js";
+import { splitQualifiedName } from "./utils/qualified-name.js";
+import { isSensitivePath } from "./utils/path-jail.js";
 import type { NrekiEngine } from "./engine.js";
 import type { ChunkRecord } from "./database.js";
 
@@ -26,6 +29,8 @@ export interface DefinitionResult {
     startLine: number;
     endLine: number;
     exportedAs: string | null;
+    /** Class.method (Go: Receiver.method); equals `name` for top-level symbols. Set by getFileSymbols. */
+    qualifiedName?: string;
 }
 
 export interface ReferenceResult {
@@ -85,6 +90,9 @@ function walkFiles(dirPath: string): string[] {
                 if (!IGNORE_DIRS.has(entry.name)) walk(fullPath);
                 continue;
             }
+            // Same jail as the read tools: no symlinks (they can point outside
+            // the project), no sensitive files.
+            if (entry.isSymbolicLink() || isSensitivePath(fullPath)) continue;
 
             const ext = path.extname(entry.name).toLowerCase();
             if (!SUPPORTED_EXTENSIONS.has(ext)) continue;
@@ -279,6 +287,23 @@ export async function findDefinition(
 ): Promise<DefinitionResult[]> {
     if (!symbolName.trim()) return [];
 
+    // `Class.method` (also ::, #, ->): the member defined inside that container
+    // (Go: whose receiver is that type). A container that is no symbol is read
+    // as a module name: `money.percentOf` → percentOf in money.*.
+    const qualified = splitQualifiedName(symbolName);
+    if (qualified) {
+        const members = await findDefinition(projectRoot, parser, qualified.member, kind, engine);
+        const owners = await findDefinition(projectRoot, parser, qualified.container, "any", engine);
+        if (owners.length === 0) {
+            const inModule = members.filter(m => path.basename(m.filePath).replace(/\.[^.]+$/, "") === qualified.container);
+            return inModule;
+        }
+        const goReceiver = new RegExp(`^\\s*func\\s*\\(\\s*(?:[\\w$]+\\s+)?\\*?\\s*${escapeRegExp(qualified.container)}\\b`);
+        return members.filter(m => goReceiver.test(m.body) || owners.some(o =>
+            o.filePath === m.filePath && o.startLine <= m.startLine && m.endLine <= o.endLine &&
+            !(o.startLine === m.startLine && o.endLine === m.endLine)));
+    }
+
     // Fast path: SQLite lookup if engine provided
     if (engine) {
         try {
@@ -366,6 +391,8 @@ export async function findReferences(
     engine?: NrekiEngine,
 ): Promise<ReferenceResult[]> {
     if (!symbolName.trim()) return [];
+    // `Class.method`: call sites write `x.method(`, never the class — match the member.
+    symbolName = splitQualifiedName(symbolName)?.member ?? symbolName;
 
     // escapeRegExp from utils is blinded-tested and avoids the fragile inline character class
     const symbolRe = new RegExp(`\\b${escapeRegExp(symbolName)}\\b`, "g");
@@ -447,14 +474,19 @@ export async function getFileSymbols(
         ? path.relative(projectRoot, filePath).replace(/\\/g, "/")
         : filePath;
 
-    return result.chunks.map((chunk) => ({
-        filePath: relPath,
-        name: chunk.symbolName || extractName(chunk),
-        kind: NODE_TYPE_TO_KIND[chunk.nodeType] || chunk.nodeType,
-        signature: extractSignature(chunk.rawCode),
-        body: chunk.rawCode,
-        startLine: chunk.startLine,
-        endLine: chunk.endLine,
-        exportedAs: getExportStatus(chunk.rawCode, contentLines, chunk.startLine),
-    }));
+    const qualified = qualifiedNames(result.chunks);
+    return result.chunks.map((chunk, i) => {
+        const name = chunk.symbolName || extractName(chunk);
+        return {
+            filePath: relPath,
+            name,
+            kind: NODE_TYPE_TO_KIND[chunk.nodeType] || chunk.nodeType,
+            signature: extractSignature(chunk.rawCode),
+            body: chunk.rawCode,
+            startLine: chunk.startLine,
+            endLine: chunk.endLine,
+            exportedAs: getExportStatus(chunk.rawCode, contentLines, chunk.startLine),
+            qualifiedName: qualified[i] || name,
+        };
+    });
 }

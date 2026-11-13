@@ -6,7 +6,6 @@
  * Heartbeat wrapping is the router's responsibility.
  */
 
-import crypto from "crypto";
 import path from "path";
 import type Parser from "web-tree-sitter";
 import type { McpToolResponse, NavigateParams, RouterDependencies } from "../router.js";
@@ -26,6 +25,13 @@ import { repoMapToText } from "../repo-map.js";
 import { extractDependencies, cleanSignature, isSensitiveSignature, escapeRegExp } from "../utils/imports.js";
 import { logger } from "../utils/logger.js";
 import { runDefectRadar } from "../utils/defect-radar.js";
+import { engramHash, isImmortalEngram, placeEngrams } from "../utils/engram-identity.js";
+import { isSecondaryPath } from "../utils/file-filter.js";
+import { splitQualifiedName } from "../utils/qualified-name.js";
+import { ensureKernelBooted } from "./code/kernel-bridge.js";
+
+/** Default cap on fast_grep output lines (~4k tokens); `limit` can raise it. */
+const FAST_GREP_MAX_LINES = 120;
 
 // ─── Search ─────────────────────────────────────────────────────────
 
@@ -43,7 +49,7 @@ export async function handleSearch(
     // and surfaced as EOF. The handler now returns early with a hint when
     // the index is still warming; subsequent calls progressively gain
     // coverage. fast_grep remains usable in the meantime.
-    const indexStarted = !engine.hasIndexedFiles() && engine.ensureIndexedBackground();
+    engine.ensureIndexedBackground();
 
     const limit = typeof params.limit === "number" ? Math.min(50, Math.max(1, params.limit)) : 10;
     // Sprint 8.0 control arm (eval-only): FOVEAL_OFF=1 forces full rawCode in
@@ -53,8 +59,9 @@ export async function handleSearch(
     // scripts/eval-phase8/prereg-erratum-01.md.
     const include_raw = params.include_raw === true || process.env.FOVEAL_OFF === "1";
 
-    const results = await engine.search(query, limit);
-    if (indexStarted && results.length === 0) {
+    const indexReady = engine.hasFreshIndex();
+    const results = indexReady ? await engine.search(query, limit) : [];
+    if (!indexReady) {
         return {
             content: [{
                 type: "text" as const,
@@ -81,8 +88,61 @@ export async function handleSearch(
         };
     }
 
+    // Engrams pinned to a result's symbol travel with it, so the agent sees the
+    // invariant without a separate outline call. Read-only here: invalidation
+    // stays in outline. Matched by the chunk's qualified name (Class.method), so
+    // an ASSERT engram survives body edits and never lands on a same-named
+    // method of another class (C-02); bare keys from older engrams need the hash.
+    const engramsByFile = new Map<string, ReturnType<typeof engine.getEngramsForFile>>();
+    const engramLines = (r: (typeof results)[number], indent: string): string => {
+        const qualified = r.qualifiedName || "";
+        const bare = r.symbolName || "";
+        if (!qualified && !bare) return "";
+        let stored = engramsByFile.get(r.path);
+        if (!stored) {
+            stored = engine.getEngramsForFile(r.path);
+            engramsByFile.set(r.path, stored);
+        }
+        if (stored.size === 0) return "";
+        const bodyHash = engramHash(r.rawCode);
+        const notes: string[] = [];
+        for (const [key, memory] of stored) {
+            const exact = qualified !== "" && key === qualified;
+            const legacy = !exact && key === bare && memory.astHash === bodyHash;
+            if (exact ? (memory.astHash === bodyHash || isImmortalEngram(memory.insight)) : legacy) notes.push(memory.insight);
+        }
+        return notes.map(n => `\n${indent}[Engram]: ${n}`).join("");
+    };
+
     const formatted = results.map((r, i) => {
         const cleanPath = path.relative(engine.getProjectRoot(), r.path).replace(/\\/g, "/");
+
+        if (!include_raw) {
+            const tags: string[] = [r.nodeType];
+            if (r.topology && r.topology.tier !== "orphan") {
+                if (r.topology.isEpicenter && r.topology.inDegree > 0) {
+                    const depsStr =
+                        r.topology.dependents && r.topology.dependents.length > 0
+                            ? ` (${r.topology.dependents.join(", ")})`
+                            : "";
+                    tags.push(`EPICENTER: ${r.topology.inDegree} deps${depsStr}`);
+                } else if (r.topology.isBlastRadius) {
+                    tags.push("coupled");
+                } else if (r.topology.inDegree > 0) {
+                    tags.push(`${r.topology.inDegree} deps`);
+                }
+            }
+            const compactShort = r.shorthand
+                .replace(/\{\s*\/\*\s*TG:L\d+-L\d+\s*\*\/\s*\}/g, "")
+                .split("\n")
+                .map(l => l.trim())
+                .filter(Boolean)
+                .slice(0, 2)
+                .join(" ")
+                .slice(0, 180);
+            return `${i + 1}. ${cleanPath}:L${r.startLine}-L${r.endLine} [${tags.join(" | ")}]\n   ${compactShort}${engramLines(r, "   ")}`;
+        }
+
         const header = `### ${i + 1}. ${cleanPath}:L${r.startLine}-L${r.endLine}`;
 
         let ext = path.extname(r.path).slice(1).toLowerCase();
@@ -112,29 +172,23 @@ export async function handleSearch(
         }
 
         const shorthand = `\`\`\`${lang}\n${sensoryTag}${r.shorthand}\n\`\`\``;
-
-        const rawSection = include_raw
-            ? `\n<details><summary>Full source</summary>\n\n\`\`\`${lang}\n${r.rawCode}\n\`\`\`\n</details>`
-            : "";
+        const rawSection = `\n<details><summary>Full source</summary>\n\n\`\`\`${lang}\n${r.rawCode}\n\`\`\`\n</details>`;
         const score = `Score: ${r.score.toFixed(4)} | Type: ${r.nodeType}`;
-        return `${header}\n${shorthand}\n${score}${rawSection}`;
+        return `${header}\n${shorthand}\n${score}${engramLines(r, "")}${rawSection}`;
     });
 
-    const seenFiles = new Set<string>();
-    let grepEstimate = 0;
-    for (const r of results) {
-        if (!seenFiles.has(r.path)) {
-            seenFiles.add(r.path);
-            grepEstimate += estimateTokens(r.rawCode) * 5;
-        }
-    }
+    // "Saved" = the raw size of the matched chunks minus what this answer cost.
+    // The old ×5 multiplier was invented, and with include_raw nothing is saved.
+    let rawEstimate = 0;
+    if (!include_raw) for (const r of results) rawEstimate += estimateTokens(r.rawCode);
 
     const fileCount = new Set(results.map(r => r.path)).size;
+    const joiner = include_raw ? "\n\n" : "\n";
     const resultText = `Search "${query}": ${results.length} results in ${fileCount} files\n\n` +
-        formatted.join("\n\n");
+        formatted.join(joiner);
 
     const searchTokens = estimateTokens(resultText);
-    const saved = Math.max(0, grepEstimate - searchTokens);
+    const saved = Math.max(0, rawEstimate - searchTokens);
 
     const finalText = resultText;
 
@@ -284,11 +338,13 @@ export async function handleReferences(
 
     engine.logUsage("nreki_refs", refTokens, refTokens, 0);
 
+    const qualified = splitQualifiedName(symbol);
     return {
         content: [{
             type: "text" as const,
             text:
                 `## References: ${symbol}\n` +
+                (qualified ? `Matched by member name "${qualified.member}": call sites do not name the class.\n` : "") +
                 `Found ${results.length} reference(s) across ${byFile.size} file(s).\n\n` +
                 formatted.join("\n"),
         }],
@@ -395,8 +451,13 @@ export async function handleOutline(
     const relPath = path.relative(root, resolvedPath).replace(/\\/g, "/");
     const lines = [`## Outline: ${relPath}`, `${symbols.length} symbol(s)`, ""];
 
-    const engrams = deps.engine.getEngramsForFile(resolvedPath);
-    let invalidatedCount = 0;
+    const placement = placeEngrams(
+        symbols.map(s => ({ qualified: s.qualifiedName ?? s.name, bare: s.name, body: s.body, startLine: s.startLine })),
+        deps.engine.getEngramsForFile(resolvedPath),
+    );
+    for (const key of placement.invalidated) deps.engine.deleteEngram(resolvedPath, key);
+    for (const { from, to } of placement.rekeyed) deps.engine.renameEngram(resolvedPath, from, to);
+    const invalidatedCount = placement.invalidated.length;
 
     const lowRiskSymbols: string[] = [];
 
@@ -419,29 +480,20 @@ export async function handleOutline(
         ghostCache.set(name, hasExt);
     }));
 
-    for (const sym of symbols) {
+    for (const [symIndex, sym] of symbols.entries()) {
         const exported = sym.exportedAs ? ` [${sym.exportedAs}]` : "";
         const linesCount = sym.endLine - sym.startLine + 1;
         const riskTag = computeTriageRisk(sym.name, sym.body, linesCount);
 
-        const memory = engrams.get(sym.name);
-        let engramLine: string | null = null;
-        let hasValidEngram = false;
-        if (memory) {
-            const currentHash = crypto.createHash("sha256").update(sym.body).digest("hex");
-            // v10.7.0: engrams whose insight starts with "ASSERT" (case-insensitive)
-            // are immortal — they survive AST hash mutation. Ideal for pinning
-            // invariants that apply to the role of the symbol, not its body.
-            const isImmortal = memory.insight.toUpperCase().startsWith("ASSERT");
-            if (currentHash === memory.astHash || isImmortal) {
-                engramLine = `  [Engram]: ${memory.insight}`;
-                hasValidEngram = true;
-            } else {
-                deps.engine.deleteEngram(resolvedPath, sym.name);
-                invalidatedCount++;
-                engramLine = `  [Engram invalidated: code mutated since memory was saved]`;
-            }
-        }
+        // Engrams are matched by qualified name + body hash (utils/engram-identity);
+        // "ASSERT…" engrams survive body changes (v10.7.0).
+        const insights = placement.shown.get(symIndex);
+        const hasValidEngram = insights !== undefined;
+        const engramLine: string | null = hasValidEngram
+            ? insights.map(text => `  [Engram]: ${text}`).join("\n")
+            : placement.invalidatedAt.has(symIndex)
+                ? `  [Engram invalidated: code mutated since memory was saved]`
+                : null;
 
         // v10.7.0: parasitic defect radar + ghost tag rendered inline.
         const defects = runDefectRadar(sym.body);
@@ -526,6 +578,9 @@ export async function handleOutline(
             lines.push(sym.body);
             lines.push("```");
         }
+        // Their full bodies are now in the agent's context: editing them is not
+        // blind, so the enforcer must not demand a second read of the same code.
+        deps.enforcer?.registerFocusedSymbols(resolvedPath, autoExpanded.map(s => s.name));
     }
 
     if (omittedHighRisk.length > 0) {
@@ -722,34 +777,29 @@ export async function handlePrepareRefactor(
         });
     }
 
-    const lines: string[] = [
-        `## Prepare Refactor: \`${symbolName}\``,
-        "",
-    ];
+    // Project-relative POSIX paths: absolute Windows paths were ~3× longer and
+    // doubled again by JSON escaping.
+    const projectRoot = deps.engine.getProjectRoot();
+    const rel = (file: string): string => path.relative(projectRoot, file).replace(/\\/g, "/") || file;
+
+    const lines: string[] = [`## Prepare Refactor: \`${symbolName}\``];
 
     if (highConfidence.length > 0) {
         lines.push(`### HIGH CONFIDENCE (${highConfidence.length} - structural usage)`);
         for (const m of highConfidence) {
-            lines.push(`  ${m.file}:L${m.line} - \`${m.context}\``);
+            lines.push(`  ${rel(m.file)}:L${m.line} - \`${m.context}\``);
         }
-        lines.push("");
     }
 
     if (reviewManually.length > 0) {
         lines.push(`### REVIEW MANUALLY (${reviewManually.length} - may be string/key/comment)`);
         for (const m of reviewManually) {
-            lines.push(`  ${m.file}:L${m.line} - \`${m.context}\` (${m.reason})`);
+            lines.push(`  ${rel(m.file)}:L${m.line} - \`${m.context}\` (${m.reason})`);
         }
-        lines.push("");
     }
 
     if (highConfidence.length === 0 && reviewManually.length === 0) {
         lines.push(`No occurrences of \`${symbolName}\` found in the project.`);
-    } else {
-        lines.push(
-            `Use \`nreki_code action:"batch_edit"\` to rename the high-confidence matches. ` +
-            `Review manually before including any marked for review.`
-        );
     }
 
     return {
@@ -891,9 +941,11 @@ export async function handleTypeShape(
         };
     }
 
-    if (!deps.kernel.isBooted()) {
+    // The kernel boots lazily (first edit). Asking for a type before any edit
+    // used to answer "kernel not booted… retry", and retrying never helped.
+    if (!(await ensureKernelBooted(deps))) {
         return {
-            content: [{ type: "text" as const, text: "Error: TypeScript kernel not booted. Ensure tsconfig.json exists and retry." }],
+            content: [{ type: "text" as const, text: "Error: TypeScript kernel failed to boot (see NREKI logs). Ensure tsconfig.json is valid." }],
             isError: true,
         };
     }
@@ -929,7 +981,7 @@ export async function handleTypeShape(
     return {
         content: [{
             type: "text" as const,
-            text: `Oracle: Type Shape for \`${symbol}\`\n\n\`\`\`typescript\ntype ${symbol} = ${shape}\n\`\`\``,
+            text: `Oracle: Type Shape for \`${symbol}\`\n\n\`\`\`typescript\n${shape}\n\`\`\``,
         }],
     };
 }
@@ -958,12 +1010,14 @@ export async function handleFastGrep(
         };
     }
 
-    if (!engine.hasIndexedFiles()) {
-        logger.info("First-time project indexing for fast_grep...");
-        await engine.indexDirectory(engine.getProjectRoot());
-    }
+    // engine.fastGrep shares the same first-use reconciliation as search.
 
-    const limit = typeof params.limit === "number" ? Math.min(100, Math.max(1, params.limit)) : 50;
+    const explicitLimit = typeof params.limit === "number" ? Math.min(500, Math.max(1, params.limit)) : null;
+    const limit = explicitLimit ?? 200;
+    // Output cap: a broad query ("const ", "return ") over 200 chunks printed
+    // 10-20k tokens. Hits past the cap are summarized per file instead. An
+    // explicit `limit` raises the cap for agents that really want every line.
+    const maxLines = Math.max(FAST_GREP_MAX_LINES, explicitLimit ?? 0);
     const chunks = await engine.fastGrep(query, limit);
 
     if (chunks.length === 0) {
@@ -982,6 +1036,8 @@ export async function handleFastGrep(
 
     const lines = [`## Semantic Fast Grep: "${query}"\n`];
     let matchCount = 0;
+    let shownCount = 0;
+    const overflow: Array<{ relPath: string; count: number }> = [];
 
     const isMultiLine = query.includes("\n");
     let multiLineSnippet = "";
@@ -991,15 +1047,33 @@ export async function handleFastGrep(
         multiLineSnippet = preview.length > 80 ? preview.substring(0, 80) + "..." : preview + "...";
     }
 
-    for (const [file, fileChunks] of [...byFile.entries()].sort((a,b) => a[0].localeCompare(b[0]))) {
-        const relPath = path.relative(root, file).replace(/\\/g, "/");
+    // Production code first, then tests/scripts/docs; alphabetical inside each group.
+    const orderedFiles = [...byFile.entries()]
+        .map(([file, fileChunks]) => ({ fileChunks, relPath: path.relative(root, file).replace(/\\/g, "/") }))
+        .sort((a, b) =>
+            Number(isSecondaryPath(a.relPath)) - Number(isSecondaryPath(b.relPath)) ||
+            a.relPath.localeCompare(b.relPath));
 
-        for (const chunk of fileChunks) {
-            const symName = chunk.symbol_name || "anonymous";
+    for (const { fileChunks, relPath } of orderedFiles) {
+
+        // Sort chunks from most specific (innermost method/function) to broadest (enclosing class)
+        // and prefer named symbols over top-level gap chunks so each line is reported once under
+        // its most specific AST symbol.
+        const sortedChunks = [...fileChunks].sort((a, b) => {
+            const aNamed = a.symbol_name ? 0 : 1;
+            const bNamed = b.symbol_name ? 0 : 1;
+            if (aNamed !== bNamed) return aNamed - bNamed;
+            return a.raw_code.length - b.raw_code.length;
+        });
+
+        const reportedLines = new Set<number>();
+        const fileHits: Array<{ line: number; text: string }> = [];
+
+        for (const chunk of sortedChunks) {
+            const symName = chunk.symbol_name || "<top-level>";
             let scanPos = chunk.raw_code.indexOf(query);
             if (scanPos === -1) continue;
 
-            const reportedLines = new Set<number>();
             let currentLineOffset = 0;
             let currentLineStart = 0;
             let nextNl = chunk.raw_code.indexOf("\n");
@@ -1018,23 +1092,44 @@ export async function handleFastGrep(
                     matchCount++;
 
                     if (isMultiLine) {
-                        lines.push(`${relPath} :: ${symName} (L${exactLine}) [match spans multiple lines]`);
-                        lines.push(`  ${multiLineSnippet}`);
+                        fileHits.push({
+                            line: exactLine,
+                            text: `${relPath} :: ${symName} (L${exactLine}) [match spans multiple lines]: ${multiLineSnippet}`,
+                        });
                     } else {
                         const lineEnd = nextNl !== -1 ? nextNl : chunk.raw_code.length;
-                        const context = chunk.raw_code.substring(currentLineStart, lineEnd).trim();
-
-                        lines.push(`${relPath} :: ${symName} (L${exactLine})`);
-                        lines.push(`  ${context}`);
+                        const context = chunk.raw_code.substring(currentLineStart, lineEnd).trim().slice(0, 160);
+                        fileHits.push({
+                            line: exactLine,
+                            text: `${relPath} :: ${symName} (L${exactLine}): ${context}`,
+                        });
                     }
                 }
 
                 scanPos = chunk.raw_code.indexOf(query, scanPos + query.length);
             }
         }
+
+        fileHits.sort((a, b) => a.line - b.line);
+        const room = Math.max(0, maxLines - shownCount);
+        for (const hit of fileHits.slice(0, room)) lines.push(hit.text);
+        shownCount += Math.min(room, fileHits.length);
+        if (fileHits.length > room) overflow.push({ relPath, count: fileHits.length - room });
     }
 
     lines.splice(1, 0, `Found ${matchCount} match(es) within ${chunks.length} AST symbol(s).\n`);
+    if (overflow.length > 0) {
+        const hidden = matchCount - shownCount;
+        const listed = overflow.slice(0, 40).map(o => `${o.relPath} (${o.count})`).join(", ");
+        const more = overflow.length > 40 ? `, +${overflow.length - 40} more files` : "";
+        lines.push(
+            `\n[Output capped at ${shownCount} lines. ${hidden} more match(es) in: ${listed}${more}. ` +
+            `Refine the query, or pass limit (up to 500) to show more lines.]`,
+        );
+    }
+    if (chunks.length >= limit) {
+        lines.push(`\n[Showing first ${chunks.length} matching chunks (limit=${limit}). Pass a higher limit (up to 500) or refine query if needed.]`);
+    }
 
     const finalText = lines.join("\n");
 

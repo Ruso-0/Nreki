@@ -27,6 +27,7 @@ function depsWithEmptySearch(tmpDir: string, hasIndexed: boolean): RouterDepende
         initialize: vi.fn().mockResolvedValue(undefined),
         getProjectRoot: vi.fn().mockReturnValue(tmpDir),
         hasIndexedFiles: vi.fn().mockReturnValue(hasIndexed),
+        hasFreshIndex: vi.fn().mockReturnValue(hasIndexed),
         ensureIndexedBackground: vi.fn().mockReturnValue(false),
         search: vi.fn().mockResolvedValue([]),
         getStats: vi.fn().mockReturnValue({

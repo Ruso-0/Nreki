@@ -14,13 +14,31 @@ const tsxCli = path.resolve(__dirname, "..", "node_modules", "tsx", "dist", "cli
 // ─── MockLspSidecar ─────────────────────────────────────────────────
 
 class MockLspSidecar extends LspSidecarBase {
-    constructor(projectRoot: string, scenario: string) {
+    /** Every request sent to the server, in order. */
+    public readonly sent: string[] = [];
+
+    constructor(projectRoot: string, scenario: string, env: Record<string, string> = {}) {
         super(
             projectRoot,
             [process.execPath, tsxCli, mockServerPath],
             "mock",
-            { MOCK_LSP_SCENARIO: scenario },
+            { MOCK_LSP_SCENARIO: scenario, ...env },
         );
+    }
+
+    /** Read the protected capability flag through the subclass. */
+    public hasPullDiagnostics(): boolean {
+        return this.supportsPullDiagnostics;
+    }
+
+    protected override request(method: string, params: unknown, timeoutMs?: number): Promise<unknown> {
+        this.sent.push(method);
+        return super.request(method, params, timeoutMs);
+    }
+
+    /** A raw request to the mock server (test hooks). */
+    public ask(method: string): Promise<unknown> {
+        return this.request(method, null);
     }
 }
 
@@ -160,7 +178,7 @@ describe("LspSidecarBase (mock LSP server)", () => {
         await sidecar.boot();
 
         // Mock server always returns diagnosticProvider in capabilities
-        expect(sidecar.supportsPullDiagnostics).toBe(true);
+        expect(sidecar.hasPullDiagnostics()).toBe(true);
 
         const testFile = path.join(tmpDir, "test.py");
         const errors = await sidecar.validateEdits([
@@ -193,5 +211,50 @@ describe("LspSidecarBase (mock LSP server)", () => {
         expect(errors.length).toBe(2);
         expect(errors[0].message).toContain("import");
         expect(errors[1].message).toContain("Unexpected token");
+    });
+
+    // ─── Requests FROM the server, and how diagnostics are delivered ────
+
+    it("answers a request from the server and never takes it for the response to its own (same id)", async () => {
+        tmpDir = createTempDir();
+        // After each change the mock sends workspace/diagnostic/refresh carrying
+        // the id of the pull the client is about to wait on.
+        sidecar = new MockLspSidecar(tmpDir, "unfixable", { MOCK_LSP_SERVER_REQUESTS: "1" });
+        await sidecar.boot();
+        const testFile = path.join(tmpDir, "test.py");
+
+        // Mistaken for the response, the server's request resolved the pull with
+        // `undefined`: zero diagnostics, the edit passed.
+        expect(await sidecar.validateEdits([{ filePath: testFile, content: "x" }])).toHaveLength(1);
+        expect(await sidecar.validateEdits([{ filePath: testFile, content: "y" }])).toHaveLength(1);
+        expect(await sidecar.ask("mock/clientReplies")).toBe(2); // both were answered
+    });
+
+    it("pulls from a server that answers textDocument/diagnostic without advertising it", async () => {
+        tmpDir = createTempDir();
+        // Like gopls without its setting, or pyright: no diagnosticProvider in
+        // `initialize`, nothing published, but a pull is answered.
+        sidecar = new MockLspSidecar(tmpDir, "unfixable", { MOCK_LSP_UNADVERTISED_PULL: "1" });
+        await sidecar.boot();
+        expect(sidecar.hasPullDiagnostics()).toBe(false);
+
+        const errors = await sidecar.validateEdits([{ filePath: path.join(tmpDir, "test.py"), content: "x" }]);
+        expect(errors).toHaveLength(1);
+        expect(sidecar.hasPullDiagnostics()).toBe(true);
+    });
+
+    it("falls back to published diagnostics when the server refuses the pull, and stops asking", async () => {
+        tmpDir = createTempDir();
+        sidecar = new MockLspSidecar(tmpDir, "unfixable", { MOCK_LSP_PUSH: "1" });
+        await sidecar.boot();
+        const testFile = path.join(tmpDir, "test.py");
+        const pulls = () => sidecar!.sent.filter(m => m === "textDocument/diagnostic").length;
+
+        expect(await sidecar.validateEdits([{ filePath: testFile, content: "x" }])).toHaveLength(1);
+        expect(sidecar.hasPullDiagnostics()).toBe(false);
+        expect(pulls()).toBe(1); // the refused attempt
+
+        expect(await sidecar.validateEdits([{ filePath: testFile, content: "y" }])).toHaveLength(1);
+        expect(pulls()).toBe(1); // not asked again
     });
 });

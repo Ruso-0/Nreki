@@ -146,6 +146,35 @@ describe("runInit — generic", () => {
         expect(result.actions[0].op).toBe("created");
         expect(fs.existsSync(path.join(tmpDir, "AGENTS.md"))).toBe(false);
     });
+
+    // Regression (pre-v12.0.1): --force rewrote the WHOLE user file.
+    it("--force replaces only a legacy NREKI block and keeps the user's content", () => {
+        const legacy =
+            "# Team rules\n- always write tests\n\n" +
+            "# AGENTS.md — NREKI MCP instructions for AI coding agents (Codex, Gemini, others)\n\n" +
+            "## 0. ZERO-CHATTER\nSTALE line\n\n## 5. VERIFICATION\nSTALE verification\n\n" +
+            "## Deployment notes\nship on fridays\n";
+        fs.writeFileSync(path.join(tmpDir, "AGENTS.md"), legacy);
+        const result = runInit({ cwd: tmpDir, agent: "generic", force: true });
+        expect(result.actions[0].op).toBe("rewritten");
+        const final = fs.readFileSync(path.join(tmpDir, "AGENTS.md"), "utf-8");
+        expect(final).toContain("# Team rules\n- always write tests");
+        expect(final).toContain("## Deployment notes\nship on fridays");
+        expect(final).not.toContain("STALE");
+        expect(final).toContain("<!-- nreki:begin -->");
+        expect(final.match(/NREKI MCP instructions/g)?.length).toBe(1);
+    });
+
+    it("--force on a sentinel block is idempotent and keeps surrounding content", () => {
+        fs.writeFileSync(path.join(tmpDir, "AGENTS.md"), "# mine\nkeep me\n");
+        runInit({ cwd: tmpDir, agent: "generic" });
+        runInit({ cwd: tmpDir, agent: "generic", force: true });
+        runInit({ cwd: tmpDir, agent: "generic", force: true });
+        const final = fs.readFileSync(path.join(tmpDir, "AGENTS.md"), "utf-8");
+        expect(final.startsWith("# mine\nkeep me\n")).toBe(true);
+        expect(final.match(/<!-- nreki:begin -->/g)?.length).toBe(1);
+        expect(final.match(/<!-- nreki:end -->/g)?.length).toBe(1);
+    });
 });
 
 describe("runInit — claude", () => {
@@ -153,7 +182,9 @@ describe("runInit — claude", () => {
         const result = runInit({ cwd: tmpDir, agent: "claude" });
         expect(result.agent).toBe("claude");
         expect(fs.existsSync(path.join(tmpDir, "CLAUDE.md"))).toBe(true);
-        expect(fs.existsSync(path.join(tmpDir, "SKILL.md"))).toBe(true);
+        // Claude Code loads project skills from .claude/skills/<name>/SKILL.md only.
+        expect(fs.existsSync(path.join(tmpDir, ".claude", "skills", "nreki-optimizer", "SKILL.md"))).toBe(true);
+        expect(fs.existsSync(path.join(tmpDir, "SKILL.md"))).toBe(false);
         expect(fs.existsSync(path.join(tmpDir, ".claude", "hooks", "nreki-enforcer.mjs"))).toBe(true);
         expect(fs.existsSync(path.join(tmpDir, ".claude", "settings.json"))).toBe(true);
         const settings = JSON.parse(fs.readFileSync(path.join(tmpDir, ".claude", "settings.json"), "utf-8"));
@@ -191,7 +222,8 @@ describe("runInit — claude", () => {
         const hookAction = result.actions.find(a => a.path.endsWith("nreki-enforcer.mjs"));
         expect(hookAction?.op).toBe("rewritten");
         const final = fs.readFileSync(hookPath, "utf-8");
-        expect(final).toContain("cwdPosix");
+        expect(final).toContain("nreki-enforcer:v3");
+        expect(final).toContain("cwdPosix"); // older servers' auto-patch must not mistake v3 for a legacy hook
     });
 });
 

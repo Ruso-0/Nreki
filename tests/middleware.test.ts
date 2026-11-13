@@ -2,7 +2,6 @@
  * middleware.test.ts - Tests for v3.0 middleware layer.
  *
  * Covers:
- * - Validator: valid code passes, invalid code blocked with details
  * - Circuit breaker middleware: auto-reset, trip behavior, isError flag
  */
 
@@ -12,78 +11,7 @@ import {
     wrapWithCircuitBreaker,
     resetMiddlewareState,
 } from "../src/middleware/circuit-breaker.js";
-import {
-    validateBeforeWrite,
-    formatValidationErrors,
-} from "../src/middleware/validator.js";
-import { AstSandbox } from "../src/ast-sandbox.js";
 import type { McpToolResponse } from "../src/router.js";
-
-// ─── Validator Middleware ────────────────────────────────────────────
-
-describe("Validator Middleware", () => {
-    let sandbox: AstSandbox;
-
-    beforeEach(async () => {
-        sandbox = new AstSandbox();
-    });
-
-    it("should pass valid TypeScript code", async () => {
-        const code = `function greet(name: string): string {
-    return "Hello, " + name;
-}`;
-        const result = await validateBeforeWrite(code, "typescript", sandbox);
-        expect(result.valid).toBe(true);
-        expect(result.errors.length).toBe(0);
-    });
-
-    it("should pass valid JavaScript code", async () => {
-        const code = `const sum = (a, b) => a + b;
-module.exports = { sum };`;
-        const result = await validateBeforeWrite(code, "javascript", sandbox);
-        expect(result.valid).toBe(true);
-    });
-
-    it("should block code with syntax errors", async () => {
-        const code = `function broken( {
-    return "missing paren";
-}`;
-        const result = await validateBeforeWrite(code, "typescript", sandbox);
-        expect(result.valid).toBe(false);
-        expect(result.errors.length).toBeGreaterThan(0);
-    });
-
-    it("should provide error details with line and column", async () => {
-        const code = `const x = {
-    a: 1,
-    b:
-};`;
-        const result = await validateBeforeWrite(code, "typescript", sandbox);
-        if (!result.valid) {
-            expect(result.errors[0]).toHaveProperty("line");
-            expect(result.errors[0]).toHaveProperty("column");
-        }
-    });
-
-    it("should format errors as human-readable string", async () => {
-        const code = `function bad( { return 1; }`;
-        const result = await validateBeforeWrite(code, "typescript", sandbox);
-        if (!result.valid) {
-            const formatted = formatValidationErrors(result);
-            expect(formatted).toContain("Validation: FAILED");
-            expect(formatted).toContain("syntax error");
-        }
-    });
-
-    it("should return empty string for valid code formatting", async () => {
-        const code = `const x = 42;`;
-        const result = await validateBeforeWrite(code, "typescript", sandbox);
-        if (result.valid) {
-            const formatted = formatValidationErrors(result);
-            expect(formatted).toBe("");
-        }
-    });
-});
 
 // ─── Circuit Breaker Middleware ─────────────────────────────────────
 

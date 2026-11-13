@@ -1,30 +1,11 @@
 # AGENTS.md — NREKI MCP instructions for AI coding agents (Codex, Gemini, others)
+NREKI checks edits (syntax + types, in RAM) before writing them. Every tool result stays in your context for the rest of the session, so ask for the smallest answer.
 
-## 0. ZERO-CHATTER
-Call tools immediately. No preambles. One-line responses.
-
-## 1. NAVIGATION & READING
-- NEVER use Bash grep/rg or native Read. `nreki_navigate action:"fast_grep"` for exact search, `action:"search"` for semantic (Type Ledger).
-- "No semantic results" → use the fallback list in the response (`fast_grep`, broaden query) before the host agent's `Bash grep`.
-- Batch reads: `nreki_code action:"compress" focus:"sym1, sym2"`.
-- Large files: outline first. `[BUDGET LIMIT REACHED]` → use `compress focus`. Heed ⚠️ and 👻.
-- Small files: `nreki_code action:"read"`.
-
-## 2. SURGICAL EDITING
-- NEVER native Write/Replace. NEVER sequential. Batch ALL edits in ONE `batch_edit`.
-- 80L payload guillotine + patch mode (symbols >100L; override via `NREKI_SYMBOL_LIMIT`). ACID: every `search_text` targets ORIGINAL source.
-- No `// eslint-disable`, `@ts-ignore`, `# noqa`. Rename via `prepare_refactor` first.
-
-## 3. BLAST RADIUS & TYPES
-- Cascade all dependents. NEVER downgrade to `any`/`unknown`. NREKI auto-heals imports.
-
-## 4. MEMORY
-- Plan: `set_plan`. Scratchpad: `memorize`. Engrams: `engram path:"..." symbol:"..." text:"ASSERT: ..."`.
-
-## 5. VERIFICATION
-- NEVER run tsc/eslint. NREKI validates in RAM. `[OK]` = valid. Errors → fix via NREKI.
-- Pre-existing TS errors in edited files are NOT blockers (differential check filters by fingerprint). Only NEW errors trigger rollback.
-- Filter: `nreki_code action:"filter_output"`. Circuit breaker → STOP and rethink.
-
-## 6. INPUT VALIDATION
-- `read` / `compress` are FILE ops. Directory paths return a clear error → use `nreki_navigate action:"outline" / "fast_grep" / "search"`.
+- Start: `nreki_navigate action:"context" query:"<the task, as given>"` returns the code the task names (symbols verbatim with line ranges, other mentions, importers) in one call. Often that is all you need to read before editing.
+- Find: `nreki_navigate action:"fast_grep"` (exact text, gives file:line + symbol) or `action:"search"` (concept). `map` is an overview, not a way to find code.
+- Read: `nreki_code action:"compress" focus:"a,b,c"` returns only those symbols, several per call. Small files: `nreki_code action:"read"` or a native line-range read.
+- Edit: one `nreki_code action:"batch_edit"` with every change. `mode:"patch"` (search_text -> replace_text, matched against the original source) for small changes; symbols over 100 lines require it; payloads over 80 lines are rejected. A rejected edit writes nothing: fix it and resend. In code mode, run your tests/checker in the same cell, right after it.
+- Changing a signature: update its callers in the same batch. Do not weaken types to `any`/`unknown`. Edits that add `@ts-ignore`, `# type: ignore`, `# noqa` or a blanket `eslint-disable` are rejected. Rename: `nreki_navigate action:"prepare_refactor"` first.
+- `[Validated: …]` footer: skip tsc only when it says re-running is redundant; if it says syntax only, NOT checked or LSP offline, run the compiler/tests before finishing. Errors that were already there never block an edit.
+- Memory across compaction: `nreki_guard action:"set_plan"` / `"memorize"`; a note on a symbol: `action:"engram"`.
+- `BREAK & BUILD` or `DECOMPOSE` in a response: stop and rethink the approach.

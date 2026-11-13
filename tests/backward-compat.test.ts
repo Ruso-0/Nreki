@@ -65,6 +65,8 @@ function createMockDeps(): RouterDependencies {
             watchedPaths: ["/test"],
         }),
         hasIndexedFiles: vi.fn().mockReturnValue(true),
+        hasFreshIndex: vi.fn().mockReturnValue(true),
+        ensureIndexedBackground: vi.fn().mockReturnValue(false),
         getParser: vi.fn().mockReturnValue({
             initialize: vi.fn().mockResolvedValue(undefined),
             parse: vi.fn().mockResolvedValue({ chunks: [] }),

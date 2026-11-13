@@ -30,7 +30,11 @@ interface FileAction {
     content: string;
     /** Substring used to recognize a prior NREKI install (skip on append). */
     marker: string;
-    /** Default mode. `--force` upgrades to "write". */
+    /**
+     * "write" = NREKI-owned file (rewritten with --force).
+     * "append" = user-owned file: NREKI only adds/replaces its own
+     * sentinel-delimited block; --force never touches the user's content.
+     */
     mode: WriteMode;
     /** Make executable on POSIX (mode 0o755). */
     executable?: boolean;
@@ -93,18 +97,21 @@ function planForAgent(agent: DetectedAgent): FileAction[] {
                     mode: "append",
                 },
                 {
-                    targetRel: "SKILL.md",
+                    // Claude Code discovers project skills under .claude/skills/<name>/SKILL.md;
+                    // the pre-v12.0.1 repo-root SKILL.md was never loaded (NREKI-INS-01).
+                    targetRel: path.join(".claude", "skills", "nreki-optimizer", "SKILL.md"),
                     content: readTemplate("SKILL.md"),
                     marker: "name: nreki-optimizer",
-                    mode: "append",
+                    mode: "write",
                 },
                 {
                     targetRel: path.join(".claude", "hooks", "nreki-enforcer.mjs"),
                     content: readTemplate(path.join("hooks", "nreki-enforcer.mjs")),
-                    // v11.3.0: the marker matches the security-hardening token introduced
-                    // in v10.13.1. If a legacy enforcer (pre-cwdPosix) is on disk it'll be
+                    // v12.0.1: marker bumped to the v3 enforcer (token-aware: only large
+                    // reads are steered, offset/limit honored, edits allowed, symlink-aware,
+                    // fail-open when NREKI is not running). Older enforcers on disk are
                     // upgraded; a current one is left alone.
-                    marker: "cwdPosix",
+                    marker: "nreki-enforcer:v3",
                     mode: "write",
                     executable: true,
                 },
@@ -148,6 +155,46 @@ function planForAgent(agent: DetectedAgent): FileAction[] {
     }
 }
 
+// NREKI-owned region inside user-owned files (CLAUDE.md, AGENTS.md,
+// copilot-instructions.md). Invisible when rendered.
+const BLOCK_BEGIN = "<!-- nreki:begin -->";
+const BLOCK_END = "<!-- nreki:end -->";
+
+function wrapBlock(content: string): string {
+    return `${BLOCK_BEGIN}\n${content.replace(/\s+$/, "")}\n${BLOCK_END}\n`;
+}
+
+/**
+ * Replace ONLY the NREKI block of a user-owned file. Sentinel-delimited
+ * blocks are replaced exactly; legacy (pre-sentinel) installs span from the
+ * marker line to the first heading that is not a numbered NREKI section
+ * ("## 3. …"), or EOF. Returns null when no block can be located.
+ */
+function replaceNrekiBlock(current: string, marker: string, block: string): string | null {
+    const begin = current.indexOf(BLOCK_BEGIN);
+    const endTag = begin === -1 ? -1 : current.indexOf(BLOCK_END, begin);
+    if (begin !== -1 && endTag !== -1) {
+        let end = endTag + BLOCK_END.length;
+        if (current[end] === "\r") end++;
+        if (current[end] === "\n") end++;
+        return current.slice(0, begin) + block + current.slice(end);
+    }
+
+    const at = current.indexOf(marker);
+    if (at === -1) return null;
+    const start = current.lastIndexOf("\n", at) + 1;
+    let end = current.indexOf("\n", at);
+    end = end === -1 ? current.length : end + 1;
+    while (end < current.length) {
+        let next = current.indexOf("\n", end);
+        next = next === -1 ? current.length : next + 1;
+        const line = current.slice(end, next).replace(/\r?\n$/, "");
+        if (/^#{1,6}\s/.test(line) && !/^##\s+\d+\./.test(line)) break; // foreign heading
+        end = next;
+    }
+    return current.slice(0, start) + block + current.slice(end);
+}
+
 function applyFileAction(
     cwd: string,
     action: FileAction,
@@ -156,6 +203,9 @@ function applyFileAction(
 ): InitResult["actions"][number] {
     const abs = path.join(cwd, action.targetRel);
     const exists = fs.existsSync(abs);
+    // Append-mode targets belong to the USER: NREKI only ever owns its block.
+    const userOwned = action.mode === "append";
+    const payload = userOwned ? wrapBlock(action.content) : action.content;
 
     if (exists) {
         const current = fs.readFileSync(abs, "utf-8");
@@ -165,26 +215,36 @@ function applyFileAction(
             return { path: action.targetRel, op: "skipped", note: "NREKI block already present (use --force to rewrite)" };
         }
 
-        if (force || action.mode === "write") {
-            if (!dryRun) {
-                ensureDir(path.dirname(abs));
-                fs.writeFileSync(abs, action.content, "utf-8");
-                if (action.executable) chmodExec(abs);
+        if (userOwned) {
+            if (hasMarker) {
+                // --force: rewrite the NREKI block in place. Pre-v12.0.1 this
+                // overwrote the WHOLE file, destroying the user's own content.
+                const replaced = replaceNrekiBlock(current, action.marker, payload);
+                if (replaced !== null) {
+                    if (!dryRun) fs.writeFileSync(abs, replaced, "utf-8");
+                    return { path: action.targetRel, op: "rewritten", note: "NREKI block replaced; your content kept" };
+                }
             }
-            return { path: action.targetRel, op: "rewritten" };
+            // append mode, no marker yet (with or without --force)
+            if (!dryRun) {
+                const sep = current.length === 0 || current.endsWith("\n\n") ? "" : current.endsWith("\n") ? "\n" : "\n\n";
+                fs.appendFileSync(abs, sep + payload, "utf-8");
+            }
+            return { path: action.targetRel, op: "appended" };
         }
 
-        // append mode, no marker yet
+        // NREKI-owned file (hook, skill, .mdc, .clinerules): rewrite.
         if (!dryRun) {
-            const sep = current.endsWith("\n") ? "\n" : "\n\n";
-            fs.appendFileSync(abs, sep + action.content, "utf-8");
+            ensureDir(path.dirname(abs));
+            fs.writeFileSync(abs, payload, "utf-8");
+            if (action.executable) chmodExec(abs);
         }
-        return { path: action.targetRel, op: "appended" };
+        return { path: action.targetRel, op: "rewritten" };
     }
 
     if (!dryRun) {
         ensureDir(path.dirname(abs));
-        fs.writeFileSync(abs, action.content, "utf-8");
+        fs.writeFileSync(abs, payload, "utf-8");
         if (action.executable) chmodExec(abs);
     }
     return { path: action.targetRel, op: "created" };
@@ -234,7 +294,7 @@ function mergeClaudeSettings(cwd: string, dryRun: boolean): InitResult["actions"
     if (!settings.hooks) settings.hooks = {};
     if (!settings.hooks.PreToolUse) settings.hooks.PreToolUse = [];
 
-    const toolsToBlock = ["Read", "ReadFile", "View", "ViewFile", "Write", "WriteFile", "Edit", "EditFile", "Replace"];
+    const toolsToBlock = ["Read", "ReadFile", "View", "ViewFile", "Write", "WriteFile", "Edit", "EditFile", "MultiEdit", "Replace"];
     let added = 0;
     for (const tool of toolsToBlock) {
         const exists = settings.hooks.PreToolUse.some(h => h.matcher === tool);

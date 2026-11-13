@@ -25,6 +25,7 @@ import crypto from "crypto";
 import { type ParsedChunk, type ParseResult, normalizeWebSymbol } from "./parser.js";
 import { extractDependencies, cleanSignature } from "./utils/imports.js";
 import { estimateTokens } from "./utils/token-estimator.js";
+import { findQualifiedChunk, splitQualifiedName } from "./utils/qualified-name.js";
 import type { NrekiEngine } from "./engine.js";
 import {
     extractTypeLedgerParafovea,
@@ -62,7 +63,8 @@ export interface TfcResult {
 
 export type TfcResultPayload =
     | { kind: "success"; data: TfcResult }
-    | { kind: "not_found" }
+    /** `available`: the file's symbol names, so the caller can answer "did you mean" without another call. */
+    | { kind: "not_found"; available?: string[] }
     | { kind: "shield_tripped"; ratio: number; originalSize: number; compressedSize: number };
 
 const NOISE_WORDS = new Set([
@@ -109,12 +111,11 @@ export async function tfcCompress(
     // scripts/eval-phase8/prereg-erratum-01.md.
     const fovealOff = process.env.FOVEAL_OFF === "1";
 
-    // Phase 5.5.1 defense-in-depth: small-file bypass at compressor level.
-    // Handler-level bypass (read.ts:84) handles the common path, but this
-    // protects against direct tfcCompress calls with tiny files where
-    // compression header overhead would exceed savings.
-    const lineCount = content.split("\n").length;
-    if (fovealOff || lineCount < 100 || originalSize < 1024) {
+    // No small-file bypass any more: a focus on a 17-line file returned all 17
+    // lines (133 tokens for a 4-line `clamp` in the 2026-11-13 A/B). The header
+    // is one line now, and a focus that is most of the file still gets the
+    // whole file (Density Shield below → the handler returns it).
+    if (fovealOff) {
         return {
             kind: "success",
             data: {
@@ -170,19 +171,30 @@ export async function tfcCompress(
     // it ran identical CSS rules). JSON foci were never normalized.
     const ext = path.extname(filePath).toLowerCase();
 
-    const foci = focusInput.split(",").map(s => {
-        return normalizeWebSymbol(s.trim(), ext).toLowerCase();
-    }).filter(Boolean);
+    const rawFoci = focusInput.split(",").map(s => normalizeWebSymbol(s.trim(), ext)).filter(Boolean);
     const foveas = new Set<ParsedChunk>();
 
-    for (const focus of foci) {
+    for (const raw of rawFoci) {
+        // `Class.method` (also ::, #, ->): that member; else match its member name.
+        const qualified = splitQualifiedName(raw);
+        if (qualified) {
+            const hit = findQualifiedChunk(parseResult.chunks, raw, c => c.symbolName);
+            if (hit.chunk) {
+                foveas.add(hit.chunk);
+                continue;
+            }
+        }
+        const focus = (qualified?.member ?? raw).toLowerCase();
         const matches = parseResult.chunks.filter(c =>
             c.symbolName.toLowerCase() === focus ||
             c.symbolName.toLowerCase().includes(focus)
         );
         for (const m of matches) foveas.add(m);
     }
-    if (foveas.size === 0) return { kind: "not_found" };
+    if (foveas.size === 0) {
+        const available = [...new Set(parseResult.chunks.map(c => c.symbolName).filter(Boolean))];
+        return { kind: "not_found", available };
+    }
 
     // 2. CAUSAL RAYTRACING
     const foveaUses = new Set<string>();
@@ -283,22 +295,15 @@ export async function tfcCompress(
     );
     void foveaPaths;
 
-    // 4. CAUSAL FUTURE (Blast Radius)
+    // 4. CAUSAL FUTURE (who imports this file)
     const relPath = path.relative(engine.getProjectRoot(), filePath).replace(/\\/g, "/");
     const dependents = await engine.findDependents(relPath);
-    let blastRadiusText = "";
-    if (dependents.length > 0) {
-        blastRadiusText = `// ⚠️ EXTERNAL BLAST RADIUS: ${dependents.length} file(s) import this module.\n` +
-                          `// If you change signatures, use \`batch_edit\` to update:\n` +
-                          `// -> ${dependents.slice(0, 3).join(", ")}${dependents.length > 3 ? '...' : ''}`;
-    }
 
-    // 5. TOPOLOGICAL INVERSION ASSEMBLY
+    // 5. ASSEMBLY. Only lines the agent can act on: a tool result stays in the
+    // conversation and is paid again on every later request of the session.
+    // The banners this used to carry (TOPOLOGICAL LAYOUT, TFC METADATA,
+    // FOVEA 100% Resolution…) cost ~150 tokens per call around a 3-line body.
     const parts: string[] = [];
-
-    // === STATIC PREFIX (Anthropic Cache Safe) ===
-    parts.push(`// [NREKI TFC-PRO] File: ${path.basename(filePath)}`);
-    parts.push(`// TOPOLOGICAL LAYOUT: Imports -> Dark Matter -> Contracts -> Target\n`);
 
     const earliestStart = parseResult.chunks.reduce((min, c) => c.startIndex < min ? c.startIndex : min, Infinity);
     const preamble = content.substring(0, earliestStart).split("\n")
@@ -306,66 +311,28 @@ export async function tfcCompress(
         .join("\n").replace(/\n{3,}/g, "\n\n").trim();
     if (preamble) { parts.push(preamble); parts.push(""); }
 
-    if (darkMatterLines > 0) {
-        parts.push(`// ... [NREKI: Orthogonal logic omitted for TFC focus] ...\n`);
+    const notes: string[] = [];
+    if (externalParafoveaText) notes.push("// imports used:", externalParafoveaText);
+    if (dependents.length > 0) {
+        notes.push(`// imported by ${dependents.length} file(s): ${dependents.slice(0, 5).join(", ")}${dependents.length > 5 ? ", …" : ""}`);
     }
-
-    if (externalParafoveaText) {
-        parts.push(`// ─── EXTERNAL PARAFOVEA (Resolved Imports) ───`);
-        parts.push(externalParafoveaText);
-        parts.push("");
-    }
-
-    if (blastRadiusText) {
-        parts.push(blastRadiusText);
-        parts.push("");
-    }
-
-    // 🔥 O(1) UPSTREAM VECTORIAL COLLAPSE 🔥
-    // N callers → 1 line of plain names. Agent sees blast radius without
-    // reading signatures. If details needed, agent can outline them separately.
     if (upstreamNames.size > 0) {
+        // N callers → 1 line of plain names.
         const names = Array.from(upstreamNames).sort();
-        parts.push(`// ─── UPSTREAM (Callers) ───`);
-        const shown = names.slice(0, 10).join(", ");
-        const extra = names.length > 10 ? ` (+${names.length - 10} more)` : "";
-        parts.push(`// ${shown}${extra} → calls target\n`);
+        notes.push(`// called in this file by: ${names.slice(0, 10).join(", ")}${names.length > 10 ? ` (+${names.length - 10})` : ""}`);
     }
-
-    // PHASE 4: cross-file UPSTREAM (Type Ledger consumers). Inserted right
-    // after single-file upstream so agent sees both layers contiguously.
-    if (crossFileUpstreamText) {
-        parts.push(crossFileUpstreamText);
-        parts.push("");
-    }
-
-    // 🔥 O(1) DOWNSTREAM EVENT HORIZON 🔥
-    // Top 10 local deps, cleanSignature strips JSDocs and whitespace waste.
+    if (crossFileUpstreamText) notes.push(crossFileUpstreamText);
     if (downstream.size > 0) {
-        parts.push(`// ─── DOWNSTREAM (Local dependencies) ───`);
+        // Top 10 local deps, cleanSignature strips JSDocs and whitespace waste.
+        notes.push("// uses from this file:");
         const sortedDownstream = Array.from(downstream).sort((a, b) => a.startIndex - b.startIndex);
-        const topDownstream = sortedDownstream.slice(0, 10);
-        for (const c of topDownstream) parts.push(cleanSignature(c.shorthand));
-        if (downstream.size > 10) parts.push(`// ... and ${downstream.size - 10} more omitted`);
-        parts.push("");
+        for (const c of sortedDownstream.slice(0, 10)) notes.push(cleanSignature(c.shorthand));
+        if (downstream.size > 10) notes.push(`// … +${downstream.size - 10} more`);
     }
+    if (crossFileDownstreamText) notes.push(crossFileDownstreamText);
+    if (crossFileAdvisoryText) notes.push(crossFileAdvisoryText);
+    if (notes.length > 0) { parts.push(...notes); parts.push(""); }
 
-    // PHASE 4: cross-file DOWNSTREAM (Type Ledger producers).
-    if (crossFileDownstreamText) {
-        parts.push(crossFileDownstreamText);
-        parts.push("");
-    }
-    if (crossFileAdvisoryText) {
-        parts.push(crossFileAdvisoryText);
-        parts.push("");
-    }
-
-    // === VOLATILE ZONE (Dynamic - changes with focus) ===
-    parts.push(`// ─── TFC METADATA ───`);
-    const foveaNamesList = Array.from(foveaNames).join(", ");
-    parts.push(`// Foci: [${foveaNamesList}] | Omitted: ${darkMatterLines}L\n`);
-
-    parts.push(`// ─── FOVEA (100% Resolution - Edit Target) ───`);
     const sortedFoveas = Array.from(foveas).sort((a, b) => a.startIndex - b.startIndex);
     for (const f of sortedFoveas) {
         parts.push(`/* L${f.startLine}-L${f.endLine} */`);

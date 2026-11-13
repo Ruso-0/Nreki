@@ -52,7 +52,9 @@ function makeMockDeps(overrides: {
             setMetadata: (key: string, value: string) => { metadata[key] = value; },
             getStats: () => ({ filesIndexed: 0, totalChunks: 0, totalRawChars: 0, totalShorthandChars: 0, compressionRatio: 0, watchedPaths: [] }),
             hasIndexedFiles: () => false,
-            getUsageStats: () => ({ total_input: Math.floor(drift / 2), total_output: Math.ceil(drift / 2), total_saved: 0, tool_calls: target }),
+            // Drift = tokens NREKI returned (total_output); handlers log the same
+            // count as input too, so input+output double-counted it (audit T-02).
+            getUsageStats: () => ({ total_input: drift, total_output: drift, total_saved: 0, tool_calls: target }),
         } as any,
         monitor: {} as any,
         sandbox: {} as any,

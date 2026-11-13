@@ -1,6 +1,6 @@
 # NREKI — Architecture Guide
 
-> **Version:** 7.3.0
+> **Version:** 12.0.1 (module tables refreshed; line counts are approximate)
 > **Author:** Jherson Eddie Tintaya Holguin (Ruso-0)  
 > **Purpose:** MCP server that validates AI agent code edits in RAM before they touch disk.
 
@@ -85,16 +85,16 @@ The codebase follows a strict **Directed Acyclic Graph** — no circular imports
 ### Layer 2: Handlers (Pure Functions)
 | Module | Purpose |
 |--------|---------|
-| `handlers/code.ts` | `read`, `compress`, `edit`, `batch_edit` — the core code operations |
-| `handlers/guard.ts` | `pin`, `unpin`, `status`, `audit`, `clear_pins` — safety and observability |
-| `handlers/navigate.ts` | `go_to_definition`, `find_references`, `search` — code navigation |
+| `handlers/code/*.ts` | `read`, `compress`, `edit`, `batch_edit`, `undo`, `filter_output` (`read.ts`, `edit.ts`, `kernel-bridge.ts`, `validation-banner.ts`) |
+| `handlers/guard.ts` | `pin`, `unpin`, `status`, `report`, `reset`, `set_plan`, `memorize`, `audit`, `engram` — memory, safety and observability |
+| `handlers/navigate.ts` | `search`, `definition`, `references`, `outline`, `map`, `prepare_refactor`, `orphan_oracle`, `type_shape`, `fast_grep`, `type_graph` |
 
 ### Layer 3: Core Modules
 | Module | Purpose | Lines |
 |--------|---------|-------|
-| `engine.ts` | File indexing, Merkle diffing, T-RAG hybrid search, dependency graph | ~844 |
+| `engine.ts` | File indexing, Merkle diffing, search (BM25 + topology, optional Voyage index), dependency graph | ~900 |
 | `semantic-edit.ts` | AST-targeted byte-index splicing, ACID batch edits | ~728 |
-| `compressor.ts` | 3-stage code compression (preprocess → token filter → AST strip) | ~800 |
+| `compressor.ts` | Code compression: AST-exact noise removal (comments, docstrings, logging) → AST skeleton (token filter retired in 12.0.1) | ~900 |
 | `repo-map.ts` | Deterministic repo map with PageRank tiering for prompt caching | ~709 |
 | `circuit-breaker.ts` | Loop detection: error hash, file modification, write-test-fail patterns | ~448 |
 | `chronos-memory.ts` | Technical debt tracking, file fragility (CFI scores), regression ledger | ~331 |
@@ -104,7 +104,9 @@ The codebase follows a strict **Directed Acyclic Graph** — no circular imports
 | `ast-navigator.ts` | Deterministic go-to-definition and find-references via AST | ~338 |
 | `ast-sandbox.ts` | Pre-write syntax validation — rejects broken code before it reaches disk | ~334 |
 | `pin-memory.ts` | Persistent pinned rules that survive context compaction | ~203 |
-| `embedder.ts` | Local embedding engine (Xenova/transformers) with model fallback | ~237 |
+| `search/keyword-index.ts` | In-memory BM25 index (built lazily on the first search) | ~240 |
+| `search/fastgrep-cache.ts` | RAM-resident chunk cache behind `fast_grep` | — |
+| `search/vector-index.ts`, `search/voyage.ts` | Opt-in Voyage semantic index (BYOK; off unless `NREKI_SEMANTIC=voyage`) | ~330 |
 | `undo.ts` | One-shot backup/restore for rollback support | ~86 |
 
 ### Layer 4: Kernel
@@ -114,27 +116,25 @@ The codebase follows a strict **Directed Acyclic Graph** — no circular imports
 | `kernel/spectral-topology.ts` | Spectral graph analysis for architectural health auditing | ~497 |
 | `kernel/backends/ts-compiler-wrapper.ts` | TypeScript compiler via Strada pattern (Builder → LS → CompilerHost) | ~695 |
 | `kernel/backends/lsp-sidecar-base.ts` | JSON-RPC 2.0 LSP client for Go/Python sidecars. SSOT lifecycle via `cleanupState()` | ~597 |
+| `kernel/error-baseline.ts` | Fingerprint baseline for LSP errors: only errors an edit adds are fatal | ~50 |
 | `kernel/backends/go-sidecar.ts` | gopls integration | ~22 |
 | `kernel/backends/python-sidecar.ts` | pyright integration | ~24 |
-| `kernel/backends/ts-corsa-sidecar.ts` | Project Corsa (TypeScript 7.0 in Go) placeholder — Strangler Fig hot-swap ready | ~31 |
 
 ### Layer 5: Hologram (Large Project Optimization)
 | Module | Purpose |
 |--------|---------|
-| `hologram/shadow-generator.ts` | Generates `.d.ts` shadows for pruned files — O(M) instead of O(N) | 
-| `hologram/shadow-cache.ts` | LRU cache for shadow declarations |
-| `hologram/harvester.ts` | Extracts public API surface from full source files |
+| `hologram/shadow-generator.ts` | Generates `.d.ts` shadows for pruned files — O(M) instead of O(N) |
 
 ### Layer 6: Infrastructure
 | Module | Purpose |
 |--------|---------|
-| `database.ts` | SQLite (sql.js WASM), custom VectorIndex with cosine similarity, BM25 KeywordIndex |
+| `database.ts` | SQLite (sql.js WASM): chunks, files, engrams, memory metadata (signed, see `utils/trust.ts`), int8 vectors for the opt-in Voyage index |
 | `parser-pool.ts` | Thread-safe parser pool with backpressure for web-tree-sitter |
 | `middleware/circuit-breaker.ts` | 3-level escalation middleware (Rewrite → Decompose → Hard Stop) |
 | `middleware/file-lock.ts` | Synchronous file mutex with immediate rejection (no queuing) |
-| `middleware/validator.ts` | Pre-write AST validation wrapper |
-| `hooks/preToolUse.ts` | Large file interception, suggests compression to save tokens |
-| `utils/*` | Path jail, logger, BOM stripping, POSIX normalization, Porter stemmer |
+| `hooks/cognitive-enforcer.ts` | Blocks blind replace-mode edits (symbol not seen yet); signed passport state |
+| `templates/hooks/nreki-enforcer.mjs` | Claude Code PreToolUse hook: steers only large whole-file reads (outline in the message) |
+| `utils/*` | Path jail, logger, BOM stripping, POSIX normalization, Porter stemmer, `trust.ts` (HMAC-signed memory files), `safe-exec.ts`, `file-traits.ts`, `engram-identity.ts`, `suppression-guard.ts` |
 
 ---
 
@@ -259,14 +259,18 @@ Handler exceptions (ENOENT, timeouts, etc.) are caught by the wrapper and conver
 
 ## Performance Modes
 
-Nreki auto-selects based on project size:
+Nreki auto-selects based on project markers and size (TS/JS file count):
 
-| Mode | Files | Strategy |
-|------|-------|----------|
-| `syntax` | < 50 | AST-only validation (Layer 1). No TypeScript compiler. |
-| `file` | 50-200 | Single-file type checking. Fast, limited cross-file. |
-| `project` | 200-1000 | Full project type checking. Complete cross-file semantics. |
-| `hologram` | > 1000 | Shadow `.d.ts` generation. Only edited files + API surfaces loaded. |
+| Mode | When | Strategy |
+|------|------|----------|
+| `syntax` | no project marker | AST-only validation (Layer 1). No semantic checker. |
+| `file` | marker, ≤ 200 files | Type-checks the edited files and their direct importers (≤ 50). |
+| `project` | marker, 201-1000 files | Full project type checking. Complete cross-file semantics. |
+| `hologram` | > 1000 files | Shadow `.d.ts` generation. Only edited files + API surfaces loaded. |
+
+A project marker is `tsconfig.json`/`jsconfig.json`, `pyproject.toml`/`requirements.txt`/`setup.py`/`Pipfile` or `go.mod` in the project root. Any of them switches the kernel on whatever the size: until 12.0.1 a TypeScript project under 50 files got no type check.
+
+Go and Python are validated by their LSP sidecar in every mode. gopls/pyright only report open documents, so with each edit the kernel opens the edited files, the other files of the same Go package and the files that import them (≤ 50 per edit, ≤ 96 open at a time), and rejects the errors the edit adds. Importers come from the dependency graph (`repo-map.ts`: a Go import is module path + directory; Python relative and package imports are resolved).
 
 ### Hologram Mode (Large Projects)
 For projects with 500+ TypeScript files, loading the full compiler is too expensive. Hologram mode:

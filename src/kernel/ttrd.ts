@@ -1,4 +1,11 @@
-// src/kernel/ttrd.ts
+/**
+ * ttrd.ts - Temporal Type Regression Detection (TTRD) helpers.
+ *
+ * The kernel compares the type contracts captured BEFORE an edit with those
+ * AFTER it and flags edits that weaken a strict type (see nreki-kernel.ts).
+ * Here: raw signature extraction + regression check for Python/Go, and the
+ * toxic-type predicate (any / unknown / Function / object / {}).
+ */
 export function extractRawSignatures(content: string, ext: string): Map<string, string> {
     const signatures = new Map<string, string>();
     if (ext !== ".py" && ext !== ".go") return signatures;

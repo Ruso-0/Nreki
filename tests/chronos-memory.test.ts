@@ -3,6 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 import { ChronosMemory } from "../src/chronos-memory.js";
+import { signState } from "../src/utils/trust.js";
 
 let tempDir: string;
 
@@ -174,12 +175,13 @@ describe("NREKI Chronos Memory", () => {
         c1.recordTrip(path.join(dir, "decay.ts"), "loop2");
         c1.forcePersist();
 
-        // Simulate 5 sessions passing by manipulating the state
+        // Simulate 5 sessions passing by manipulating the state. The file is
+        // signed (NREKI-SEC-06): re-sign it like ChronosMemory would.
         const dbPath = path.join(dir, ".nreki", "chronos-history.json");
-        const state = JSON.parse(fs.readFileSync(dbPath, "utf-8"));
+        const { tag: _oldTag, ...state } = JSON.parse(fs.readFileSync(dbPath, "utf-8"));
         // Set lastSessionTouched to 5 sessions ago
         state.files["decay.ts"].lastSessionTouched = state.currentSessionId - 4;
-        fs.writeFileSync(dbPath, JSON.stringify(state), "utf-8");
+        fs.writeFileSync(dbPath, JSON.stringify({ ...state, tag: signState("chronos", JSON.stringify(state)) }), "utf-8");
 
         // New session triggers decay: 20 * 0.85^5 ≈ 8.874
         const c2 = new ChronosMemory(dir);
@@ -195,24 +197,32 @@ describe("NREKI Chronos Memory", () => {
     it("11. GC: cfiScore < 1.0 after decay removes file from state", () => {
         const dir = createTempDir();
         fs.writeFileSync(path.join(dir, "gc.ts"), "export const g = 1;");
+        fs.writeFileSync(path.join(dir, "keep.ts"), "export const k = 1;");
 
         const c1 = new ChronosMemory(dir);
-        // CFI = 1.0
+        // gc.ts: CFI = 1.0. keep.ts: CFI = 20.0 (two trips) must SURVIVE the
+        // same decay, which proves GC ran instead of the whole file being reset.
         c1.recordHeal(path.join(dir, "gc.ts"));
+        c1.recordTrip(path.join(dir, "keep.ts"), "loop1");
+        c1.recordTrip(path.join(dir, "keep.ts"), "loop2");
         c1.forcePersist();
 
-        // Simulate many sessions so 1.0 * 0.85^n < 1.0 (n >= 1)
+        // Simulate sessions passing. The file is signed (NREKI-SEC-06): without
+        // re-signing, ChronosMemory quarantines it and starts EMPTY, and this
+        // test used to pass for that reason alone.
         const dbPath = path.join(dir, ".nreki", "chronos-history.json");
-        const state = JSON.parse(fs.readFileSync(dbPath, "utf-8"));
+        const { tag: _oldTag, ...state } = JSON.parse(fs.readFileSync(dbPath, "utf-8"));
         state.files["gc.ts"].lastSessionTouched = state.currentSessionId - 2;
-        fs.writeFileSync(dbPath, JSON.stringify(state), "utf-8");
+        state.files["keep.ts"].lastSessionTouched = state.currentSessionId - 2;
+        fs.writeFileSync(dbPath, JSON.stringify({ ...state, tag: signState("chronos", JSON.stringify(state)) }), "utf-8");
 
-        // 1.0 * 0.85^2 = 0.7225 < 1.0 → file should be GC'd
+        // gc.ts: 1.0 * 0.85^2 = 0.7225 < 1.0 → GC'd. keep.ts: 20 * 0.85^2 = 14.45 → kept.
         const c2 = new ChronosMemory(dir);
         void c2; // suppress unused
 
         const state2 = JSON.parse(fs.readFileSync(dbPath, "utf-8"));
         expect(state2.files["gc.ts"]).toBeUndefined();
+        expect(state2.files["keep.ts"]).toBeDefined();
     });
 
     it("12. Dead file cleanup: deleted file is removed from state on new session", () => {

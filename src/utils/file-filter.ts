@@ -23,6 +23,23 @@ const BLOCKED_EXTENSIONS = new Set([
 const MAX_FILE_SIZE = 500_000;
 
 /**
+ * Directory names holding secondary code (tooling, tests, docs). The indexer
+ * walks them last and fast_grep lists their hits after production code.
+ */
+export const SECONDARY_DIRS: ReadonlySet<string> = new Set([
+    "scripts", "benchmarks", "bench", "docs", "examples",
+    "tests", "test", "__tests__", "fixtures", "eval",
+]);
+
+/** True when a project-relative path lies in a secondary dir or is a test file. */
+export function isSecondaryPath(relPath: string): boolean {
+    const parts = relPath.replace(/\\/g, "/").toLowerCase().split("/");
+    const base = parts[parts.length - 1] ?? "";
+    if (/\.(test|spec)\.[cm]?[jt]sx?$/.test(base) || /^test_.*\.py$|_test\.(py|go)$/.test(base)) return true;
+    return parts.slice(0, -1).some(seg => SECONDARY_DIRS.has(seg));
+}
+
+/**
  * Check if a file should be processed based on its extension and size.
  *
  * @param filePath - Path to the file

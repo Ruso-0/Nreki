@@ -277,11 +277,30 @@ describe("Phantom Scalpel: Zero-Bounce I/O", () => {
         expect(fs.existsSync(filePath)).toBe(true);
     });
 
-    it("11. zero-bounce-bypass: _nreki_bypass should bypass auto-compression", () => {
-        // This is a parameter validation test — _nreki_bypass:"chronos_recovery" should
-        // cause the raw content to be returned even for large files.
-        // Full integration test requires handler setup; verify the param exists.
-        expect(true).toBe(true); // Placeholder — handler integration tested via e2e
+    it("11. zero-bounce-bypass: _nreki_bypass should bypass auto-compression", async () => {
+        // Was `expect(true).toBe(true)`: now drives handleRead for real.
+        const lines: string[] = [];
+        for (let i = 0; i < 600; i++) {
+            lines.push(`export const variable_${i} = "value_${i}_with_some_extra_text_to_pad_out_the_token_count_significantly";`);
+        }
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), "nreki-zb-bypass-"));
+        fs.writeFileSync(path.join(dir, "large.ts"), lines.join("\n") + "\n");
+        const { NrekiEngine } = await import("../src/engine.js");
+        const { handleRead } = await import("../src/handlers/code/read.js");
+        const engine = new NrekiEngine({ dbPath: path.join(dir, ".nreki-test.db"), watchPaths: [dir] });
+        await engine.initialize();
+        try {
+            const deps = { engine } as unknown as RouterDependencies;
+            const shielded = (await handleRead({ action: "read", path: "large.ts" } as never, deps)).content[0].text ?? "";
+            expect(shielded).toContain("AUTO-SHIELD");
+
+            const raw = (await handleRead({ action: "read", path: "large.ts", _nreki_bypass: "chronos_recovery" } as never, deps)).content[0].text ?? "";
+            expect(raw).not.toContain("AUTO-SHIELD");
+            expect(raw).toContain("export const variable_599");
+        } finally {
+            engine.shutdown();
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
     });
 });
 

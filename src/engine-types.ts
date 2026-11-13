@@ -13,6 +13,10 @@ export interface SearchResult {
     startLine: number;
     endLine: number;
     score: number;
+    /** Bare symbol name of the chunk ("" for top-level gaps). */
+    symbolName?: string;
+    /** Class.method (Go: Receiver.method); the engram key. */
+    qualifiedName?: string;
     topology?: {
         tier: "core" | "logic" | "leaf" | "orphan";
         inDegree: number;

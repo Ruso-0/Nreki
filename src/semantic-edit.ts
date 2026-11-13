@@ -18,10 +18,13 @@ import { ASTParser, type ParsedChunk, normalizeWebSymbol } from "./parser.js";
 import { AstSandbox } from "./ast-sandbox.js";
 import { estimateTokens } from "./utils/token-estimator.js";
 import { readSource } from "./utils/read-source.js";
+import { readSourceForEdit, captureFileTraits, withTraits, applyModeTraits, detectEol } from "./utils/file-traits.js";
+import { findNewSuppressions, antiSweepMessage } from "./utils/suppression-guard.js";
 import { saveBackup, getBackupPath } from "./undo.js";
 import { extractSignature, cleanSignature, extractImports, extractExports } from "./repo-map.js";
 import { logger } from "./utils/logger.js";
 import { SYMBOL_REPLACE_LIMIT } from "./limits.js";
+import { findQualifiedChunk, splitQualifiedName } from "./utils/qualified-name.js";
 import crypto from "crypto";
 
 // ─── Types ───────────────────────────────────────────────────────────
@@ -40,10 +43,30 @@ export interface EditResult {
     oldRawCode?: string;
     newRawCode?: string;
     newContent?: string;
+    /** Disk content (BOM-stripped) the edit was computed from (TOCTOU guard). */
+    baseContent?: string;
     topologyChanged?: boolean;
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────
+
+/** Write `content` over `filePath` via temp+rename, keeping BOM and permissions. */
+function atomicWritePreservingTraits(filePath: string, content: string): void {
+    const traits = captureFileTraits(filePath);
+    const tmpPath = `${filePath}.nreki-${crypto.randomBytes(4).toString("hex")}.tmp`;
+    fs.writeFileSync(tmpPath, withTraits(content, traits), "utf-8");
+    applyModeTraits(tmpPath, traits);
+    fs.renameSync(tmpPath, filePath);
+}
+
+/** True if the file on disk still holds exactly `expected` (BOM-insensitive). */
+function diskStillMatches(filePath: string, expected: string): boolean {
+    try {
+        return readSource(filePath) === expected;
+    } catch {
+        return false;
+    }
+}
 
 /** Extract symbol name from a chunk's raw code. */
 function extractName(chunk: ParsedChunk): string {
@@ -158,6 +181,8 @@ export interface SpliceTarget {
     rawCode: string;
     symbolName: string;
     startLine: number;
+    /** Language of the file. "python" makes replace/insert indentation block-aware. */
+    language?: string;
 }
 
 export interface SpliceResult {
@@ -167,6 +192,9 @@ export interface SpliceResult {
 
 /**
  * Find a chunk by symbol name. Prefers AST symbolName, falls back to regex extraction.
+ * Exact (case-sensitive) only: a silent case-insensitive fallback let batch_edit
+ * rewrite `Foo` when the agent asked for `foo` (NREKI-ROB-02). Use
+ * suggestSymbolCase() to build a "did you mean" hint instead.
  */
 export function findChunkBySymbol(
     chunks: ParsedChunk[],
@@ -180,13 +208,101 @@ export function findChunkBySymbol(
     const regexMatch = chunks.find(c => extractName(c) === symbolName);
     if (regexMatch) return regexMatch;
 
-    // Case-insensitive fallback
+    // `Class.method` (also ::, #, ->): the member inside that container.
+    return findQualifiedChunk(chunks, symbolName, c => c.symbolName || extractName(c)).chunk;
+}
+
+/** Symbol names that differ from `symbolName` only by letter case. */
+export function suggestSymbolCase(chunks: ParsedChunk[], symbolName: string): string[] {
     const lower = symbolName.toLowerCase();
-    const fuzzy = chunks.find(c => {
+    const out = new Set<string>();
+    for (const c of chunks) {
         const name = c.symbolName || extractName(c);
-        return name.toLowerCase() === lower;
-    });
-    return fuzzy ?? null;
+        if (name && name !== symbolName && name.toLowerCase() === lower) out.add(name);
+    }
+    return [...out];
+}
+
+// ─── Indentation of a replace/insert payload ────────────────────────
+
+const leadingWs = (line: string): number => (/^[ \t]*/.exec(line) as RegExpExecArray)[0].length;
+
+/**
+ * Last physical line of the Python logical line that starts at `start` (open
+ * brackets, triple-quoted strings and a trailing backslash join lines), and
+ * whether that logical line ends with ":" — i.e. it is a block header.
+ */
+function pythonLogicalLine(lines: string[], start: number): { end: number; opensBlock: boolean } {
+    let depth = 0;
+    let quote: string | null = null; // delimiter of the string being scanned
+    for (let i = start; i < lines.length; i++) {
+        const line = lines[i];
+        let last = "";
+        let j = 0;
+        while (j < line.length) {
+            const ch = line[j];
+            if (quote !== null) {
+                if (ch === "\\") { j += 2; continue; }
+                if (line.startsWith(quote, j)) { j += quote.length; quote = null; last = "s"; continue; }
+                j++;
+                continue;
+            }
+            if (ch === "#") break;
+            if (ch === '"' || ch === "'") {
+                quote = line.startsWith(ch.repeat(3), j) ? ch.repeat(3) : ch;
+                j += quote.length;
+                continue;
+            }
+            if (ch === "(" || ch === "[" || ch === "{") depth++;
+            else if (ch === ")" || ch === "]" || ch === "}") depth = Math.max(0, depth - 1);
+            if (ch !== " " && ch !== "\t") last = ch;
+            j++;
+        }
+        // Only a triple-quoted string spans lines.
+        if (quote !== null && quote.length === 1) quote = null;
+        if (depth === 0 && quote === null && last !== "\\") return { end: i, opensBlock: last === ":" };
+    }
+    return { end: lines.length - 1, opensBlock: false };
+}
+
+/**
+ * Python: the indentation — in the payload's own coordinates — that its lines
+ * AFTER the first must lose so the symbol lands on the file's indentation.
+ * Null when the payload is not a block (the caller keeps the min-indent rule).
+ *
+ * A `def`/`class` has no closing line, so every later line is body and "the
+ * shallowest later line marks the symbol's level" (true for a closing brace)
+ * flattened the body onto the header's column: every full replace of a Python
+ * function produced code that does not parse.
+ */
+function pythonSymbolLevel(lines: string[], hostIndentLen: number): number | null {
+    // Decorators and comments precede the header on the symbol's own level.
+    let header = 0;
+    while (header < lines.length) {
+        const t = lines[header].trim();
+        if (t === "" || t.startsWith("#")) header++;
+        else if (t.startsWith("@")) header = pythonLogicalLine(lines, header).end + 1;
+        else break;
+    }
+    if (header >= lines.length) return null;
+    if (header > 0) return leadingWs(lines[header]);
+
+    const { end, opensBlock } = pythonLogicalLine(lines, 0);
+    if (!opensBlock) return null;
+    const isCode = (line: string): boolean => { const t = line.trim(); return t !== "" && !t.startsWith("#"); };
+    let body = end + 1;
+    while (body < lines.length && !isCode(lines[body])) body++;
+    if (body >= lines.length) return null;
+
+    let min = Infinity;
+    for (let i = 1; i < lines.length; i++) {
+        if (isCode(lines[i])) min = Math.min(min, leadingWs(lines[i]));
+    }
+    const first = leadingWs(lines[0]);
+    if (first > 0) return Math.min(first, min);
+    // First line at column 0: the rest is either relative to it, or was copied
+    // with the file's indentation (first line trimmed, the way a symbol is shown).
+    return hostIndentLen > 0 && leadingWs(lines[body]) > hostIndentLen && min >= hostIndentLen ? hostIndentLen : 0;
 }
 
 /**
@@ -200,8 +316,15 @@ export function applySemanticSplice(
     mode: EditMode = "replace",
     searchText?: string,
     replaceText?: string,
+    /** End-of-line of the whole FILE. Needed when `content` is only a chunk (batch). */
+    fileEol?: "\n" | "\r\n",
 ): SpliceResult {
     const { startIndex, rawCode } = target;
+    // EOL to emit: the symbol's own line ending if it spans lines, else the file's.
+    // NREKI-INT-07: replace/insert used to force "\n" into CRLF files.
+    const eol: "\n" | "\r\n" = rawCode.includes("\r\n") ? "\r\n"
+        : rawCode.includes("\n") ? "\n"
+        : (fileEol ?? (content.includes("\r\n") ? "\r\n" : "\n"));
 
     // Verify tree-sitter byte position against actual content
     let startIdx = startIndex;
@@ -253,7 +376,7 @@ export function applySemanticSplice(
         const symbolContent = content.substring(startIdx, endIdx);
 
         // Adapt search text to target file's line endings (CRLF vs LF) to prevent indexOf mismatch
-        const isCRLF = symbolContent.includes('\r\n');
+        const isCRLF = eol === "\r\n";
         const normSearchText = isCRLF ? searchText.replace(/(?<!\r)\n/g, '\r\n') : searchText.replace(/\r\n/g, '\n');
         const normReplaceText = replaceText ? (isCRLF ? replaceText.replace(/(?<!\r)\n/g, '\r\n') : replaceText.replace(/\r\n/g, '\n')) : "";
 
@@ -346,6 +469,12 @@ export function applySemanticSplice(
     }
     if (minClaudeIndent === Infinity) minClaudeIndent = 0;
 
+    // Indentation the payload's later lines carry for the symbol's own level.
+    // Brace languages: the shallowest later line (the closing brace). Python:
+    // derived from the block structure, never from the body lines.
+    const symbolLevel = (target.language === "python" ? pythonSymbolLevel(newLines, baseIndent.length) : null)
+        ?? minClaudeIndent;
+
     // Relative rebase: strip Claude's indent, apply baseIndent
     // First line is excluded from minClaudeIndent calc, so don't strip it
     const formattedNewCode = newLines.map((line, i) => {
@@ -353,28 +482,30 @@ export function applySemanticSplice(
         if (mode === "replace" && i === 0) return line.trimStart();
 
         // SAFE SLICE: never cut into actual text content.
-        // If a line has fewer leading spaces than minClaudeIndent
+        // If a line has fewer leading spaces than the symbol level
         // (e.g. inside template strings, multiline comments),
         // only strip its actual whitespace prefix.
         const actualIndentMatch = line.match(/^[ \t]*/);
         const actualIndentLength = actualIndentMatch ? actualIndentMatch[0].length : 0;
-        const safeSliceLength = Math.min(minClaudeIndent, actualIndentLength);
+        const safeSliceLength = Math.min(symbolLevel, actualIndentLength);
 
         const strippedLine = line.slice(safeSliceLength);
         return baseIndent + strippedLine;
-    }).join("\n");
+    }).join(eol);
 
     // Splice by mode
     if (mode === "insert_before") {
         return {
-            newContent: content.slice(0, lineStart) + formattedNewCode + "\n\n" + content.slice(lineStart),
+            newContent: content.slice(0, lineStart) + formattedNewCode + eol + eol + content.slice(lineStart),
             newRawCode: formattedNewCode,
         };
     } else if (mode === "insert_after") {
         let endOfLine = endIdx;
         while (endOfLine < content.length && content[endOfLine] !== "\n") endOfLine++;
+        // Never split a \r\n pair: insert before the \r.
+        if (endOfLine > endIdx && content[endOfLine - 1] === "\r") endOfLine--;
         return {
-            newContent: content.slice(0, endOfLine) + "\n\n" + formattedNewCode + content.slice(endOfLine),
+            newContent: content.slice(0, endOfLine) + eol + eol + formattedNewCode + content.slice(endOfLine),
             newRawCode: formattedNewCode,
         };
     } else {
@@ -416,6 +547,8 @@ export interface BatchEditResult {
     oldRawCodes?: Map<string, string>;
     newRawCodes?: Map<string, string>;
     vfs?: Map<string, string>;
+    /** Disk content (BOM-stripped) each file's edit was computed from (TOCTOU guard). */
+    baseContents?: Map<string, string>;
     topologyChanged?: boolean;
 }
 
@@ -458,12 +591,37 @@ export async function batchSemanticEdit(
         editsByFile.set(resolved, arr);
     }
 
+    // 1b. Same file under two spellings ("src/Foo.ts" + "src/foo.ts") on a
+    // case-insensitive volume would be read and written twice — the second
+    // write silently discarding the first edit. Detect by inode and reject.
+    const byInode = new Map<string, string>();
+    const caseInsensitiveFs = process.platform === "win32" || process.platform === "darwin";
+    for (const filePath of editsByFile.keys()) {
+        let id: string;
+        try {
+            const st = fs.statSync(filePath, { bigint: true });
+            // ino 0 = the filesystem exposes no file ids (FAT, some shares): compare paths.
+            id = st.ino !== 0n
+                ? `ino:${st.dev}:${st.ino}`
+                : `path:${caseInsensitiveFs ? filePath.toLowerCase() : filePath}`;
+        } catch { continue; }
+        const prior = byInode.get(id);
+        if (prior !== undefined) {
+            return {
+                success: false, editCount: edits.length, fileCount: editsByFile.size, files: [],
+                error: `The same file is referenced under two spellings: "${path.relative(projectRoot, prior)}" and ` +
+                    `"${path.relative(projectRoot, filePath)}". Use one spelling for every edit to this file.`,
+            };
+        }
+        byInode.set(id, filePath);
+    }
+
     // 2. Build VFS in RAM (capture original content once, share reference)
     const vfs = new Map<string, string>();
     const originalVfs = new Map<string, string>();
     for (const filePath of editsByFile.keys()) {
         try {
-            const code = readSource(filePath);
+            const code = readSourceForEdit(filePath);
             vfs.set(filePath, code);
             originalVfs.set(filePath, code);
         } catch (err) {
@@ -494,6 +652,8 @@ export async function batchSemanticEdit(
         let virtualCode = vfs.get(filePath)!;
         const parseResult = await parser.parse(filePath, virtualCode);
         const ext = path.extname(filePath).toLowerCase();
+        const fileEol = detectEol(virtualCode);
+        const fileLanguage = detectLanguage(filePath) ?? undefined;
 
         // ─── PHASE A: Cluster edits by AST node identity (startIndex) ───
         const chunkGroups = new Map<number, { chunk: ParsedChunk; edits: BatchEditOp[] }>();
@@ -516,19 +676,25 @@ export async function batchSemanticEdit(
                 return {
                     success: false, editCount: edits.length, fileCount: editsByFile.size, files: [],
                     error: `Ambiguous batch edit: ${allMatches.length} symbols named "${edit.symbol}" in ${edit.path}. ` +
-                           `Use nreki_navigate action:"outline" to identify exact targets, then edit individually.`,
+                           `Name the one you mean as Class.${edit.symbol}, or use nreki_navigate action:"outline".`,
                 };
             }
 
             const chunk = allMatches[0] || findChunkBySymbol(parseResult.chunks, edit.symbol);
+            // `Class.method` resolved: key the edit by the chunk's own name, as the
+            // blast-radius maps below (and handleBatchEdit's lookup) do.
+            if (chunk && splitQualifiedName(edit.symbol)) edit.symbol = chunk.symbolName || extractName(chunk);
             if (!chunk) {
                 const available = parseResult.chunks
                     .map(c => c.symbolName || extractName(c))
                     .filter(Boolean)
                     .join(", ");
+                const caseHint = suggestSymbolCase(parseResult.chunks, edit.symbol);
                 return {
                     success: false, editCount: edits.length, fileCount: editsByFile.size, files: [],
-                    error: `Symbol "${edit.symbol}" not found in ${edit.path}. Available: ${available}`,
+                    error: caseHint.length > 0
+                        ? `Symbol "${edit.symbol}" not found in ${edit.path}. Did you mean "${caseHint[0]}"? Available: ${available}`
+                        : `Symbol "${edit.symbol}" not found in ${edit.path}. Available: ${available}`,
                 };
             }
 
@@ -620,6 +786,12 @@ export async function batchSemanticEdit(
 
             // Isolated string — the "Limbo". Each patch mutates this, not virtualCode.
             let currentRawCode = chunk.rawCode;
+            // replace/insert (always the only edit of its symbol, see B.2) is spliced
+            // in the FILE instead, exactly as a single `edit` does. Inside the
+            // detached chunk string the indentation around the symbol is unknown, so
+            // a nested symbol's new lines went to column 0 — mis-formatted in brace
+            // languages, and in Python a body that is no longer inside its `def`.
+            let splicedInFile: string | null = null;
 
             for (const edit of group.edits) {
                 // LEY 4 / guillotine (per-payload).
@@ -643,6 +815,30 @@ export async function batchSemanticEdit(
                 }
 
                 try {
+                    if (batchMode !== "patch") {
+                        // Chunks are processed bottom-up, so the text at and before
+                        // this chunk is still the original and its indices hold.
+                        const inFile = applySemanticSplice(
+                            virtualCode,
+                            {
+                                startIndex: chunk.startIndex,
+                                endIndex: chunk.endIndex,
+                                rawCode: chunk.rawCode,
+                                symbolName: symName,
+                                startLine: chunk.startLine,
+                                language: fileLanguage,
+                            },
+                            edit.new_code,
+                            batchMode as EditMode,
+                            undefined,
+                            undefined,
+                            fileEol,
+                        );
+                        virtualCode = inFile.newContent;
+                        splicedInFile = inFile.newRawCode;
+                        continue;
+                    }
+
                     // Fake target: treat currentRawCode as if it were the whole file.
                     // applySemanticSplice's ±500-byte AST offset check is bypassed because
                     // content.substring(0, currentRawCode.length) === currentRawCode trivially.
@@ -661,6 +857,7 @@ export async function batchSemanticEdit(
                         batchMode as EditMode,
                         edit.search_text,
                         edit.replace_text,
+                        fileEol,
                     );
 
                     currentRawCode = spliceRes.newContent;
@@ -672,6 +869,11 @@ export async function batchSemanticEdit(
                                `(Note: multiple patches to the same symbol are applied in array order; each patch sees mutations from preceding patches.) No files modified.`,
                     };
                 }
+            }
+
+            if (splicedInFile !== null) {
+                newRawCodes.set(key, splicedInFile);
+                continue;
             }
 
             // ─── PHASE D: Macro-splice — inject the final mutated chunk into virtualCode ───
@@ -701,27 +903,22 @@ export async function batchSemanticEdit(
             };
         }
 
+        // ─── ANTI-SWEEP SHIELD (BATCH, all languages, differential) ───
+        const addedSuppressions = findNewSuppressions(filePath, originalVfs.get(filePath) ?? "", virtualContent);
+        if (addedSuppressions.length > 0) {
+            return {
+                success: false,
+                editCount: edits.length,
+                fileCount: editsByFile.size,
+                files: [],
+                error: `TRANSACTION ABORTED - ${antiSweepMessage(path.relative(projectRoot, filePath), addedSuppressions)}`,
+            };
+        }
+
         // ─── NREKI L1.5: REACT/JSX SEMANTIC SHIELD (BATCH) ───
         if (language === "typescript" || language === "javascript") {
             try {
                 const { reactEslintSidecar } = await import("./eslint-sidecar.js");
-
-                // Anti-Sweep sobre cada payload de las ops de este archivo
-                const fileOps = editsByFile.get(filePath) || [];
-                for (const op of fileOps) {
-                    const payloads = [op.new_code, op.replace_text].filter(Boolean) as string[];
-                    for (const payload of payloads) {
-                        if (reactEslintSidecar.checkAntiSweep(payload)) {
-                            return {
-                                success: false,
-                                editCount: edits.length,
-                                fileCount: editsByFile.size,
-                                files: [],
-                                error: `TRANSACTION ABORTED - Blocked by Anti-Sweep Shield in ${path.relative(projectRoot, filePath)}: ESLint suppression comments for React critical rules are forbidden. Fix the underlying architectural flaw.`
-                            };
-                        }
-                    }
-                }
 
                 const lintErrors = await reactEslintSidecar.validate(virtualContent, filePath);
 
@@ -751,11 +948,24 @@ export async function batchSemanticEdit(
         const tmpFiles = new Map<string, string>();
         const renamedFiles: string[] = [];
 
+        // NREKI-INT-03: abort before touching anything if a file changed on disk
+        // (IDE save, formatter, another agent) while the batch was validated.
+        const conflicted = [...vfs.keys()].filter(fp => !diskStillMatches(fp, originalVfs.get(fp) ?? ""));
+        if (conflicted.length > 0) {
+            return {
+                success: false, editCount: edits.length, fileCount: editsByFile.size, files: [],
+                error: `CONFLICT: ${conflicted.map(fp => path.relative(projectRoot, fp)).join(", ")} changed on disk ` +
+                    `while NREKI was validating the batch. Nothing was written. Re-read and resend the full batch.`,
+            };
+        }
+
         try {
             // PHASE 1: PREPARE — Mandatory backups + entropy-named temps
             for (const [filePath, virtualContent] of vfs.entries()) {
                 const entropy = crypto.randomBytes(4).toString("hex");
                 const tmpPath = `${filePath}.nreki-${Date.now()}-${entropy}.tmp`;
+                // NREKI-INT-07: keep the original BOM and permission bits.
+                const traits = captureFileTraits(filePath);
 
                 // Backup is MANDATORY for rollback safety.
                 // If backup fails (disk full), abort BEFORE any rename.
@@ -770,7 +980,8 @@ export async function batchSemanticEdit(
                     }
                 }
 
-                fs.writeFileSync(tmpPath, virtualContent, "utf-8");
+                fs.writeFileSync(tmpPath, withTraits(virtualContent, traits), "utf-8");
+                applyModeTraits(tmpPath, traits);
                 tmpFiles.set(filePath, tmpPath);
             }
 
@@ -845,6 +1056,7 @@ export async function batchSemanticEdit(
         oldRawCodes,
         newRawCodes,
         vfs,
+        baseContents: originalVfs,
         topologyChanged,
     };
 }
@@ -873,10 +1085,10 @@ export async function semanticEdit(
     searchText?: string,
     replaceText?: string,
 ): Promise<EditResult> {
-    // Read file
+    // Read file (strict: refuses binary/UTF-16/legacy encodings it would corrupt on write)
     let content: string;
     try {
-        content = readSource(filePath);
+        content = readSourceForEdit(filePath);
     } catch (err) {
         return {
             success: false,
@@ -920,6 +1132,15 @@ export async function semanticEdit(
         if (name) allNames.push(`${name} (L${chunk.startLine}-L${chunk.endLine})`);
         if (name === symbolName) {
             matches.push({ chunk, name });
+        }
+    }
+
+    // `Class.method` (also ::, #, ->): the member inside that container.
+    if (matches.length === 0) {
+        const q = findQualifiedChunk(parseResult.chunks, symbolName, c => c.symbolName || extractName(c));
+        if (q.chunk) {
+            symbolName = q.chunk.symbolName || extractName(q.chunk);
+            matches.push({ chunk: q.chunk, name: symbolName });
         }
     }
 
@@ -1005,7 +1226,7 @@ export async function semanticEdit(
             syntaxValid: false,
             error:
                 `Multiple symbols named "${symbolName}" found at: ${locs}. ` +
-                `Use nreki_navigate action:"definition" to identify the correct one.`,
+                `Name the one you mean as Class.${symbolName}, or use nreki_navigate action:"definition".`,
         };
     }
 
@@ -1047,11 +1268,13 @@ export async function semanticEdit(
                 rawCode: chunk.rawCode,
                 symbolName: chunk.symbolName || extractName(chunk),
                 startLine: chunk.startLine,
+                language: detectLanguage(filePath) ?? undefined,
             },
             newCode,
             mode,
             searchText,
             replaceText,
+            detectEol(content),
         );
         newContent = spliceRes.newContent;
     } catch (err) {
@@ -1107,25 +1330,31 @@ export async function semanticEdit(
         };
     }
 
+    // ─── ANTI-SWEEP SHIELD (all languages, differential) ───
+    // NREKI-GAR-03: only checked React eslint-disable before, payload-only, TS/JS
+    // only. Now blocks any NEWLY ADDED @ts-ignore/@ts-nocheck/@ts-expect-error,
+    // blanket eslint-disable, # type: ignore, # pyright: ignore, # noqa —
+    // without tripping on suppressions that already existed in the file.
+    const addedSuppressions = findNewSuppressions(filePath, content, newContent);
+    if (addedSuppressions.length > 0) {
+        const payload = newCode ?? spliceRes.newRawCode ?? "";
+        return {
+            success: false,
+            filePath,
+            symbolName,
+            oldLines: rawCode.split("\n").length,
+            newLines: payload.split("\n").length,
+            tokensAvoided: 0,
+            syntaxValid: true,
+            error: antiSweepMessage(path.relative(projectRoot, filePath), addedSuppressions),
+        };
+    }
+
     // ─── NREKI L1.5: REACT/JSX SEMANTIC SHIELD ───
     if (language === "typescript" || language === "javascript") {
         try {
             const { reactEslintSidecar } = await import("./eslint-sidecar.js");
-
-            // Anti-Sweep check SOLO sobre el payload nuevo (no archivo legacy completo)
             const payload = newCode ?? spliceRes.newRawCode ?? "";
-            if (reactEslintSidecar.checkAntiSweep(payload)) {
-                return {
-                    success: false,
-                    filePath,
-                    symbolName,
-                    oldLines: rawCode.split("\n").length,
-                    newLines: payload.split("\n").length,
-                    tokensAvoided: 0,
-                    syntaxValid: true,
-                    error: `Blocked by Anti-Sweep Shield: ESLint suppression comments (eslint-disable) for React critical rules are forbidden. Fix the underlying architectural flaw.`
-                };
-            }
 
             const lintErrors = await reactEslintSidecar.validate(newContent, filePath);
 
@@ -1153,16 +1382,24 @@ export async function semanticEdit(
 
     // Save backup and write to disk ONLY if not dry run
     if (!dryRun) {
+        // NREKI-INT-03: never clobber a change made by the user/IDE/another agent
+        // while this edit was being validated.
+        if (!diskStillMatches(filePath, content)) {
+            return {
+                success: false, filePath, symbolName,
+                oldLines: rawCode.split("\n").length, newLines: 0, tokensAvoided: 0, syntaxValid: true,
+                error: `CONFLICT: ${path.relative(projectRoot, filePath)} changed on disk while NREKI was validating the edit. ` +
+                    `Nothing was written. Re-read the file and retry.`,
+            };
+        }
         try {
             saveBackup(projectRoot, filePath);
         } catch {
             // Non-fatal: don't block the edit if backup fails
         }
-        // Atomic write via temp+rename. writeFileSync is NOT atomic —
-        // OOM/crash mid-write truncates the file to 0 bytes.
-        const tmpPath = `${filePath}.nreki-${crypto.randomBytes(4).toString("hex")}.tmp`;
-        fs.writeFileSync(tmpPath, newContent, "utf-8");
-        fs.renameSync(tmpPath, filePath);
+        // Atomic write via temp+rename (writeFileSync alone is NOT atomic —
+        // OOM/crash mid-write truncates the file), preserving BOM + mode bits.
+        atomicWritePreservingTraits(filePath, newContent);
     }
 
     // Tokens avoided: without NREKI Claude reads full file + sends old symbol code.
@@ -1198,6 +1435,7 @@ export async function semanticEdit(
         oldRawCode: rawCode,
         newRawCode: spliceRes.newRawCode,
         newContent,
+        baseContent: content,
         topologyChanged,
     };
 }

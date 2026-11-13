@@ -95,7 +95,7 @@ export async function runFastGrep(
     driver?: FastGrepDriver,
 ): Promise<RetrievalResult> {
     const startedAt = Date.now();
-    const drv = driver ?? new NrekiEngineFastGrepDriver();
+    const drv: FastGrepDriver = driver ?? new NrekiEngineFastGrepDriver();
 
     try {
         await drv.prepare(repoRoot);

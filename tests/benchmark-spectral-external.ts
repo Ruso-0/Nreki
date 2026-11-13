@@ -3,6 +3,10 @@ import * as path from "path";
 import * as fs from "fs";
 import { SpectralTopologist, SpectralMath } from "../src/kernel/spectral-topology.js";
 
+/** λ₂ for printing: analyzeTopology leaves it undefined above 25,000 nodes. */
+const fmtL2 = (v: number | undefined, digits: number): string => v === undefined ? "n/a (N>25000)" : v.toFixed(digits);
+
+
 const externalPath = process.argv[2];
 if (!externalPath) { console.error("Usage: tsx tests/benchmark-spectral-external.ts /path/to/project"); process.exit(1); }
 
@@ -40,6 +44,6 @@ const fiedlerMs = performance.now() - startFiedler;
 
 console.log(`\n--- Results ---`);
 console.log(`Nodes: ${nodes.size} | Edges: ${edges.length} | Sparse edges: ${sparseEdges.length}`);
-console.log(`Fiedler (λ₂): ${fiedler.toFixed(6)} | Volume: ${volume}`);
+console.log(`Fiedler (λ₂): ${fmtL2(fiedler, 6)} | Volume: ${volume}`);
 console.log(`Extract: ${extractMs.toFixed(1)}ms | Fiedler (sparse): ${fiedlerMs.toFixed(1)}ms`);
 console.log(`RAM delta: ${((memAfter - memBefore) / 1024).toFixed(0)}KB`);

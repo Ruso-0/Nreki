@@ -5,6 +5,12 @@ import * as path from "path";
 import * as os from "os";
 import { SpectralMath, SpectralTopologist, SparseEdge } from "../src/kernel/spectral-topology.js";
 
+/** λ₂, which analyzeTopology only omits above 25,000 nodes (the graphs here are tiny). */
+function lambda2(r: { fiedler?: number }): number {
+    if (r.fiedler === undefined) throw new Error("fiedler (λ₂) unexpectedly undefined");
+    return r.fiedler;
+}
+
 describe("SpectralMath.analyzeTopology", () => {
 
     it("should return 0 for single node", () => {
@@ -44,8 +50,8 @@ describe("SpectralMath.analyzeTopology", () => {
         ];
         const r1 = SpectralMath.analyzeTopology(3, connected);
         const r2 = SpectralMath.analyzeTopology(3, weakened);
-        const phi1 = r1.fiedler / 3;
-        const phi2 = r2.fiedler / 3;
+        const phi1 = lambda2(r1) / 3;
+        const phi2 = lambda2(r2) / 3;
         expect(phi1).toBeGreaterThan(phi2);
     });
 
@@ -73,8 +79,8 @@ describe("SpectralMath.analyzeTopology", () => {
     it("should reflect weight differences", () => {
         const strong: SparseEdge[] = [{ u: 0, v: 1, weight: 1.0 }];
         const weak: SparseEdge[] = [{ u: 0, v: 1, weight: 0.5 }];
-        expect(SpectralMath.analyzeTopology(2, strong).fiedler).toBeGreaterThan(
-            SpectralMath.analyzeTopology(2, weak).fiedler
+        expect(lambda2(SpectralMath.analyzeTopology(2, strong))).toBeGreaterThan(
+            lambda2(SpectralMath.analyzeTopology(2, weak))
         );
     });
 
@@ -110,7 +116,7 @@ describe("SpectralMath.analyzeTopology", () => {
         expect(result.v2).toBeDefined();
         expect(result.v2!.length).toBe(4);
         expect(result.lambda3).toBeDefined();
-        expect(result.lambda3!).toBeGreaterThanOrEqual(result.fiedler);
+        expect(result.lambda3!).toBeGreaterThanOrEqual(lambda2(result));
         expect(result.v3).toBeDefined();
         expect(result.v3!.length).toBe(4);
 
@@ -306,7 +312,7 @@ describe("SpectralTopologist integration", () => {
         }
         const post = SpectralTopologist.analyze(programPost, targetPost);
 
-        expect(pre.fiedler).toBeGreaterThan(post.fiedler);
+        expect(lambda2(pre)).toBeGreaterThan(lambda2(post));
         expect(pre.volume).toBeGreaterThan(post.volume);
     });
 

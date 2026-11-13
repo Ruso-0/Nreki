@@ -6,6 +6,8 @@
 
 import fs from "fs";
 import path from "path";
+import { quarantineFile, signState, verifyState } from "../utils/trust.js";
+import { memberName } from "../utils/qualified-name.js";
 
 /**
  * Patch 7 (v10.6.1): superset of params the enforcer inspects across
@@ -37,6 +39,11 @@ interface FilePassport {
     focusedSymbols: Set<string>;
 }
 
+/** Read `redeem`, edit `RecoveryCodes.redeem` (or the other way round): the same symbol. */
+function sawSymbol(pass: FilePassport, symbol: string): boolean {
+    return pass.focusedSymbols.has(symbol) || pass.focusedSymbols.has(memberName(symbol));
+}
+
 interface EnforcerState {
     files: Record<string, { outlined: boolean; rawRead: boolean; focusedSymbols: string[] }>;
 }
@@ -55,10 +62,18 @@ export class CognitiveEnforcer {
     private loadState() {
         try {
             if (fs.existsSync(this.stateFile)) {
-                const data = JSON.parse(fs.readFileSync(this.stateFile, "utf-8"), (k, v) => {
+                const parsed = JSON.parse(fs.readFileSync(this.stateFile, "utf-8"), (k, v) => {
                     if (k === "__proto__" || k === "constructor" || k === "prototype") return undefined;
                     return v;
-                }) as EnforcerState;
+                }) as EnforcerState & { tag?: unknown };
+                const { tag, ...data } = parsed;
+                // A passport file shipped with a repo would pre-grant "already read"
+                // for any file and switch off the blind-edit rule (S-04): only a
+                // state signed on this machine is loaded (utils/trust.ts).
+                if (!verifyState("enforcer", JSON.stringify(data), tag)) {
+                    quarantineFile(this.stateFile);
+                    return;
+                }
                 if (data.files) {
                     for (const [filePath, p] of Object.entries(data.files)) {
                         this.passports.set(filePath, {
@@ -88,7 +103,7 @@ export class CognitiveEnforcer {
                 }
             }
             const tmpFile = `${this.stateFile}.tmp`;
-            fs.writeFileSync(tmpFile, JSON.stringify(data), "utf-8");
+            fs.writeFileSync(tmpFile, JSON.stringify({ ...data, tag: signState("enforcer", JSON.stringify(data)) }), "utf-8");
             fs.renameSync(tmpFile, this.stateFile);
         } catch {}
     }
@@ -112,6 +127,19 @@ export class CognitiveEnforcer {
         } catch { return 0; }
     }
 
+    /**
+     * LEY 0: a file under 1 KB, or under 100 lines and 50 KB, fits in one read,
+     * so the blind-edit rule does not apply. Shared by edit and batch_edit:
+     * batch_edit had no such bypass and demanded a compress focus on a 7-line
+     * file (one extra turn on the path AGENTS.md tells agents to use), while
+     * edit let through a 200 KB file as long as it had few lines (minified or
+     * generated code). 50 KB is the bound the blind-insert rule already uses.
+     */
+    private isSmallFile(absPath: string, size: number): boolean {
+        if (size < 1024) return true;
+        if (size >= 50000) return false; // also keeps countLines from reading huge files
+        return this.countLines(absPath) < 100;
+    }
 
     // Patch 7 (v10.6.1): edit shape pulled from EnforcerInput so the enforcer
     // stays internally self-consistent without importing semantic-edit types.
@@ -139,8 +167,11 @@ export class CognitiveEnforcer {
         if (edit.symbol && edit.path) {
             try {
                 const p = path.resolve(this.projectRoot, edit.path).replace(/\\/g, "/");
+                // Same small-file bypass as a single edit. A missing file throws
+                // here and stays permissive (the edit itself reports it).
+                if (this.isSmallFile(p, fs.statSync(p).size)) return { blocked: false };
                 const pass = this.getPassport(p);
-                if (!pass.focusedSymbols.has(edit.symbol) && !pass.rawRead) {
+                if (!sawSymbol(pass, edit.symbol) && !pass.rawRead) {
                     return {
                         blocked: true,
                         errorText: `Blocked: Blind batch_edit on "${edit.symbol}" in ${edit.path}. Run compress focus:"${edit.symbol}" first.`,
@@ -175,11 +206,7 @@ export class CognitiveEnforcer {
         } catch { return { blocked: false }; }
 
         // LEY 0: Fast bypass
-        if (size < 1024) return { blocked: false };
-
-        // OOM Guard: >500KB — NEVER readFileSync, assume >100 lines
-        const lines = size <= 500000 ? this.countLines(absPath) : Infinity;
-        if (lines < 100) return { blocked: false };
+        if (this.isSmallFile(absPath, size)) return { blocked: false };
 
         const passport = this.getPassport(absPath);
 
@@ -189,50 +216,13 @@ export class CognitiveEnforcer {
             return { blocked: false, penalty: 0.3 };
         }
 
-        // LEY 1: Raw read BLOQUEADO SIEMPRE (para lenguajes con AST).
-        // LEY 0.5 (v10.11.1): Exención quirúrgica para prosa/configs sin AST.
-        if (action === "read") {
-            const ext = path.extname(absPath).toLowerCase();
-            const SUPPORTED_AST = new Set([
-                ".ts", ".tsx", ".mts", ".cts",
-                ".js", ".jsx", ".mjs", ".cjs",
-                ".py", ".go",
-                ".css", ".json", ".html",
-                ".kt", ".kts",
-                ".java",
-                ".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx",
-                ".c", ".h"
-            ]);
-
-            if (!SUPPORTED_AST.has(ext)) {
-                // No hay AST (MD/YAML/TOML/SQL/Dockerfile/etc.). Forzar compress
-                // causaría deadlock ineludible. TokenMonitor es guillotina secundaria.
-                return { blocked: false };
-            }
-            return { blocked: true, errorText: `Blocked: file is >100 lines. Raw read would burn context budget.\n` +
-                `Required: focused compression. Emit:\n` +
-                `nreki_code action:"compress" path:"${params.path}" focus:"<symbol_name_from_outline>"\n` +
-                `Run nreki_navigate action:"outline" path:"${params.path}" first to find symbol names.` };
-        }
-
-        // LEY 2: Compress sin focus BLOQUEADO. Sin excepción de level:"light".
-        if (action === "compress") {
-            if (!params.focus) {
-                if (!passport.outlined && !passport.rawRead) {
-                    return { blocked: true, errorText: `Blocked: file is >100 lines. Compression requires a symbol focus.\n` +
-                        `Required: outline before focused compression. Emit:\n` +
-                        `nreki_navigate action:"outline" path:"${params.path}"\n` +
-                        `Then emit:\n` +
-                        `nreki_code action:"compress" path:"${params.path}" focus:"<symbol_name_from_outline>".` };
-                } else {
-                    return { blocked: true, errorText: `Blocked: monolithic compression forbidden on >100 line files.\n` +
-                        `Required: focused compression. Emit:\n` +
-                        `nreki_code action:"compress" path:"${params.path}" focus:"<symbol_name_from_outline>"\n` +
-                        `Run nreki_navigate action:"outline" path:"${params.path}" first to find symbol names.` };
-                }
-            }
-            return { blocked: false };
-        }
+        // LEYES 1 y 2 (read / compress sin focus) retiradas en v12.0.1: bloqueaban
+        // TODO read y todo compress sin focus en archivos de código de 100+ líneas,
+        // así que el contrato de read (verbatim por defecto; AUTO-SHIELD comprimido
+        // por encima de 12k tokens, en handleRead) era inalcanzable por MCP, y cada
+        // bloqueo costaba 1–2 turnos (outline → compress) para leer lo mismo.
+        // El tamaño lo controla handleRead; aquí solo queda la regla de seguridad.
+        if (action === "read" || action === "compress") return { blocked: false };
 
         // LEY 3: Edit a ciegas BLOQUEADO. Visa Dorada (rawRead) da inmunidad.
         if (action === "edit" && params.symbol) {
@@ -246,12 +236,28 @@ export class CognitiveEnforcer {
                 }
                 return { blocked: false };
             }
-            if (!passport.focusedSymbols.has(params.symbol) && !passport.rawRead) {
+            if (!sawSymbol(passport, params.symbol) && !passport.rawRead) {
                 return { blocked: true, errorText: `Blocked: Blind edit. Run compress focus:"${params.symbol}" first.` };
             }
         }
 
         return { blocked: false };
+    }
+
+    /** The agent received the whole file verbatim (handleRead): its symbols are not blind. */
+    public registerRawRead(absPath: string): void {
+        const p = path.resolve(this.projectRoot, absPath).replace(/\\/g, "/");
+        this.getPassport(p).rawRead = true;
+        this.getPassport(p).outlined = true;
+        this.saveState();
+    }
+
+    /** Symbols whose full body was shown (e.g. outline auto-expansion) count as focused. */
+    public registerFocusedSymbols(absPath: string, symbols: ReadonlyArray<string>): void {
+        if (symbols.length === 0) return;
+        const pass = this.getPassport(path.resolve(this.projectRoot, absPath).replace(/\\/g, "/"));
+        for (const s of symbols) pass.focusedSymbols.add(s);
+        this.saveState();
     }
 
     // LEY 5: Amnesia Quirúrgica
@@ -267,12 +273,16 @@ export class CognitiveEnforcer {
                     const p = path.resolve(this.projectRoot, params.path).replace(/\\/g, "/");
                     this.getPassport(p).rawRead = true;
                     changed = true;
-                } else if (action === "compress" && params.focus && params.path) {
+                } else if ((action === "compress" || action === "read") && params.focus && params.path) {
+                    // read + focus is served as compress focus (handlers/code/read.ts).
                     const p = path.resolve(this.projectRoot, params.path).replace(/\\/g, "/");
                     // v10.13.1: parse CSV — "A, B, C" registra los tres símbolos separados.
                     for (const raw of params.focus.split(",")) {
                         const clean = raw.trim();
-                        if (clean) this.getPassport(p).focusedSymbols.add(clean);
+                        if (clean) {
+                            this.getPassport(p).focusedSymbols.add(clean);
+                            this.getPassport(p).focusedSymbols.add(memberName(clean));
+                        }
                     }
                     this.getPassport(p).outlined = true;
                     changed = true;

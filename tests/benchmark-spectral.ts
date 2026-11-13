@@ -3,6 +3,10 @@ import * as path from "path";
 import * as fs from "fs";
 import { SpectralTopologist, SpectralMath } from "../src/kernel/spectral-topology.js";
 
+/** λ₂ for printing: analyzeTopology leaves it undefined above 25,000 nodes. */
+const fmtL2 = (v: number | undefined, digits: number): string => v === undefined ? "n/a (N>25000)" : v.toFixed(digits);
+
+
 const projectRoot = path.resolve(process.cwd());
 const tsConfigPath = path.join(projectRoot, "tsconfig.json");
 
@@ -33,5 +37,5 @@ const { fiedler, volume } = SpectralMath.analyzeTopology(N, sparseEdges);
 const fiedlerMs = performance.now() - startFiedler;
 
 console.log(`\nNodes: ${nodes.size} | Edges: ${edges.length}`);
-console.log(`Fiedler (λ₂): ${fiedler.toFixed(6)} | Volume: ${volume}`);
+console.log(`Fiedler (λ₂): ${fmtL2(fiedler, 6)} | Volume: ${volume}`);
 console.log(`Extract: ${extractMs.toFixed(1)}ms | Fiedler: ${fiedlerMs.toFixed(1)}ms`);

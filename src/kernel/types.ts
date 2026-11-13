@@ -5,6 +5,13 @@ export interface NrekiStructuredError {
 
 export interface NrekiEdit {
     targetFile: string; proposedContent: string | null;
+    /**
+     * Disk content (BOM-stripped) the edit was computed from; null = file did
+     * not exist. commitToDisk() aborts with NrekiConflictError if the file
+     * changed on disk in the meantime (NREKI-INT-03). Omitted = captured at
+     * intercept time.
+     */
+    baseContent?: string | null;
 }
 
 export interface TypeRegression {
@@ -22,6 +29,32 @@ export interface NrekiInterceptResult {
     postContracts?: Map<string, Map<string, string>>;
     warnings?: string[];
     architectureDiff?: string;
+    /** LSP languageIds whose semantic check did NOT run (sidecar offline / failed). */
+    degradedLanguages?: string[];
+    /** Per LSP language: the dependents checked together with the edited files. */
+    lspCoverage?: LspDependentsCoverage[];
+    /**
+     * File mode, accepted without auto-heal: the edited TypeScript files emit the
+     * same .d.ts and the program holds the same files as before, so no file beyond
+     * the ones checked can type-check differently. false: the .d.ts changed.
+     * Absent: not compared.
+     */
+    exportedApiUnchanged?: boolean;
+    /** The edit touched global declarations (script file, `declare global`, `declare module "x"`): files that never import the edited ones see it. */
+    declaresGlobals?: boolean;
+}
+
+/**
+ * An LSP server only reports the documents that are open. Besides the edited
+ * files the kernel opens their dependents (same package, importers): this is
+ * how many it opened and how many it left out.
+ */
+export interface LspDependentsCoverage {
+    languageId: string;
+    /** Dependents opened and checked with the edit. */
+    checked: number;
+    /** Dependents known but beyond the per-edit cap: NOT checked. */
+    skipped: number;
 }
 
 export type NrekiMode = "auto" | "syntax" | "file" | "project" | "hologram";

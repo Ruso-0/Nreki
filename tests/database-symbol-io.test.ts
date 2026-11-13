@@ -33,9 +33,8 @@ describe("symbol_io ledger (v10.20.0)", () => {
             "func",
             1,
             1,
-            new Float32Array(0),
-            0,
-            10,
+            0,   // startIndex (a leftover v10 `new Float32Array(0)` sat here, shifting symbolName)
+            10,  // endIndex
             symbolName,
         );
     }

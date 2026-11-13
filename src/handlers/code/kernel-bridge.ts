@@ -8,8 +8,9 @@ import path from "path";
 import type { McpToolResponse, RouterDependencies } from "../../router.js";
 import type { NrekiInterceptResult, TypeRegression } from "../../kernel/nreki-kernel.js";
 import type { NrekiKernel } from "../../kernel/nreki-kernel.js";
-import { saveBackup } from "../../undo.js";
+import { saveBackup, snapshotBackups } from "../../undo.js";
 import { logger } from "../../utils/logger.js";
+import { formatErrorList } from "../../kernel/error-format.js";
 
 // ─── Domain-specific helper (NOT shared) ────────────────────────────
 
@@ -92,21 +93,11 @@ export async function processKernelResult(
     let ttrdFeedback = "";
 
     if (!kernelResult.safe) {
-        const agentErrors = kernelResult.structured?.filter(e =>
-            !e.file.match(/[/\\]node_modules[/\\]/)
-        ) || [];
-
-        if (agentErrors.length === 0) {
-            // All errors are in node_modules — safe to commit
-            logger.warn(
-                `${kernelResult.structured?.length} error(s) in node_modules ignored.`
-            );
-            for (const fp of committedFiles) {
-                try { saveBackup(deps.engine.getProjectRoot(), fp); } catch {}
-            }
-            await kernel.commitToDisk();
-            return { committed: true, ttrdFeedback };
-        }
+        // NREKI-INT-01: node_modules diagnostics are filtered inside the compiler
+        // wrapper, BEFORE the verdict. By the time safe === false arrives here the
+        // kernel has already rolled the transaction back, so "committing anyway"
+        // wrote zero bytes while answering [OK]. A rejection is always a rejection.
+        const agentErrors = kernelResult.structured ?? [];
 
         // Real errors in agent code — record + rollback
         if (deps.chronos) {
@@ -121,10 +112,16 @@ export async function processKernelResult(
 
         await kernel.rollbackAll();
 
-        const structuredInfo = "\n\nSemantic errors:\n" +
-            agentErrors.map(e =>
-                `  \u2192 ${path.relative(deps.engine.getProjectRoot(), e.file)} (${e.line},${e.column}): ${e.code} - ${e.message}`
-            ).join("\n");
+        // Bounded: the edited files first, the rest summarised (see error-format.ts).
+        const projectRoot = deps.engine.getProjectRoot();
+        const edited = new Set(committedFiles.map(f => kernel.resolvePosixPath(f)));
+        const structuredInfo = agentErrors.length > 0
+            ? `\n\nSemantic errors (${agentErrors.length}):\n` +
+                formatErrorList(agentErrors, {
+                    displayPath: (file) => path.relative(projectRoot, path.resolve(projectRoot, file)),
+                    isPrimary: (e) => edited.has(kernel.resolvePosixPath(e.file)),
+                })
+            : `\n\n${kernelResult.errorText ?? "Validation rejected the edit."}`;
 
         return {
             committed: false,
@@ -145,18 +142,24 @@ export async function processKernelResult(
     }
 
     // ─── Safe: backup → commit → TTRD ───
-    for (const fp of committedFiles) {
-        try { saveBackup(deps.engine.getProjectRoot(), fp); } catch {}
+    const root = deps.engine.getProjectRoot();
+    const healed = (kernelResult.healedFiles ?? []).map(hf => path.resolve(root, hf));
+    const backupTargets = [...committedFiles, ...healed];
+    // If the commit aborts (conflict / OS error), the previous backups come back:
+    // undo must still reach the state before the last SUCCESSFUL edit (I-03).
+    const previousBackups = snapshotBackups(root, backupTargets);
+    for (const fp of backupTargets) {
+        try { saveBackup(root, fp); } catch {}
     }
 
-    if (kernelResult.healedFiles) {
-        for (const hf of kernelResult.healedFiles) {
-            try { saveBackup(deps.engine.getProjectRoot(), path.resolve(deps.engine.getProjectRoot(), hf)); } catch {}
-            if (deps.chronos) deps.chronos.recordHeal(hf);
-        }
+    try {
+        await kernel.commitToDisk();
+    } catch (err) {
+        previousBackups.restore();
+        throw err;
     }
-
-    await kernel.commitToDisk();
+    // Only heals that actually reached disk count in the file history.
+    if (deps.chronos) for (const hf of kernelResult.healedFiles ?? []) deps.chronos.recordHeal(hf);
 
     if (deps.chronos && kernelResult.postContracts) {
         // Regression tracking

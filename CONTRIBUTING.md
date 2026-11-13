@@ -74,17 +74,13 @@ src/
 │       ├── ts-compiler-wrapper.ts  # TypeScript compiler (Strada pattern)
 │       ├── lsp-sidecar-base.ts     # JSON-RPC 2.0 LSP client (Go/Python)
 │       ├── go-sidecar.ts           # gopls integration
-│       ├── python-sidecar.ts       # pyright integration
-│       └── ts-corsa-sidecar.ts     # Project Corsa placeholder
+│       └── python-sidecar.ts       # pyright integration
 ├── hologram/
-│   ├── shadow-generator.ts  # .d.ts shadows for large projects
-│   ├── shadow-cache.ts      # LRU cache for shadow declarations
-│   └── harvester.ts         # Public API surface extractor
+│   └── shadow-generator.ts  # .d.ts shadows for large projects
 ├── hooks/
-│   └── preToolUse.ts        # Behavioral advisor hook
+│   └── cognitive-enforcer.ts # Blocks blind replace-mode edits
 ├── middleware/
 │   ├── circuit-breaker.ts   # Circuit breaker middleware wrapper
-│   ├── validator.ts         # AST validation middleware
 │   └── file-lock.ts         # File-level mutex for edits
 └── utils/
     ├── path-jail.ts         # Path traversal protection

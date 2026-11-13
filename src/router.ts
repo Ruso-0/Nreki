@@ -35,6 +35,7 @@ import type { ChronosMemory } from "./chronos-memory.js";
 // 1. IMPORT HANDLERS (Unidirectional)
 import * as nav from "./handlers/navigate.js";
 import { handleTypeGraph } from "./handlers/type-graph.js";
+import { handleContext } from "./handlers/context-pack.js";
 import * as code from "./handlers/code.js";
 import * as guard from "./handlers/guard.js";
 
@@ -161,7 +162,10 @@ export function applyContextHeartbeat(
         // ─── FÍSICA DE CONTEXTO: Token Drift Dinámico ───
         // La amnesia del LLM ocurre por volumen de tokens procesados, no por turnos.
         const usage = deps.engine.getUsageStats();
-        const currentDrift = usage.total_input + usage.total_output;
+        // Tokens NREKI put into the agent's context. Handlers log the same count
+        // as input and output, so summing both fired the heartbeat at half the
+        // configured threshold (T-02).
+        const currentDrift = usage.total_output;
 
         let lastInjectDrift = parseInt(
             deps.engine.getMetadata("nreki_plan_last_drift") || "0",
@@ -363,11 +367,12 @@ export async function handleNavigate(
         case "type_shape": response = await nav.handleTypeShape(params, deps); break;
         case "fast_grep": response = await nav.handleFastGrep(params, deps); break;
         case "type_graph": response = await handleTypeGraph(params, deps); break;
+        case "context": response = await handleContext(params, deps); break;
         default:
             return {
                 content: [{
                     type: "text" as const,
-                    text: `Unknown nreki_navigate action: "${action}". Valid actions: search, definition, references, outline, map, prepare_refactor, orphan_oracle, type_shape, fast_grep, type_graph.`,
+                    text: `Unknown nreki_navigate action: "${action}". Valid actions: context, search, definition, references, outline, map, prepare_refactor, orphan_oracle, type_shape, fast_grep, type_graph.`,
                 }],
                 isError: true,
             };

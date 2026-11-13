@@ -85,13 +85,13 @@ export interface MonitorConfig {
 
 /** Default Claude pricing (per 1M tokens). Approximate - update if Anthropic changes pricing. */
 const DEFAULT_PRICING = {
-    input: 3.0,   // $3.00 per 1M input tokens (Claude Sonnet 4.6, Apr 2026)
-    output: 15.0,  // $15.00 per 1M output tokens (Claude Sonnet 4.6, Apr 2026)
-    // Opus 4.6: $5/$25 per MTok. Haiku 4.5: $1/$5 per MTok.
+    input: 2.0,    // $2.00 per 1M input tokens (Claude Sonnet 5.5, Nov 2026)
+    output: 10.0,  // $10.00 per 1M output tokens (Claude Sonnet 5.5, Nov 2026)
+    // Opus 5.5: $4/$20 per MTok. Haiku 5.5: $0.10/$0.50 per MTok.
     // Detection threshold in guard.ts (#79) uses per-token cost.
     // Update these values if Anthropic changes tier pricing.
-    cacheRead: 0.3, // $0.30 per 1M cache read tokens
-    cacheWrite: 3.75, // $3.75 per 1M cache write tokens
+    cacheRead: 0.1,  // $0.10 per 1M cache read tokens
+    cacheWrite: 2.5, // $2.50 per 1M cache write tokens (5-minute TTL, 1.25×)
 };
 
 // ─── Monitor ─────────────────────────────────────────────────────────

@@ -53,29 +53,7 @@ export function Avatar({ url }) {
         expect(errors.some(e => e.code === "REACT-alt-text")).toBe(true);
     });
 
-    it("Anti-Sweep: detects line-comment eslint-disable on payload", async () => {
-        const payload = `// eslint-disable-next-line react-hooks/rules-of-hooks
-const [x] = useState(null);`;
-        expect(sidecar.checkAntiSweep(payload)).toBe(true);
-    });
-
-    it("Anti-Sweep: detects JSX block-comment eslint-disable on payload", async () => {
-        const payload = `{/* eslint-disable-next-line react/jsx-key */}
-{items.map(i => <span>{i}</span>)}`;
-        expect(sidecar.checkAntiSweep(payload)).toBe(true);
-    });
-
-    it("Anti-Sweep: detects comma-separated rule list bypass", async () => {
-        const payload = `// eslint-disable no-console, react-hooks/exhaustive-deps
-useEffect(() => {}, []);`;
-        expect(sidecar.checkAntiSweep(payload)).toBe(true);
-    });
-
-    it("Anti-Sweep: does NOT flag non-target rules", async () => {
-        const payload = `// eslint-disable-next-line no-console
-console.log("ok");`;
-        expect(sidecar.checkAntiSweep(payload)).toBe(false);
-    });
+    // Anti-Sweep for these rules: tests/audit-v12-utils.test.ts (suppression-guard).
 
     it("skips files without JSX or hook calls (quick-detect filter)", async () => {
         const code = `

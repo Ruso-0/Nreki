@@ -248,11 +248,14 @@ describe("Pin Memory - Disk Persistence", () => {
         const pinsPath = path.join(testDir, ".nreki", "pins.json");
         expect(fs.existsSync(pinsPath)).toBe(true);
 
-        // Read directly from disk - simulates a fresh process
+        // Read directly from disk - simulates a fresh process. Signed format
+        // since v12.0.1 (NREKI-SEC-06): { version: 2, pins, tag }.
         const rawData = JSON.parse(fs.readFileSync(pinsPath, "utf-8"));
-        expect(rawData).toHaveLength(2);
-        expect(rawData[0].text).toBe("Persisted rule 1");
-        expect(rawData[1].text).toBe("Persisted rule 2");
+        expect(rawData.version).toBe(2);
+        expect(rawData.tag).toMatch(/^[0-9a-f]{64}$/);
+        expect(rawData.pins).toHaveLength(2);
+        expect(rawData.pins[0].text).toBe("Persisted rule 1");
+        expect(rawData.pins[1].text).toBe("Persisted rule 2");
 
         // listPins re-reads from disk
         const pins = listPins(testDir);

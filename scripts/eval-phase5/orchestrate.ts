@@ -132,6 +132,8 @@ export interface PerRunnerAggregate {
     token_cost_mean: number;
     token_cost_p50: number;
     token_cost_p95: number;
+    token_cost_p99: number;
+    latency_ms_mean: number;
     latency_ms_p50: number;
     latency_ms_p95: number;
     latency_ms_p99: number;
@@ -467,6 +469,9 @@ export async function orchestrate(options: OrchestrateOptions): Promise<Aggregat
             token_cost_mean: mean(tokens),
             token_cost_p50: percentile(tokens, 50),
             token_cost_p95: percentile(tokens, 95),
+            // report.ts prints both; they were never computed (the table showed -Inf / NaNms).
+            token_cost_p99: percentile(tokens, 99),
+            latency_ms_mean: mean(latencies),
             latency_ms_p50: percentile(latencies, 50),
             latency_ms_p95: percentile(latencies, 95),
             latency_ms_p99: percentile(latencies, 99),

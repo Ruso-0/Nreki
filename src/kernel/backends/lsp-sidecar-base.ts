@@ -13,11 +13,37 @@
  * @author Jherson Eddie Tintaya Holguin (Ruso-0)
  */
 
-import { spawn, ChildProcess } from "child_process";
+import type { ChildProcess } from "child_process";
+import * as fs from "fs";
 import * as path from "path";
+import { pathToFileURL, fileURLToPath } from "url";
 import type { NrekiStructuredError } from "../nreki-kernel.js";
 import { toPosix as toPosixUtil } from "../../utils/to-posix.js";
+import { contentDigest } from "../../utils/file-traits.js";
+import { readSource } from "../../utils/read-source.js";
 import { logger } from "../../utils/logger.js";
+import { resolveExecutable, buildSafeChildEnv, spawnResolved, killProcessTree } from "../../utils/safe-exec.js";
+
+/**
+ * ENV WHITELIST: never propagate secrets (API keys, DB passwords, tokens) to
+ * third-party LSP binaries operating on untrusted code. Windows system
+ * variables (SystemRoot, LOCALAPPDATA, ...) are added by buildSafeChildEnv —
+ * without them Winsock fails to initialize and `go` cannot locate its build
+ * cache, silently disabling Layer 2 on Windows (NREKI-ROB-01).
+ */
+const SAFE_ENV_KEYS = [
+    "PATH", "HOME", "USER", "SHELL", "LANG", "LC_ALL", "LC_CTYPE",
+    "TMPDIR", "TEMP", "TMP", "TERM",
+    "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME",
+    // Go toolchain
+    "GOPATH", "GOROOT", "GOMODCACHE", "GOCACHE", "GOENV", "GOFLAGS", "GOPROXY",
+    "GONOSUMCHECK", "GONOSUMDB", "GOSUMDB", "GOPRIVATE", "GONOPROXY", "GOINSECURE",
+    "GOWORK", "GOTOOLCHAIN", "GOTMPDIR", "GOBIN",
+    // Python toolchain
+    "PYTHONPATH", "VIRTUAL_ENV", "CONDA_DEFAULT_ENV", "CONDA_PREFIX",
+    // Node (pyright-langserver runs on Node)
+    "NODE_PATH", "NODE_OPTIONS",
+];
 
 // ─── JSON-RPC 2.0 Types (strict, zero any) ─────────────────────────
 
@@ -90,6 +116,40 @@ interface RpcResponseError {
     message: string;
 }
 
+/** Our answer to a request the SERVER sent us. */
+interface RpcResponse {
+    jsonrpc: "2.0";
+    id: number | string;
+    result?: unknown;
+    error?: RpcResponseError;
+}
+
+/** What can arrive from the server: a response, a request (method + id) or a notification. */
+interface RpcIncoming {
+    id?: number | string | null;
+    method?: string;
+    params?: unknown;
+    result?: unknown;
+    error?: RpcResponseError;
+}
+
+const METHOD_NOT_FOUND = -32601;
+
+/** An error the server answered a request with; keeps the JSON-RPC code. */
+class LspRequestError extends Error {
+    constructor(message: string, public readonly code: number | undefined) {
+        super(message);
+    }
+}
+
+/** Server requests that only need an acknowledgement. */
+const ACKNOWLEDGED_SERVER_REQUESTS = new Set([
+    "client/registerCapability",
+    "client/unregisterCapability",
+    "workspace/diagnostic/refresh",
+    "window/workDoneProgress/create",
+]);
+
 // ─── LSP Diagnostic Types ───────────────────────────────────────────
 
 export interface LspPosition {
@@ -130,9 +190,29 @@ export abstract class LspSidecarBase {
     private buffer: Buffer = Buffer.alloc(0);
     private requestId = 0;
     private pendingRequests = new Map<number, PendingRequest>();
+    // All three maps are keyed by a CANONICAL path key (see pathKey/uriKey), not
+    // by raw URI: servers echo URIs back percent-encoded and normalized
+    // (`My%20Project`, `d%3A`), which never string-matched NREKI's own URIs
+    // and silently dropped every diagnostic (NREKI-INT-04).
     private diagnostics = new Map<string, LspDiagnostic[]>();
-    private openedFiles = new Set<string>();
+    private openedFiles = new Map<string, { uri: string; filePath: string }>();
     private docVersions = new Map<string, number>();
+    /** Digest of the text last sent for each open document (see isInSync). */
+    private sentDigest = new Map<string, string>();
+    /** A pull round failed part-way: `diagnostics` may describe older content. */
+    private diagnosticsStale = false;
+    /** `mtimeMs:size` of the disk file when an open document was last known to equal it. */
+    private diskStamp = new Map<string, string>();
+    /** Recency of each open document (see evictIdleDocuments). */
+    private lastUse = new Map<string, number>();
+    private useClock = 0;
+
+    /**
+     * Documents kept open at most. Every edited file and every dependent opened
+     * to be checked stays open (its diagnostics are pulled on each edit), so
+     * without a bound a long session pulled an ever-growing set.
+     */
+    public static readonly MAX_OPEN_DOCUMENTS = 96;
 
     protected readonly spawnEnv?: Record<string, string>;
     protected realProjectRoot: string;
@@ -141,8 +221,14 @@ export abstract class LspSidecarBase {
     /** True if the process has exited or failed to boot. */
     public isDead = false;
 
-    /** True if the LSP server supports textDocument/diagnostic (pull model) */
+    /**
+     * True once the server advertised textDocument/diagnostic (pull model) or
+     * answered one. Until then the first round tries a pull anyway: gopls and
+     * pyright both answer it without advertising it in `initialize`.
+     */
     protected supportsPullDiagnostics = false;
+    /** The server answered a pull with "method not found": it only pushes. */
+    private pullRejected = false;
 
     // ─── Settle Debounce ────────────────────────────────────────────
     private settleResolvers: Array<() => void> = [];
@@ -176,9 +262,49 @@ export abstract class LspSidecarBase {
     // POSIX normalization — delegates to shared utility
     protected toPosix(p: string): string { return toPosixUtil(p); }
 
+    /** RFC 8089 file URI with proper percent-encoding (spaces, #, non-ASCII). */
     private toUri(p: string): string {
-        const n = this.toPosix(p);
-        return n.startsWith("/") ? `file://${n}` : `file:///${n}`;
+        return pathToFileURL(path.resolve(p)).href;
+    }
+
+    /** Canonical key for a filesystem path (case-insensitive on Windows). */
+    private pathKey(p: string): string {
+        const n = this.toPosix(path.resolve(p));
+        return process.platform === "win32" ? n.toLowerCase() : n;
+    }
+
+    /** Canonical key for a URI received from the server. */
+    private uriKey(uri: string): string {
+        const p = this.uriToPath(uri);
+        return p === null ? uri : this.pathKey(p);
+    }
+
+    /** Decode a file URI (handles %20, %3A drive colons, UTF-8). Null for non-file URIs. */
+    private uriToPath(uri: string): string | null {
+        try {
+            return this.toPosix(fileURLToPath(uri));
+        } catch {
+            return null;
+        }
+    }
+
+    /** True if NREKI has an in-memory overlay open for this file. */
+    public hasOpenDocument(filePath: string): boolean {
+        return this.openedFiles.has(this.pathKey(filePath));
+    }
+
+    /** Number of documents currently open in the server. */
+    public openDocumentCount(): number {
+        return this.openedFiles.size;
+    }
+
+    /**
+     * Files compiled together with `filePath` although they do not import it
+     * (Go: the other files of its package). The kernel opens them with the edit;
+     * importers come from the dependency graph. None by default.
+     */
+    public companionFiles(_filePath: string): string[] {
+        return [];
     }
 
     // ─── Lifecycle ──────────────────────────────────────────────────
@@ -193,41 +319,27 @@ export abstract class LspSidecarBase {
 
         return new Promise<void>((resolve, reject) => {
             try {
-                // ENV WHITELIST: Never propagate secrets (API keys, DB passwords, tokens)
-                // to third-party LSP binaries operating on untrusted code.
-                const SAFE_ENV_KEYS = [
-                    "PATH", "HOME", "USER", "SHELL", "LANG", "LC_ALL", "LC_CTYPE",
-                    "TMPDIR", "TEMP", "TMP", "TERM",
-                    // Go toolchain
-                    "GOPATH", "GOROOT", "GOMODCACHE", "GOFLAGS", "GOPROXY", "GONOSUMCHECK",
-                    // Python toolchain
-                    "PYTHONPATH", "VIRTUAL_ENV", "CONDA_DEFAULT_ENV", "CONDA_PREFIX",
-                    // Node (for tsx wrappers)
-                    "NODE_PATH", "NODE_OPTIONS",
-                ];
-                const safeEnv: Record<string, string> = {};
-                for (const key of SAFE_ENV_KEYS) {
-                    if (process.env[key] !== undefined) safeEnv[key] = process.env[key]!;
+                // NREKI-SEC-03: resolve the binary to an absolute path from trusted
+                // PATH entries ONLY. A bare name handed to spawn()/cmd.exe with
+                // cwd = the repository would run a planted gopls.exe /
+                // basedpyright-langserver.cmd from the repo root on Windows.
+                const executable = resolveExecutable(this.command[0], { projectRoot: this.realProjectRoot });
+                if (!executable) {
+                    const msg = `[NREKI] ${this.command[0]} spawn failed: not found in a trusted PATH entry ` +
+                        `(the working directory and in-project node_modules bins are never searched)`;
+                    logger.error(msg);
+                    this.cleanupState(msg);
+                    reject(new Error(msg));
+                    return;
                 }
-                const finalEnv = this.spawnEnv ? { ...safeEnv, ...this.spawnEnv } : safeEnv;
+                const finalEnv = buildSafeChildEnv(SAFE_ENV_KEYS, this.spawnEnv);
 
-                // Windows: npm installs LSP binaries as .cmd shims, and Node
-                // 18+ refuses direct .cmd spawn under CVE-2024-27980. shell:true
-                // routes through cmd.exe which resolves PATHEXT. BUT shell:true
-                // concatenates args without escaping, so absolute paths
-                // containing spaces (e.g. `C:\Program Files\nodejs\node.exe`)
-                // would break. Enable shell only when command[0] is a bare
-                // binary name — that's the exact case needing PATH/.cmd
-                // resolution. Absolute paths go direct (no shell needed).
-                const needsShell =
-                    process.platform === "win32" && !/[\\/]/.test(this.command[0]);
-
-                this.proc = spawn(this.command[0], this.command.slice(1), {
+                this.proc = spawnResolved(executable, this.command.slice(1), {
                     cwd: this.realProjectRoot,
                     env: finalEnv,
                     stdio: ["pipe", "pipe", "pipe"],
                     detached: process.platform !== "win32",
-                    shell: needsShell,
+                    windowsHide: true,
                 });
 
                 // Attach anti-zombie listeners now that proc exists
@@ -262,18 +374,22 @@ export abstract class LspSidecarBase {
                 });
 
                 // LSP initialize handshake (10s timeout)
+                const initializationOptions = this.initializationOptions();
                 this.request("initialize", {
                     processId: process.pid,
                     rootUri: this.workspaceUri,
                     capabilities: {
                         textDocument: {
                             publishDiagnostics: { relatedInformation: true },
-                            diagnostic: { dynamicRegistration: false },
+                            // dynamicRegistration: pyright only serves pull diagnostics
+                            // to clients that accept client/registerCapability.
+                            diagnostic: { dynamicRegistration: true },
                         },
                     },
                     workspaceFolders: [
                         { uri: this.workspaceUri, name: path.basename(this.realProjectRoot) },
                     ],
+                    ...(initializationOptions ? { initializationOptions } : {}),
                 }, 10_000)
                     .then((initResult) => {
                         // Detect pull diagnostics support from server capabilities
@@ -298,6 +414,11 @@ export abstract class LspSidecarBase {
         });
     }
 
+    /** Server-specific settings sent with `initialize` (none by default). */
+    protected initializationOptions(): Record<string, unknown> | undefined {
+        return undefined;
+    }
+
     /** Check if the child process is alive and responding. */
     isHealthy(): boolean {
         return !!this.proc && this.proc.exitCode === null && !this.isDead;
@@ -314,6 +435,13 @@ export abstract class LspSidecarBase {
         this.openedFiles.clear();
         this.docVersions.clear();
         this.diagnostics.clear();
+        this.sentDigest.clear();
+        this.diskStamp.clear();
+        this.lastUse.clear();
+        this.diagnosticsStale = false;
+        // A respawned server is asked again how it delivers diagnostics.
+        this.supportsPullDiagnostics = false;
+        this.pullRejected = false;
 
         // 1. Settle Timers
         if (this.settleTimer) {
@@ -347,17 +475,10 @@ export abstract class LspSidecarBase {
                     this.proc.stdin.end();
                     this.proc.stdin.destroy();
                 }
-                // Kill the entire process group (-pid) on POSIX to prevent
-                // orphaned workers (gopls analyzers, pyright background threads).
-                if (process.platform !== "win32" && this.proc.pid) {
-                    try {
-                        process.kill(-this.proc.pid, "SIGKILL");
-                    } catch {
-                        this.proc.kill("SIGKILL");
-                    }
-                } else {
-                    this.proc.kill("SIGKILL");
-                }
+                // Kill the whole tree: process group (-pid) on POSIX, taskkill /T on
+                // Windows — killing only the cmd.exe wrapper of a .cmd shim left
+                // node/pyright running as an orphan holding file locks.
+                killProcessTree(this.proc);
             } catch { /* already dead */ }
         }
         this.cleanupState(`[NREKI] ${this.command[0]} process tree terminated forcefully`);
@@ -386,82 +507,256 @@ export abstract class LspSidecarBase {
      * file content in the LSP server's memory.
      *
      * Waits for diagnostics to settle (150ms quiet period, 5s max).
-     * Returns only severity=1 (Error) diagnostics as NrekiStructuredError[].
+     * Returns only severity=1 (Error) diagnostics as NrekiStructuredError[],
+     * for EVERY open document — including errors that were there before the
+     * edit. The kernel subtracts baselineErrors() to keep only the new ones.
      */
     async validateEdits(
         edits: Array<{ filePath: string; content: string | null }>,
     ): Promise<NrekiStructuredError[]> {
         if (!this.proc || this.isDead) return [];
+        this.touch(edits.map(e => this.pathKey(e.filePath)));
+        if (this.applyEdits(edits) || this.diagnosticsStale) await this.refreshDiagnostics();
+        return this.collectErrors();
+    }
 
+    /**
+     * Errors of every open document with `docs` at their PRE-EDIT content: the
+     * baseline a later validateEdits() is compared against, so an error that
+     * was already there does not reject the edit. Documents not open yet (or
+     * open at another content) are synced first. When all are in sync the
+     * cached diagnostics are returned without any request to the server.
+     *
+     * `alsoOpen` names the files that depend on the edited ones (same package,
+     * importers): the server only reports open documents, so a dependent that
+     * was never opened could be broken without a trace. They are opened from
+     * disk, and every open document outside `docs` is brought back to its disk
+     * content before the baseline is read.
+     */
+    async baselineErrors(
+        docs: Array<{ filePath: string; content: string | null }>,
+        alsoOpen: readonly string[] = [],
+    ): Promise<NrekiStructuredError[]> {
+        if (!this.proc || this.isDead) return [];
+        const inTransaction = new Set(docs.map(d => this.pathKey(d.filePath)));
+        const needed = new Set(inTransaction);
+        for (const p of alsoOpen) needed.add(this.pathKey(p));
+        this.touch(needed);
+        const outOfSync = docs.filter(d => !this.isInSync(d.filePath, d.content));
+        let changed = this.applyEdits(outOfSync);
+        if (this.openFromDisk(alsoOpen)) changed = true;
+        if (this.followDisk(inTransaction)) changed = true;
+        this.evictIdleDocuments(needed);
+        if (changed || this.diagnosticsStale) await this.refreshDiagnostics();
+        return this.collectErrors();
+    }
+
+    /** Open, with their disk content, the files of `paths` that are not open yet. */
+    private openFromDisk(paths: readonly string[]): boolean {
+        const toOpen: Array<{ filePath: string; content: string }> = [];
+        const stamps = new Map<string, string>();
+        for (const filePath of paths) {
+            const key = this.pathKey(filePath);
+            if (this.openedFiles.has(key) || stamps.has(key)) continue;
+            try {
+                const st = fs.statSync(filePath);
+                if (!st.isFile()) continue;
+                toOpen.push({ filePath, content: readSource(filePath) });
+                stamps.set(key, `${st.mtimeMs}:${st.size}`);
+            } catch { /* listed by a stale graph, or unreadable: nothing to open */ }
+        }
+        if (toOpen.length === 0) return false;
+        const changed = this.applyEdits(toOpen);
+        for (const [key, stamp] of stamps) this.diskStamp.set(key, stamp);
+        return changed;
+    }
+
+    private touch(keys: Iterable<string>): void {
+        for (const key of keys) this.lastUse.set(key, ++this.useClock);
+    }
+
+    /**
+     * An open document outside the transaction must mirror the disk. Its
+     * overlay otherwise keeps the text it was opened with for the whole
+     * session, and a file changed since (IDE save, git checkout, formatter)
+     * was type-checked at its old content. Stat first: no read when unchanged.
+     */
+    private followDisk(inTransaction: ReadonlySet<string>): boolean {
+        const stale: Array<{ filePath: string; content: string | null }> = [];
+        const rewritten = new Map<string, string>(); // key → stamp of the content sent
+        for (const [key, opened] of this.openedFiles) {
+            if (inTransaction.has(key)) continue;
+            let stamp: string;
+            try {
+                const st = fs.statSync(opened.filePath);
+                stamp = `${st.mtimeMs}:${st.size}`;
+            } catch {
+                stale.push({ filePath: opened.filePath, content: null }); // gone: applyEdits closes it
+                continue;
+            }
+            if (this.diskStamp.get(key) === stamp) continue;
+            let content: string;
+            try { content = readSource(opened.filePath); } catch { continue; }
+            if (this.sentDigest.get(key) === contentDigest(content)) {
+                this.diskStamp.set(key, stamp);
+                continue;
+            }
+            stale.push({ filePath: opened.filePath, content });
+            rewritten.set(key, stamp);
+        }
+        if (stale.length === 0) return false;
+        const changed = this.applyEdits(stale);
+        // applyEdits drops the stamp of every document it rewrites; these equal the disk again.
+        for (const [key, stamp] of rewritten) this.diskStamp.set(key, stamp);
+        return changed;
+    }
+
+    /**
+     * Close the least recently used documents beyond MAX_OPEN_DOCUMENTS. Only
+     * documents outside the transaction, which followDisk just made equal to
+     * the disk: closing one changes nothing for the server.
+     */
+    private evictIdleDocuments(inTransaction: ReadonlySet<string>): void {
+        const excess = this.openedFiles.size - LspSidecarBase.MAX_OPEN_DOCUMENTS;
+        if (excess <= 0) return;
+        const idle = [...this.openedFiles.keys()]
+            .filter(key => !inTransaction.has(key))
+            .sort((a, b) => (this.lastUse.get(a) ?? 0) - (this.lastUse.get(b) ?? 0))
+            .slice(0, excess);
+        for (const key of idle) {
+            const opened = this.openedFiles.get(key)!;
+            this.notifyLsp("textDocument/didClose", { textDocument: { uri: opened.uri } });
+            this.forgetDocument(key);
+        }
+    }
+
+    private forgetDocument(key: string): void {
+        this.openedFiles.delete(key);
+        this.docVersions.delete(key);
+        this.diagnostics.delete(key);
+        this.sentDigest.delete(key);
+        this.diskStamp.delete(key);
+        this.lastUse.delete(key);
+    }
+
+    /** True if the overlay already holds exactly this content (null = not open). */
+    private isInSync(filePath: string, content: string | null): boolean {
+        const key = this.pathKey(filePath);
+        if (content === null) return !this.openedFiles.has(key);
+        return this.sentDigest.get(key) === contentDigest(content);
+    }
+
+    /** Overlay each edit in the server (didOpen / didChange / didClose). True if anything was sent. */
+    private applyEdits(edits: Array<{ filePath: string; content: string | null }>): boolean {
         let changed = false;
         for (const edit of edits) {
-            // Preserve directory structure (Go packages, Python packages)
-            const relPath = this.toPosix(path.relative(this.realProjectRoot, edit.filePath));
-            const uri = `${this.workspaceUri}/${relPath}`;
+            const key = this.pathKey(edit.filePath);
+            const opened = this.openedFiles.get(key);
+            const uri = opened?.uri ?? this.toUri(edit.filePath);
 
             if (edit.content === null) {
-                // Tombstone: simulate deletion by sending empty content.
-                // DO NOT use didClose — that tells the LSP to re-read from disk,
-                // but NREKI hasn't committed yet, so the LSP would see the old file.
-                // Empty content forces import errors in dependents (correct behavior).
-                if (this.openedFiles.has(uri)) {
-                    const nextVer = (this.docVersions.get(uri) || 1) + 1;
-                    this.docVersions.set(uri, nextVer);
+                if (opened && !fs.existsSync(path.normalize(edit.filePath))) {
+                    // Absent on disk (a rollback or resync of a file that never reached
+                    // it, or one deleted outside NREKI): close the overlay. An empty
+                    // open buffer is a syntax error in gopls ("expected ';', found 'EOF'")
+                    // and errors of EVERY open file are collected, so it failed each
+                    // later Go validation. (pyright 1.1.414 does not resolve imports
+                    // to a buffer that is absent on disk, so there it was harmless.)
+                    this.notifyLsp("textDocument/didClose", { textDocument: { uri } });
+                    this.forgetDocument(key);
+                    changed = true;
+                } else if (opened) {
+                    // Tombstone for a pending deletion: the file is still on disk, so
+                    // DO NOT use didClose (the LSP would re-read the old file). Empty
+                    // content forces import errors in dependents (correct behavior).
+                    const nextVer = (this.docVersions.get(key) || 1) + 1;
+                    this.docVersions.set(key, nextVer);
                     this.notifyLsp("textDocument/didChange", {
                         textDocument: { uri, version: nextVer },
                         contentChanges: [{ text: "" }],
                     });
-                    this.diagnostics.delete(uri);
+                    this.diagnostics.delete(key);
+                    this.sentDigest.delete(key);
+                    this.diskStamp.delete(key);
                     changed = true;
                 }
-            } else if (!this.openedFiles.has(uri)) {
+            } else if (!opened) {
                 // First time: didOpen
                 this.notifyLsp("textDocument/didOpen", {
                     textDocument: { uri, languageId: this.languageId, version: 1, text: edit.content },
                 });
-                this.openedFiles.add(uri);
-                this.docVersions.set(uri, 1);
+                this.openedFiles.set(key, { uri, filePath: this.toPosix(path.resolve(edit.filePath)) });
+                this.docVersions.set(key, 1);
+                this.sentDigest.set(key, contentDigest(edit.content));
+                this.diskStamp.delete(key);
                 changed = true;
             } else {
                 // Subsequent: didChange (full content replacement)
                 // FIX: Date.now() overflows int32 in gopls. Use monotonic counter.
-                const nextVer = (this.docVersions.get(uri) || 1) + 1;
-                this.docVersions.set(uri, nextVer);
+                const nextVer = (this.docVersions.get(key) || 1) + 1;
+                this.docVersions.set(key, nextVer);
                 this.notifyLsp("textDocument/didChange", {
                     textDocument: { uri, version: nextVer },
                     contentChanges: [{ text: edit.content }],
                 });
+                this.sentDigest.set(key, contentDigest(edit.content));
+                this.diskStamp.delete(key);
                 changed = true;
             }
         }
+        return changed;
+    }
 
-        // Collect diagnostics: pull (deterministic) or push (settle timer)
-        if (changed) {
-            if (this.supportsPullDiagnostics) {
-                // PULL MODE: Request diagnostics for ALL open files, not just edited ones.
-                // This catches cross-file breakage (editing api.py breaks consumer.py).
-                const pullPromises: Promise<void>[] = [];
-                for (const uri of this.openedFiles) {
-                    pullPromises.push(this.pullDiagnostics(uri));
-                }
-                await Promise.all(pullPromises);
-            } else {
-                // PUSH MODE (fallback): Wait for server to push diagnostics.
-                await this.waitForSettle(5_000, 150);
+    /** Collect diagnostics: pull (deterministic) or push (settle timer). */
+    private async refreshDiagnostics(): Promise<void> {
+        // Errors are only collected from open documents.
+        if (this.openedFiles.size === 0) return;
+
+        if (!this.pullRejected) {
+            // PULL MODE: Request diagnostics for ALL open files, not just edited ones.
+            // This catches cross-file breakage (editing api.py breaks consumer.py).
+            // The cache is flagged until a round completes, so it is never served
+            // as a baseline.
+            this.diagnosticsStale = true;
+            try {
+                await Promise.all(
+                    [...this.openedFiles].map(([key, f]) => this.pullDiagnostics(key, f.uri)),
+                );
+                this.diagnosticsStale = false;
+                this.supportsPullDiagnostics = true;
+                return;
+            } catch (err) {
+                // A failed pull REJECTS: the kernel then reports "validation failed"
+                // instead of silently returning zero errors (fail-open). The one
+                // exception is a server that never offered pull diagnostics and
+                // answers "method not found": it delivers them by push.
+                const notOffered = !this.supportsPullDiagnostics &&
+                    err instanceof LspRequestError && err.code === METHOD_NOT_FOUND;
+                if (!notOffered) throw err;
+                this.pullRejected = true;
+                this.diagnosticsStale = false;
+                logger.info(`${this.command[0]} has no pull diagnostics; waiting for published ones.`);
             }
         }
+        // PUSH MODE (fallback): wait for the server to publish diagnostics. A
+        // publish that arrived while the pull was being refused still resolves
+        // this wait: the settle timer reads the waiters when it fires.
+        await this.waitForSettle(5_000, 150);
+    }
 
-        // Collect errors from ALL open files (severity 1 only).
-        // Cross-file: if editing file A breaks file B, we catch it here.
+    /**
+     * Errors of ALL open documents (severity 1 only), as last reported.
+     * Cross-file: if editing file A breaks file B, we catch it here.
+     */
+    private collectErrors(): NrekiStructuredError[] {
         const errors: NrekiStructuredError[] = [];
-        for (const uri of this.openedFiles) {
-            const diags = this.diagnostics.get(uri) || [];
-            const relPath = uri.replace(`${this.workspaceUri}/`, "");
+        for (const [key, opened] of this.openedFiles) {
+            const diags = this.diagnostics.get(key) || [];
 
             for (const d of diags) {
                 if (d.severity === 1) {
                     errors.push({
-                        file: this.toPosix(path.resolve(this.realProjectRoot, relPath)),
+                        file: opened.filePath,
                         line: d.range.start.line + 1,
                         column: d.range.start.character + 1,
                         code: d.source ? `${this.languageId}-${d.source}` : this.languageId,
@@ -478,19 +773,15 @@ export abstract class LspSidecarBase {
      * Deterministic: waits for the server's actual response.
      * No timers. No race conditions.
      */
-    private async pullDiagnostics(uri: string): Promise<void> {
-        try {
-            const result = await this.request("textDocument/diagnostic", {
-                textDocument: { uri },
-            }, 10_000) as LspProtocolDiagnosticResult;
+    private async pullDiagnostics(key: string, uri: string): Promise<void> {
+        // Errors propagate on purpose: push notifications are ignored in pull
+        // mode (see handleData), so there is no fallback to "fall through" to.
+        const result = await this.request("textDocument/diagnostic", {
+            textDocument: { uri },
+        }, 10_000) as LspProtocolDiagnosticResult;
 
-            // Pull response contains items directly (not via notification)
-            if (result?.items && Array.isArray(result.items)) {
-                this.diagnostics.set(uri, result.items);
-            }
-        } catch {
-            // Server may not support it for this file — fall through to push
-        }
+        // Pull response contains items directly (not via notification)
+        this.diagnostics.set(key, result?.items && Array.isArray(result.items) ? result.items : []);
     }
 
     /**
@@ -504,8 +795,7 @@ export abstract class LspSidecarBase {
     ): Promise<LspCodeAction[]> {
         if (!this.proc || this.isDead) return [];
 
-        const relPath = this.toPosix(path.relative(this.realProjectRoot, filePath));
-        const uri = `${this.workspaceUri}/${relPath}`;
+        const uri = this.openedFiles.get(this.pathKey(filePath))?.uri ?? this.toUri(filePath);
 
         try {
             // AUDIT FIX (Patch 5 / v10.5.9): JSON-RPC response is unknown at
@@ -527,34 +817,35 @@ export abstract class LspSidecarBase {
             if (!result || !Array.isArray(result)) return [];
 
             const actions: LspCodeAction[] = [];
-            const wsPrefix = this.workspaceUri + "/";
-            const cleanPathFromUri = (rawUri: string): string =>
-                rawUri.toLowerCase().startsWith(wsPrefix.toLowerCase())
-                    ? rawUri.substring(wsPrefix.length)
-                    : rawUri.replace(wsPrefix, "");
 
             for (const action of result) {
                 if (!action.edit?.documentChanges && !action.edit?.changes) continue;
                 const edits: LspTextEdit[] = [];
+                // Decode every target URI to a real absolute path (handles %20,
+                // %3A drive colons, UTF-8). An undecodable URI poisons the whole
+                // action — a partially applied CodeAction is worse than none.
+                let undecodable = false;
 
                 const changes = action.edit?.changes || {};
                 for (const [changeUri, textEdits] of Object.entries(changes)) {
-                    const cleanPath = cleanPathFromUri(changeUri);
+                    const filePathFromUri = this.uriToPath(changeUri);
+                    if (filePathFromUri === null) { undecodable = true; break; }
                     for (const te of textEdits) {
-                        edits.push({ filePath: cleanPath, range: te.range, newText: te.newText });
+                        edits.push({ filePath: filePathFromUri, range: te.range, newText: te.newText });
                     }
                 }
 
                 for (const dc of action.edit?.documentChanges || []) {
+                    if (undecodable) break;
                     if (!dc.edits) continue;
-                    const dcUri = dc.textDocument?.uri || "";
-                    const dcCleanPath = cleanPathFromUri(dcUri);
+                    const filePathFromUri = this.uriToPath(dc.textDocument?.uri || "");
+                    if (filePathFromUri === null) { undecodable = true; break; }
                     for (const te of dc.edits) {
-                        edits.push({ filePath: dcCleanPath, range: te.range, newText: te.newText });
+                        edits.push({ filePath: filePathFromUri, range: te.range, newText: te.newText });
                     }
                 }
 
-                if (edits.length > 0) {
+                if (!undecodable && edits.length > 0) {
                     actions.push({ title: action.title || "LSP Auto-Fix", edits });
                 }
             }
@@ -602,36 +893,40 @@ export abstract class LspSidecarBase {
             this.buffer = this.buffer.subarray(bodyStart + bodyLen);
 
             try {
-                const msg = JSON.parse(bodyBuf.toString("utf-8"));
+                const msg = JSON.parse(bodyBuf.toString("utf-8")) as RpcIncoming;
 
-                // Response to a request we sent
-                if (
-                    typeof msg.id === "number" &&
-                    this.pendingRequests.has(msg.id)
-                ) {
+                if (typeof msg.method === "string") {
+                    // A message WITH a method is never a response. With an id it is a
+                    // request from the server: both sides number their requests from
+                    // small integers, so treating "id we are waiting on" as "our
+                    // response" resolved a pending pull with `undefined` — zero
+                    // diagnostics, a silent pass (pyright sends ids 0, 1, 2…).
+                    if (msg.id !== undefined && msg.id !== null) {
+                        this.answerServerRequest(msg.id, msg.method, msg.params);
+                    } else if (msg.method === "textDocument/publishDiagnostics") {
+                        // RACE CONDITION GUARD: In pull mode, ignore async push notifications.
+                        // The LSP may send stale pushes after we've already received the
+                        // authoritative pull response, overwriting fresh data with old data.
+                        if (!this.supportsPullDiagnostics) {
+                            const params = msg.params as { uri: string; diagnostics: LspDiagnostic[] };
+                            this.diagnostics.set(this.uriKey(params.uri), params.diagnostics);
+                            this.triggerSettle();
+                        }
+                    }
+                    // Other notifications (window/logMessage, etc.) — ignore
+                } else if (typeof msg.id === "number" && this.pendingRequests.has(msg.id)) {
+                    // Response to a request we sent
                     const pending = this.pendingRequests.get(msg.id)!;
                     this.pendingRequests.delete(msg.id);
 
                     clearTimeout(pending.timer);
 
                     if (msg.error) {
-                        pending.reject(new Error((msg.error as RpcResponseError).message));
+                        pending.reject(new LspRequestError(msg.error.message, msg.error.code));
                     } else {
                         pending.resolve(msg.result);
                     }
                 }
-                // Notification from server (diagnostics)
-                else if (msg.method === "textDocument/publishDiagnostics") {
-                    // RACE CONDITION GUARD: In pull mode, ignore async push notifications.
-                    // The LSP may send stale pushes after we've already received the
-                    // authoritative pull response, overwriting fresh data with old data.
-                    if (!this.supportsPullDiagnostics) {
-                        const params = msg.params as { uri: string; diagnostics: LspDiagnostic[] };
-                        this.diagnostics.set(params.uri, params.diagnostics);
-                        this.triggerSettle();
-                    }
-                }
-                // Other notifications (window/logMessage, etc.) — ignore
             } catch {
                 // Malformed JSON — skip isolated frame
             }
@@ -663,8 +958,24 @@ export abstract class LspSidecarBase {
         this.sendRaw(msg);
     }
 
+    /**
+     * Answer a request the server sent. An unanswered request can stall the
+     * server (pyright awaits client/registerCapability before it serves pulls).
+     */
+    private answerServerRequest(id: number | string, method: string, params: unknown): void {
+        if (method === "workspace/configuration") {
+            // One entry per requested section; null = "use your default".
+            const items = (params as { items?: unknown[] } | undefined)?.items;
+            this.sendRaw({ jsonrpc: "2.0", id, result: Array.isArray(items) ? items.map(() => null) : [] });
+        } else if (ACKNOWLEDGED_SERVER_REQUESTS.has(method)) {
+            this.sendRaw({ jsonrpc: "2.0", id, result: null });
+        } else {
+            this.sendRaw({ jsonrpc: "2.0", id, error: { code: METHOD_NOT_FOUND, message: `Method not found: ${method}` } });
+        }
+    }
+
     /** Write a JSON-RPC message to the child process stdin. */
-    private sendRaw(msg: RpcRequest | RpcNotification): void {
+    private sendRaw(msg: RpcRequest | RpcNotification | RpcResponse): void {
         if (!this.proc?.stdin || this.isDead) return;
         const body = JSON.stringify(msg);
         try {

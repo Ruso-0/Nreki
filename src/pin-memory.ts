@@ -9,6 +9,8 @@
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
+import { logger } from "./utils/logger.js";
+import { quarantineFile, signState, verifyState } from "./utils/trust.js";
 
 // ─── Types ───────────────────────────────────────────────────────────
 
@@ -34,19 +36,38 @@ function getPinsPath(projectRoot: string): string {
     return path.join(projectRoot, ".nreki", "pins.json");
 }
 
+/**
+ * Pins are injected into every map and into the periodic memory payload as
+ * the USER's rules, so a pins.json shipped with a repository would be a
+ * prompt-injection channel. The file is signed (utils/trust.ts); an unsigned
+ * or foreign one is quarantined and ignored (`nreki trust-db` can adopt it).
+ */
 function loadPins(projectRoot: string): PinnedRule[] {
     const pinsPath = getPinsPath(projectRoot);
     if (!fs.existsSync(pinsPath)) return [];
+    let raw: unknown;
     try {
-        const raw = JSON.parse(fs.readFileSync(pinsPath, "utf-8"));
-        if (!Array.isArray(raw)) return [];
-        // A9: Prevent prototype pollution
-        return raw.filter((item: unknown) =>
-            typeof item === "object" && item !== null && !Object.hasOwn(item as object, "__proto__")
-        );
+        raw = JSON.parse(fs.readFileSync(pinsPath, "utf-8"));
     } catch {
         return [];
     }
+    const signed = raw !== null && typeof raw === "object" && !Array.isArray(raw)
+        ? raw as { pins?: unknown; tag?: unknown }
+        : null;
+    if (!signed || !Array.isArray(signed.pins) || !verifyState("pins", JSON.stringify(signed.pins), signed.tag)) {
+        const moved = quarantineFile(pinsPath);
+        if (moved) fs.rmSync(pinsPath, { force: true });
+        logger.warn(
+            `[NREKI] ${pinsPath} is not signed by this machine (NREKI <= 12.0.0, another machine, or shipped with ` +
+            `the repository); its rules are ignored${moved ? ` (moved to ${moved})` : ""}. ` +
+            `If they are yours: npx @ruso-0/nreki trust-db`,
+        );
+        return [];
+    }
+    // A9: Prevent prototype pollution
+    return (signed.pins as unknown[]).filter((item: unknown): item is PinnedRule =>
+        typeof item === "object" && item !== null && !Object.hasOwn(item as object, "__proto__")
+    );
 }
 
 function savePins(projectRoot: string, pins: PinnedRule[]): void {
@@ -56,8 +77,43 @@ function savePins(projectRoot: string, pins: PinnedRule[]): void {
     }
     const pinsPath = getPinsPath(projectRoot);
     const tmp = `${pinsPath}.${crypto.randomBytes(4).toString("hex")}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(pins, null, 2));
+    fs.writeFileSync(tmp, JSON.stringify({ version: 2, pins, tag: signState("pins", JSON.stringify(pins)) }, null, 2));
     fs.renameSync(tmp, pinsPath);
+}
+
+/**
+ * Adopt reviewed pins (`nreki trust-db`). Each one passes exactly the checks
+ * addPin applies (length, empty, control characters, blocked patterns, NFKC,
+ * XML escaping): a quarantined file cannot smuggle in a rule addPin refuses (S-03).
+ */
+export function adoptPins(projectRoot: string, candidates: ReadonlyArray<{ text: unknown }>): { adopted: number; rejected: string[] } {
+    const pins = loadPins(projectRoot);
+    const known = new Set(pins.map(p => p.text));
+    const rejected: string[] = [];
+    let adopted = 0;
+    for (const c of candidates) {
+        const text = typeof c.text === "string" ? c.text.trim() : "";
+        if (text.length === 0 || text.length > MAX_PIN_LENGTH) {
+            rejected.push(`length ${text.length} (max ${MAX_PIN_LENGTH})`);
+            continue;
+        }
+        const check = sanitizePin(text);
+        if (!check.valid) {
+            rejected.push(check.reason);
+            continue;
+        }
+        const finalText = escapePinContent(check.normalized);
+        if (known.has(finalText)) continue;
+        if (pins.length >= MAX_PINS) {
+            rejected.push(`maximum of ${MAX_PINS} pins reached`);
+            continue;
+        }
+        pins.push({ id: nextId(pins), text: finalText, createdAt: Date.now(), source: "user" });
+        known.add(finalText);
+        adopted++;
+    }
+    if (adopted > 0) savePins(projectRoot, pins);
+    return { adopted, rejected };
 }
 
 // ─── Next ID ─────────────────────────────────────────────────────────
@@ -98,6 +154,11 @@ export function sanitizePin(text: string): { valid: true; normalized: string } |
     // A8: Reject null bytes
     if (text.includes("\0")) {
         return { valid: false, reason: "Pin text contains null bytes." };
+    }
+    // A pin is one line inside a "=== PINNED RULES ===" block: a newline could
+    // fake the end of the block, and ESC/CR sequences rewrite terminal output.
+    if (/[\u0000-\u001f\u007f-\u009f]/.test(text)) {
+        return { valid: false, reason: "Pin text contains control characters or line breaks." };
     }
     // A8: Normalize Unicode to prevent homoglyph bypass
     const normalized = text.normalize("NFKC");

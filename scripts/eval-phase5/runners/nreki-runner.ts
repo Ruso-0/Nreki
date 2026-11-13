@@ -34,7 +34,7 @@ import type { PolyBenchTask } from "../types.js";
 import type { ChunkResult, RetrievalResult } from "../types-runners.js";
 import { isTestFile } from "../ground-truth.js";
 import { payloadTokens } from "../utils/tokenizer.js";
-import { computeNrekiDensity } from "./nreki-density.js";
+import { computeNrekiDensity, type NrekiDensity } from "./nreki-density.js";
 
 /** Default maxCrossFile passed to tfcCompress when MBF is on. */
 export const NREKI_TOP_MAX_CROSS_FILE = 10;
@@ -213,7 +213,7 @@ export async function runNREKI(
         // strictly from public engine API + workspace walk; failure
         // is non-fatal (metadata stays undefined) since retrieval
         // itself already succeeded.
-        let density: Record<string, number> | undefined;
+        let density: NrekiDensity | undefined;
         try {
             density = await computeNrekiDensity(repoRoot, engine);
         } catch {
@@ -227,7 +227,7 @@ export async function runNREKI(
             retrieved_chunks,
             latency_ms: Date.now() - startedAt,
             token_cost,
-            ...(density ? { metadata: density } : {}),
+            ...(density ? { metadata: { ...density } } : {}),
         };
     } catch (e) {
         return {

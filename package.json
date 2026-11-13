@@ -18,6 +18,7 @@
     "test:watch": "vitest",
     "postinstall": "node scripts/download-wasm.js",
     "lint": "tsc --noEmit",
+    "typecheck:tests": "tsc -p tsconfig.test.json",
     "benchmark:spectral": "tsx tests/benchmark-spectral.ts",
     "benchmark:external": "tsx tests/benchmark-spectral-external.ts",
     "benchmark:precision": "tsx tests/benchmark-precision.ts"
@@ -63,14 +64,13 @@
     "@modelcontextprotocol/sdk": "1.23.1",
     "@typescript-eslint/parser": "8.59.0",
     "chokidar": "4.0.3",
-    "csv-parse": "^6.2.1",
     "eslint": "9.39.4",
     "eslint-plugin-jsx-a11y": "6.10.2",
     "eslint-plugin-react": "7.37.5",
     "eslint-plugin-react-hooks": "7.1.1",
     "picomatch": "4.0.3",
     "sql.js": "1.14.1",
-    "tiktoken": "^1.0.22",
+    "tiktoken": "1.0.22",
     "tree-sitter-wasms": "0.1.13",
     "web-tree-sitter": "0.24.7",
     "zod": "3.25.76"
@@ -86,6 +86,7 @@
   "devDependencies": {
     "@types/node": "^22.13.10",
     "@types/picomatch": "^4.0.2",
+    "csv-parse": "6.2.1",
     "marked": "^18.0.3",
     "tsx": "^4.19.3",
     "typescript": "^5.9.3",

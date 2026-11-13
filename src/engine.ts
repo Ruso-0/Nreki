@@ -21,7 +21,7 @@ import { estimateTokens } from "./utils/token-estimator.js";
 import { ASTParser, type ParseResult } from "./parser.js";
 import { Compressor, type CompressionResult } from "./compressor.js";
 import { AdvancedCompressor, type CompressionLevel, type AdvancedCompressionResult } from "./compressor.js";
-import { shouldProcess } from "./utils/file-filter.js";
+import { shouldProcess, isSecondaryPath } from "./utils/file-filter.js";
 import { readSource } from "./utils/read-source.js";
 import { safePath } from "./utils/path-jail.js";
 import { getOrGenerateRepoMap, type RepoMap, type DependencyGraph } from "./repo-map.js";
@@ -32,6 +32,8 @@ import { registerTestResource } from "./utils/test-resource-registry.js";
 // ─── Sub-pipelines (v8.5 decomposition) ──────────────────────────────
 import { IndexPipeline } from "./engine/indexer.js";
 import { SearchEngine } from "./engine/searcher.js";
+import { VectorIndex } from "./search/vector-index.js";
+import { resolveVoyageConfig } from "./search/voyage.js";
 
 // ─── Shared types (re-exported for backward compatibility) ──────────
 export type { SearchResult, IndexStats, EngineConfig, SessionReport } from "./engine-types.js";
@@ -65,6 +67,11 @@ const DEFAULT_IGNORE = [
     "**/__pycache__/**",
     "**/*.min.js",
     "**/*.d.ts",
+    "**/package-lock.json",
+    "**/yarn.lock",
+    "**/pnpm-lock.yaml",
+    "**/repomix*.txt",
+    "**/repomix*.json",
     // NREKI's own artifacts (prevents auto-indexing of self in dogfooding
     // and contamination of corpus benchmarks against external repos)
     "**/.nreki/**",
@@ -142,8 +149,10 @@ class SessionTracker {
             totalTokensSaved: totalSaved,
             totalOriginalTokens: totalOriginal,
             overallRatio: totalOriginal > 0 ? totalSaved / totalOriginal : 0,
-            savedUsdSonnet: (totalSaved / 1_000_000) * 3,
-            savedUsdOpus: (totalSaved / 1_000_000) * 15,
+            // Input list prices per 1M tokens (Sonnet 5.5 / Opus 5.5, Nov 2026); the
+            // old $15 was Opus 4.1-era and overstated Opus savings ~4×.
+            savedUsdSonnet: (totalSaved / 1_000_000) * 2,
+            savedUsdOpus: (totalSaved / 1_000_000) * 4,
             byFileType,
             bySize,
             autoContextInjections: this.autoContextInjections,
@@ -175,8 +184,12 @@ export class NrekiEngine {
     private static readonly USAGE_FLUSH_INTERVAL_MS = 2000;
     private isIndexing = false;
     private initialized = false;
+    private initializationPromise: Promise<void> | null = null;
     private closed = false;
+    private indexSession = 0;
     private saveTimeout: NodeJS.Timeout | null = null;
+    /** Opt-in Voyage dense index; null unless NREKI_SEMANTIC=voyage and a key are set. */
+    private vectors: VectorIndex | null = null;
 
     /** Files that have been read (raw or compressed) in this session. */
     private safelyReadFiles = new Set<string>();
@@ -209,7 +222,7 @@ export class NrekiEngine {
             throw new Error("[NREKI] watchPaths cannot be empty");
         }
 
-        this.db = new NrekiDB(this.config.dbPath);
+        this.db = new NrekiDB(this.config.dbPath, this.config.watchPaths[0]);
         this.parser = new ASTParser(this.config.wasmDir || undefined);
         this.compressor = new Compressor(this.parser);
         this.advancedCompressor = new AdvancedCompressor(this.parser);
@@ -224,8 +237,21 @@ export class NrekiEngine {
      */
     async initialize(): Promise<void> {
         if (this.initialized) return;
+        if (this.initializationPromise) return this.initializationPromise;
         this.closed = false;
+        const indexSession = this.indexSession;
+        this.initializationPromise = this.initializeCore(indexSession).finally(() => {
+            this.initializationPromise = null;
+        });
+        return this.initializationPromise;
+    }
+
+    private async initializeCore(indexSession: number): Promise<void> {
         await this.db.initialize();
+        if (this.closed || indexSession !== this.indexSession) {
+            this.db.close();
+            throw new Error("[NREKI] Index session closed.");
+        }
         this.db.setFastGrepCacheInvalidationHook((filePath?: string) => {
             if (filePath !== undefined) {
                 this.fgCache.tombstoneByPath(filePath);
@@ -234,18 +260,35 @@ export class NrekiEngine {
             }
         });
         await this.parser.initialize();
+        if (this.closed || indexSession !== this.indexSession) {
+            this.parser.shutdown();
+            this.db.close();
+            throw new Error("[NREKI] Index session closed.");
+        }
 
         // Inject dependencies into sub-pipelines
         this.indexer = new IndexPipeline(
             this.db, this.parser, this.config,
-            () => this.initialize(),
+            async () => {
+                if (this.closed || indexSession !== this.indexSession) {
+                    throw new Error("[NREKI] Index session closed.");
+                }
+                await this.initialize();
+            },
         );
+        // Opt-in whole-repository dense index (NREKI_SEMANTIC=voyage + key).
+        const voyage = resolveVoyageConfig();
+        this.vectors = voyage
+            ? new VectorIndex(this.db, voyage, this.getProjectRoot(), { onStored: () => this.scheduleSave() })
+            : null;
         this.searcher = new SearchEngine(
             this.db,
             () => this.getDependencyGraph(),
             () => this.getProjectRoot(),
             () => this.initialize(),
+            () => this.vectors,
         );
+        // Dense indexing starts only after indexDirectory has reconciled source files.
 
         // Tier 2 Paso A: populate SoA cache from DB.
         // Inert for now; it is not used in the hot path until Paso B.
@@ -279,8 +322,16 @@ export class NrekiEngine {
 
     async indexDirectory(dirPath: string): Promise<{ indexed: number; skipped: number; errors: number }> {
         await this.initialize();
+        const session = this.indexSession;
         const result = await this.indexer.indexDirectory(dirPath);
+        if (this.closed || session !== this.indexSession) throw new Error("[NREKI] Index session closed.");
         this.fgCache.populateFromDatabase(this.db);
+        this.cachedGraph = null;
+        if (result.errors > 0) this.indexReconciled = false;
+        else if (this.config.watchPaths.every(root => path.resolve(root) === path.resolve(dirPath))) {
+            this.indexReconciled = true;
+        }
+        if (this.indexReconciled) void this.vectors?.sync();
         return result;
     }
 
@@ -290,30 +341,73 @@ export class NrekiEngine {
      * can respond inside Claude Code's tool-call timeout window instead
      * of blocking on a multi-minute walk that surfaces as "connection
      * closed: EOF" on large repos. Concurrent calls coalesce on the
-     * single in-flight promise; once it settles the next call kicks a
-     * fresh pass (so newly-added trees are eventually picked up).
+     * single in-flight reconciliation, including persisted databases. Once
+     * complete, the watcher maintains the current session's index.
      */
     private backgroundIndexPromise: Promise<void> | null = null;
+    private indexReconciled = false;
+    private reconciliationPromise: Promise<void> | null = null;
+
+    /** A persisted database is not proof that its source files are current. */
+    hasFreshIndex(): boolean {
+        return this.indexReconciled;
+    }
+
+    /** Share one disk reconciliation between every first indexed lookup. */
+    async ensureIndexed(): Promise<void> {
+        await this.initialize();
+        if (this.indexReconciled) return;
+        const session = this.indexSession;
+        if (!this.reconciliationPromise) {
+            this.reconciliationPromise = (async () => {
+                for (const root of this.config.watchPaths) {
+                    const result = await this.indexDirectory(path.resolve(root));
+                    if (result.errors > 0) throw new Error("[NREKI] Index reconciliation failed; retry the lookup.");
+                }
+                if (this.closed || session !== this.indexSession) throw new Error("[NREKI] Index session closed.");
+                if (!this.indexReconciled) {
+                    this.indexReconciled = true;
+                    void this.vectors?.sync();
+                }
+            })().finally(() => {
+                if (session === this.indexSession) this.reconciliationPromise = null;
+            });
+        }
+        await this.reconciliationPromise;
+    }
     ensureIndexedBackground(): boolean {
-        if (this.backgroundIndexPromise) return false;
-        if (this.hasIndexedFiles()) return false;
-        this.backgroundIndexPromise = this.indexDirectory(this.getProjectRoot())
-            .then((stats) => {
-                logger.info(`Background index complete: ${stats.indexed} indexed, ${stats.skipped} skipped, ${stats.errors} errors.`);
+        if (this.backgroundIndexPromise || this.indexReconciled) return false;
+        const session = this.indexSession;
+        this.backgroundIndexPromise = this.ensureIndexed()
+            .then(() => {
+                logger.info("Background index reconciled with disk.");
             })
             .catch((err) => {
                 logger.error(`Background indexing failed: ${(err as Error).message}`);
             })
             .finally(() => {
-                this.backgroundIndexPromise = null;
+                if (session === this.indexSession) this.backgroundIndexPromise = null;
             });
         return true;
+    }
+
+    /**
+     * Embed every chunk still missing from the opt-in Voyage index and resolve
+     * when done (no-op when the semantic index is off). Indexing already
+     * triggers this in the background; callers await it to know it finished.
+     */
+    async syncSemanticIndex(): Promise<{ embedded: number; total: number } | null> {
+        await this.initialize();
+        if (!this.vectors) return null;
+        await this.ensureIndexed();
+        await this.vectors.sync();
+        return this.vectors.coverage();
     }
 
     // ─── Search (delegated to SearchEngine) ─────────────────────────
 
     async search(query: string, limit: number = 10) {
-        await this.initialize();
+        await this.ensureIndexed();
         return this.searcher.search(query, limit);
     }
 
@@ -400,6 +494,10 @@ export class NrekiEngine {
 
     getEngramsForFile(filePath: string): Map<string, { astHash: string; insight: string }> {
         return this.db.getEngramsForFile(filePath);
+    }
+
+    renameEngram(filePath: string, fromSymbol: string, toSymbol: string): void {
+        this.db.renameEngram(filePath, fromSymbol, toSymbol);
     }
 
     deleteEngram(filePath: string, symbolName: string): void {
@@ -553,7 +651,7 @@ export class NrekiEngine {
      * Used by AST navigator for definition/references lookup.
      */
     async searchFilesBySymbol(symbolName: string): Promise<string[]> {
-        await this.initialize();
+        await this.ensureIndexed();
         return this.db.searchRawCode(symbolName);
     }
 
@@ -562,40 +660,48 @@ export class NrekiEngine {
      * Returns chunks matching symbol_name. If exact=false, COLLATE NOCASE fallback.
      */
     async getChunksBySymbolExact(symbolName: string, exact: boolean = true): Promise<ChunkRecord[]> {
-        await this.initialize();
+        await this.ensureIndexed();
         return this.db.getChunksBySymbolExact(symbolName, exact);
-    }
-
-    /**
-     * Fast raw_code substring search via SQLite. Used by nreki_navigate fast_grep.
-     */
-    async searchRawCodeLike(queryText: string, limit: number = 50): Promise<ChunkRecord[]> {
-        await this.initialize();
-        return this.db.searchRawCodeLike(queryText, limit);
     }
 
     /** Exact substring search via RAM-resident fgCache. */
     async fastGrep(queryText: string, limit: number = 50): Promise<FastGrepHit[]> {
-        await this.initialize();
+        await this.ensureIndexed();
         if (this.fgCache.size === 0) return [];
 
         const cache = this.fgCache;
         const results: FastGrepHit[] = [];
         const N = cache.size;
+        const root = this.getProjectRoot();
+        const secondary = new Map<string, boolean>();
+        const isSecondary = (p: string): boolean => {
+            let v = secondary.get(p);
+            if (v === undefined) {
+                v = isSecondaryPath(path.relative(root, p));
+                secondary.set(p, v);
+            }
+            return v;
+        };
 
-        for (let i = 0; i < N && results.length < limit; i++) {
-            const raw = cache.rawCodes[i];
-            // Skip tombstones when Paso C introduces them.
-            if (raw.length === 0) continue;
+        // Production code first, then tests/scripts/docs (C-03): the limit used
+        // to be spent in cache order, and a re-indexed file is appended at the
+        // TAIL, so an edited src/ file could be cut off behind test noise.
+        for (const wantSecondary of [false, true]) {
+            for (let i = 0; i < N && results.length < limit; i++) {
+                const raw = cache.rawCodes[i];
+                // Skip tombstones when Paso C introduces them.
+                if (raw.length === 0) continue;
+                if (isSecondary(cache.paths[i]) !== wantSecondary) continue;
 
-            // V8 SIMD memchr fast path.
-            if (raw.indexOf(queryText) !== -1) {
-                results.push({
-                    path: cache.paths[i],
-                    raw_code: raw,
-                    start_line: cache.startLines[i],
-                    symbol_name: cache.symbols[i],
-                });
+                // V8 SIMD memchr fast path.
+                if (raw.indexOf(queryText) !== -1) {
+                    results.push({
+                        path: cache.paths[i],
+                        raw_code: raw,
+                        start_line: cache.startLines[i],
+                        symbol_name: cache.symbols[i],
+                    });
+                }
             }
         }
 
@@ -643,6 +749,8 @@ export class NrekiEngine {
             ignored: ignoredMatcher,
             persistent: true,
             ignoreInitial: true, // prevent race with handler bootstrap
+            // A symlink must not pull files from outside the project into the index.
+            followSymlinks: false,
         });
 
         this.watcherReady = new Promise((resolve, reject) => {
@@ -711,8 +819,9 @@ export class NrekiEngine {
                 }
             }
         } finally {
-            if (madeChanges) {
+            if (madeChanges && !this.closed) {
                 this.scheduleSave();
+                if (this.indexReconciled) void this.vectors?.sync();
                 if (externalTopologyChange) {
                     this.cachedGraph = null;
                     logger.info("Topology cache invalidated by Watcher (external modification).");
@@ -797,11 +906,16 @@ export class NrekiEngine {
     /** Shutdown engine: stop watcher and close database. */
     shutdown(): void {
         if (this.closed) return;
+        this.closed = true;
+        this.indexSession++;
+        this.backgroundIndexPromise = null;
+        this.reconciliationPromise = null;
         if (this.usageFlushTimer) {
             clearInterval(this.usageFlushTimer);
             this.usageFlushTimer = null;
         }
         this.flushUsageSync();
+        this.vectors?.stop();
         if (this.saveTimeout) {
             clearTimeout(this.saveTimeout);
             this.saveTimeout = null;
@@ -821,5 +935,6 @@ export class NrekiEngine {
         this.db.close();
         this.closed = true;
         this.initialized = false;
+        this.indexReconciled = false;
     }
 }

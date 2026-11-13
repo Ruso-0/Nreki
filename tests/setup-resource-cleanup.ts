@@ -1,5 +1,11 @@
 import { afterAll } from "vitest";
+import os from "os";
+import path from "path";
 import type { TestDisposable } from "../src/utils/test-resource-registry.js";
+
+// State-file signatures (utils/trust.ts) use a per-user key: keep the test
+// suite off the developer's real ~/.nreki/trust.key. Child processes inherit it.
+process.env.NREKI_TRUST_DIR ??= path.join(os.tmpdir(), "nreki-test-trust");
 
 declare global {
     var __NREKI_REGISTER_TEST_RESOURCE__: ((resource: TestDisposable) => void) | undefined;

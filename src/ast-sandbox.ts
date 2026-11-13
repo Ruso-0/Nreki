@@ -88,6 +88,8 @@ const EXT_TO_LANGUAGE: Record<string, string> = {
 export class AstSandbox {
     private pool: ParserPool;
     private languageCache = new Map<string, Parser.Language>();
+    /** `(block) @b` query for the Python grammar (see findEmptyPythonBlocks). */
+    private pythonBlockQuery: Parser.Query | null = null;
     private loadGate: Promise<unknown> = Promise.resolve();
     private wasmDir: string;
     private initialized = false;
@@ -113,6 +115,8 @@ export class AstSandbox {
 
     shutdown(): void {
         this.pool.shutdown();
+        try { this.pythonBlockQuery?.delete(); } catch { /* already freed */ }
+        this.pythonBlockQuery = null;
         this.languageCache.clear();
         this.initialized = false;
         this.initGate = null;
@@ -194,14 +198,19 @@ export class AstSandbox {
         const parser = await this.pool.acquire(lang, language);
         try {
             return safeParse(parser, code, (tree) => {
+                const emptyBlocks = language === "python" ? this.findEmptyPythonBlocks(tree, lang, code) : [];
+
                 // Quick check: if no errors in the entire tree, skip the walk
                 if (!tree.rootNode.hasError) {
-                    return { valid: true, errors: [], suggestion: "" };
+                    return emptyBlocks.length === 0
+                        ? { valid: true, errors: [], suggestion: "" }
+                        : { valid: false, errors: emptyBlocks, suggestion: this.generateSuggestion(emptyBlocks) };
                 }
 
                 const lines = code.split("\n");
-                const errors: AstError[] = [];
-                this.walkForErrors(tree.rootNode, lines, errors);
+                const errors: AstError[] = [...emptyBlocks];
+                const walk = { truncated: false };
+                this.walkForErrors(tree.rootNode, lines, errors, 0, walk);
 
                 // Safety net: check for trailing ERROR at EOF that walkForErrors
                 // might miss if tree-sitter recovery hides it from hasError propagation
@@ -214,6 +223,17 @@ export class AstSandbox {
                         nodeType: lastChild.isMissing ? `MISSING(${lastChild.type})` : "ERROR",
                         context: lines[lastChild.startPosition.row] ?? "",
                     });
+                }
+
+                if (errors.length === 0 && walk.truncated) {
+                    // The error lies below the 500-level recursion guard: we know the
+                    // tree is broken but cannot locate it. Fail CLOSED — returning
+                    // valid here let a syntax error through behind deep nesting.
+                    return {
+                        valid: false,
+                        errors: [{ line: 1, column: 1, nodeType: "ERROR", context: "syntax error nested deeper than 500 levels" }],
+                        suggestion: "Syntax error inside very deeply nested code. Reduce nesting or check brackets.",
+                    };
                 }
 
                 if (errors.length === 0) {
@@ -270,6 +290,37 @@ export class AstSandbox {
     // ─── Tree Walking ──────────────────────────────────────────────
 
     /**
+     * Python: a compound statement whose body is not indented (`def f():`
+     * followed by a line on the same column) is "expected an indented block" for
+     * Python, but tree-sitter-python parses it as an EMPTY block and reports no
+     * error — the code passed Layer 1 and, without a Python LSP, reached disk.
+     * No valid Python has an empty block (it needs at least `pass`).
+     */
+    private findEmptyPythonBlocks(tree: Parser.Tree, lang: Parser.Language, code: string): AstError[] {
+        let captures: Parser.QueryCapture[];
+        try {
+            this.pythonBlockQuery ??= lang.query("(block) @b");
+            captures = this.pythonBlockQuery.captures(tree.rootNode);
+        } catch {
+            return []; // grammar without a `block` node: nothing to check
+        }
+        const errors: AstError[] = [];
+        let lines: string[] | undefined;
+        for (const { node } of captures) {
+            if (node.startIndex !== node.endIndex) continue;
+            lines ??= code.split("\n");
+            const row = node.startPosition.row;
+            errors.push({
+                line: row + 1,
+                column: node.startPosition.column + 1,
+                nodeType: "MISSING(indented block)",
+                context: lines[row] ?? "",
+            });
+        }
+        return errors;
+    }
+
+    /**
      * Recursively walk the AST looking for ERROR and MISSING nodes.
      *
      * Uses hasError to skip clean subtrees (optimization for large files).
@@ -279,10 +330,14 @@ export class AstSandbox {
         node: Parser.SyntaxNode,
         lines: string[],
         errors: AstError[],
-        depth: number = 0
+        depth: number = 0,
+        walk: { truncated: boolean } = { truncated: false },
     ): void {
         // M-09: Guard against stack overflow on deeply nested ASTs
-        if (depth > 500) return;
+        if (depth > 500) {
+            if (node.hasError) walk.truncated = true;
+            return;
+        }
 
         if (node.type === "ERROR" || node.isMissing) {
             const line = node.startPosition.row + 1;
@@ -306,7 +361,7 @@ export class AstSandbox {
         for (let i = 0; i < node.childCount; i++) {
             const child = node.child(i);
             if (child) {
-                this.walkForErrors(child, lines, errors, depth + 1);
+                this.walkForErrors(child, lines, errors, depth + 1, walk);
             }
         }
     }

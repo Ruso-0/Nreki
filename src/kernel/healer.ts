@@ -1,4 +1,9 @@
-// src/kernel/healer.ts
+/**
+ * healer.ts - Autonomous Self-Healing for missing imports and diagnostics.
+ *
+ * Automatically fixes missing imports and applies deterministic compiler/LSP
+ * code actions in RAM with atomic micro-undo rollback.
+ */
 import * as path from "path";
 import type {
     NrekiStructuredError,
@@ -220,10 +225,19 @@ export async function attemptLspAutoHealing(
                     return false;
                 }
 
-                // Accept structural additions (real imports)
-                return title.includes("import") || title.includes("add ");
+                // Accept real imports only. The old `title.includes("add ")` let any
+                // "Add …" quickfix through (NREKI-GAR-04).
+                return /\bimport\b/i.test(title);
             });
             if (safeActions.length === 0) continue;
+
+            // Ambiguity guard: several distinct import candidates (same name exported
+            // by different modules) → picking safeActions[0] could compile while
+            // wiring the wrong module. Leave the error to the agent instead.
+            const distinctEdits = new Set(
+                safeActions.map(a => a.edits.map(e => `${e.filePath}|${e.newText}`).join("\n")),
+            );
+            if (distinctEdits.size > 1) continue;
 
             const bestAction = safeActions[0];
             if (!bestAction) continue;

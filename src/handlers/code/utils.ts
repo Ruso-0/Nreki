@@ -4,8 +4,10 @@
 
 import type { McpToolResponse, CodeParams, RouterDependencies } from "../../router.js";
 import { safePath } from "../../utils/path-jail.js";
-import { restoreBackup } from "../../undo.js";
+import { restoreBackupWithContent } from "../../undo.js";
 import { filterTerminalOutput } from "../../terminal-filter.js";
+import { acquireFileLock, releaseFileLock } from "../../middleware/file-lock.js";
+import { logger } from "../../utils/logger.js";
 
 // ─── Undo ───────────────────────────────────────────────────────────
 
@@ -23,11 +25,38 @@ export async function handleUndo(
                 type: "text" as const,
                 text: `Security error: ${(err as Error).message}`,
             }],
+            isError: true,
+        };
+    }
+
+    // NREKI-INT-05: undo used to write behind the back of a concurrent edit.
+    const lock = acquireFileLock(resolvedPath, "nreki_code:undo");
+    if (!lock.acquired) {
+        return {
+            content: [{
+                type: "text" as const,
+                text: `## nreki_undo: BLOCKED\n\nFile is locked by a concurrent edit (${lock.heldBy}, ${lock.heldForMs}ms ago). Retry when it finishes.`,
+            }],
+            isError: true,
         };
     }
 
     try {
-        const message = restoreBackup(deps.engine.getProjectRoot(), resolvedPath);
+        const { message, content } = restoreBackupWithContent(deps.engine.getProjectRoot(), resolvedPath);
+
+        // Disk changed outside the kernel: re-sync VFS, LanguageService, baseline,
+        // hologram shadows and LSP overlays, or later edits validate against the
+        // undone code (brain-split).
+        deps.engine.expectInternalEdit(resolvedPath, content.charCodeAt(0) === 0xfeff ? content.slice(1) : content);
+        deps.engine.invalidateCachedGraph();
+        if (deps.kernel?.isBooted()) {
+            try {
+                await deps.kernel.notifyExternalChange([resolvedPath]);
+            } catch (syncErr) {
+                logger.error(`Kernel re-sync after undo failed: ${syncErr}`);
+            }
+        }
+
         return {
             content: [{
                 type: "text" as const,
@@ -40,7 +69,10 @@ export async function handleUndo(
                 type: "text" as const,
                 text: `## nreki_undo: FAILED\n\n${(err as Error).message}`,
             }],
+            isError: true,
         };
+    } finally {
+        releaseFileLock(resolvedPath);
     }
 }
 
@@ -63,6 +95,7 @@ export async function handleFilterOutput(
                 type: "text" as const,
                 text: `Error: "output" is required for the filter_output action.`,
             }],
+            isError: true,
         };
     }
 

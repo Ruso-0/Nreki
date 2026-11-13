@@ -13,10 +13,8 @@ import path from "path";
 import { logger } from "./utils/logger.js";
 import type { NrekiStructuredError } from "./kernel/types.js";
 
-// Soporta comentarios de línea (//) y de bloque (/*) para JSX {/* */}.
-// Tolerante a comas e intermedios entre "eslint-disable" y la regla:
-// "// eslint-disable no-console, react-hooks/exhaustive-deps"
-const ANTI_SWEEP_REGEX = /(?:\/\/|\/\*)\s*eslint-disable(?:-next-line|-line)?\s+[^\r\n]*\b(?:react-hooks\/rules-of-hooks|react-hooks\/exhaustive-deps|react\/jsx-key|jsx-a11y\/alt-text)\b[^\r\n]*/i;
+// Anti-Sweep for the rules below lives in utils/suppression-guard.ts (it checks
+// what an edit ADDS, so legacy suppressions never block unrelated edits).
 
 // Detecta tags <Component>, </tag>, fragments <> y </>, namespace <Context.Provider>,
 // y web components <my-button>
@@ -116,12 +114,6 @@ export class ReactEslintSidecar {
             this.initPromise = this._init();
         }
         await this.initPromise;
-    }
-
-    // Evaluar Anti-Sweep sobre el PAYLOAD (new_code/replace_text), no sobre archivo entero.
-    // Esto evita bloquear edición de archivos legacy que ya contienen suppressions.
-    public checkAntiSweep(payload: string): boolean {
-        return ANTI_SWEEP_REGEX.test(payload);
     }
 
     public async validate(content: string, filePath: string): Promise<NrekiStructuredError[]> {

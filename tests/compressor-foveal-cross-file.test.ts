@@ -248,25 +248,40 @@ describe("Phase 4: render functions (Furia #3 cleanSignature pure)", () => {
             shorthand,
             relation: rel,
             seedType: "Shared",
+            source: "type-ledger",
+            score: 1,
         };
     }
 
-    it("renderCrossFileUpstream produces [UPSTREAM] tagged lines", () => {
+    it("renderCrossFileUpstream lists the consumers on one line", () => {
         const out = renderCrossFileUpstream([
             mkChunk("upstream", "consumerA", "[func] consumerA()"),
             mkChunk("upstream", "consumerB", "[func] consumerB()"),
         ]);
-        expect(out).toContain("UPSTREAM CROSS-FILE");
-        expect(out).toContain("[UPSTREAM]: /proj/consumerA.ts::consumerA");
-        expect(out).toContain("[UPSTREAM]: /proj/consumerB.ts::consumerB");
+        expect(out).toBe("// used by (other files): /proj/consumerA.ts::consumerA, /proj/consumerB.ts::consumerB");
     });
 
-    it("renderCrossFileDownstream applies cleanSignature", () => {
+    it("renderCrossFileDownstream: one line per producer, cleanSignature when no source is known", () => {
         const out = renderCrossFileDownstream([
             mkChunk("downstream", "providerA", "[func] providerA(): ConfigType"),
         ]);
-        expect(out).toContain("DOWNSTREAM CROSS-FILE");
-        expect(out).toContain("[DOWNSTREAM /proj/providerA.ts::providerA]");
+        expect(out).toContain("// from /proj/providerA.ts::providerA: ");
+        expect(out).toContain("providerA(): ConfigType");
+    });
+
+    it("renderCrossFileDownstream shows a short type whole (its shorthand reads as an empty type)", () => {
+        const out = renderCrossFileDownstream([{
+            ...mkChunk("downstream", "Invoice", "[interface] interface Invoice { }"),
+            rawCode: "interface Invoice {\n    amountCents: number;\n    currency: string;\n}",
+            startLine: 145,
+        }]);
+        expect(out).toBe("// from /proj/Invoice.ts:L145\ninterface Invoice {\n    amountCents: number;\n    currency: string;\n}");
+        const fn = renderCrossFileDownstream([{
+            ...mkChunk("downstream", "make", "[func] make()"),
+            rawCode: "export function make(n: number): Invoice {\n    return build(n);\n}",
+            startLine: 9,
+        }]);
+        expect(fn).toBe("// from /proj/make.ts:L9: export function make(n: number): Invoice");
     });
 
     it("renderCrossFileUpstream filters out downstream entries", () => {
@@ -290,11 +305,11 @@ describe("Phase 4: render functions (Furia #3 cleanSignature pure)", () => {
 
     it("dedup: same chunk via multiple types appears once per render", () => {
         const out = renderCrossFileUpstream([
-            { chunkId: 1, path: "/proj/x.ts", symbolName: "x", shorthand: "[func] x()", relation: "upstream", seedType: "T1" },
-            { chunkId: 1, path: "/proj/x.ts", symbolName: "x", shorthand: "[func] x()", relation: "upstream", seedType: "T2" },
+            { chunkId: 1, path: "/proj/x.ts", symbolName: "x", shorthand: "[func] x()", relation: "upstream", seedType: "T1", source: "type-ledger", score: 1 },
+            { chunkId: 1, path: "/proj/x.ts", symbolName: "x", shorthand: "[func] x()", relation: "upstream", seedType: "T2", source: "type-ledger", score: 1 },
         ]);
-        // Should contain the line once
-        const matches = out.match(/\[UPSTREAM\]: \/proj\/x\.ts::x/g) ?? [];
+        // Should contain the entry once
+        const matches = out.match(/\/proj\/x\.ts::x/g) ?? [];
         expect(matches.length).toBe(1);
     });
 

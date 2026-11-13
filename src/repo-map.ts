@@ -12,6 +12,9 @@ import crypto from "crypto";
 import { ASTParser } from "./parser.js";
 import { shouldProcess } from "./utils/file-filter.js";
 import { readSource } from "./utils/read-source.js";
+import { escapeRegExp } from "./utils/imports.js";
+import { signState, verifyState } from "./utils/trust.js";
+import { isSensitivePath } from "./utils/path-jail.js";
 
 // ─── Types ───────────────────────────────────────────────────────────
 
@@ -21,6 +24,23 @@ export interface RepoMapEntry {
     signatures: string[];
     imports: string[];
     lineCount: number;
+    purpose?: string;
+    /**
+     * Extra import candidates read only by the dependency graph (never rendered):
+     * Python `from pkg import mod` → "pkg.mod", imports inside functions, and
+     * `import a, b` split per module.
+     */
+    graphImports?: string[];
+}
+
+/** A Go module of the project: directory of its go.mod (posix, "" = root) and its module path. */
+export interface GoModule {
+    dir: string;
+    modulePath: string;
+}
+
+export interface GraphOptions {
+    goModules?: GoModule[];
 }
 
 export interface RepoMap {
@@ -33,7 +53,7 @@ export interface RepoMap {
 }
 
 /** Cache format version. Bump when CachedRepoMap structure changes. */
-const CACHE_FORMAT_VERSION = 3;
+const CACHE_FORMAT_VERSION = 5; // 5: Go package + Python relative/package edges in the graph
 
 export interface CachedRepoMap {
     formatVersion?: number;
@@ -262,6 +282,58 @@ export function extractImports(content: string, ext: string): string[] {
     return [...imports].sort(stableCompare);
 }
 
+/**
+ * Python import candidates that `extractImports` does not produce (it feeds the
+ * rendered map and stays as it is): `from X import a, b` → "X.a", "X.b" (a
+ * submodule is imported this way as often as a name), imports nested in a
+ * function or class, and every module of `import a, b`.
+ */
+export function extractPythonGraphImports(content: string): string[] {
+    const out = new Set<string>();
+    const fromRe = /^[ \t]*from[ \t]+(\.*[\w.]*)[ \t]+import[ \t]+(?:\(([^)]*)\)|([^\n#]*))/gm;
+    let m: RegExpExecArray | null;
+    while ((m = fromRe.exec(content)) !== null) {
+        const mod = m[1];
+        if (!mod) continue;
+        out.add(mod);
+        for (const raw of (m[2] ?? m[3] ?? "").split(",")) {
+            const name = raw.replace(/#.*$/gm, "").trim().split(/\s+as\s+/)[0].trim();
+            if (/^\w+$/.test(name)) out.add(mod.endsWith(".") ? mod + name : `${mod}.${name}`);
+        }
+    }
+    const importRe = /^[ \t]*import[ \t]+([^\n#]+)/gm;
+    while ((m = importRe.exec(content)) !== null) {
+        for (const raw of m[1].split(",")) {
+            const name = raw.trim().split(/\s+as\s+/)[0].trim();
+            if (/^[\w.]+$/.test(name)) out.add(name);
+        }
+    }
+    return [...out].sort(stableCompare);
+}
+
+/** go.mod files above the project's Go sources (a Go import is module path + directory). */
+export function findGoModules(projectRoot: string, relFiles: string[]): GoModule[] {
+    const dirs = new Set<string>();
+    for (const f of relFiles) {
+        if (!f.endsWith(".go")) continue;
+        let d = path.posix.dirname(f.replace(/\\/g, "/"));
+        while (!dirs.has(d)) {
+            dirs.add(d);
+            if (d === ".") break;
+            d = path.posix.dirname(d);
+        }
+    }
+    const modules: GoModule[] = [];
+    for (const d of [...dirs].sort(stableCompare)) {
+        try {
+            const text = fs.readFileSync(path.join(projectRoot, d, "go.mod"), "utf8");
+            const m = /^[ \t]*module[ \t]+(\S+)/m.exec(text);
+            if (m) modules.push({ dir: d === "." ? "" : d, modulePath: m[1].replace(/^"|"$/g, "") });
+        } catch { /* no go.mod in this directory */ }
+    }
+    return modules;
+}
+
 /** Shorten an import path for display: strip leading ./ and trailing .js/.ts */
 function shortenImport(imp: string): string {
     return imp.replace(/^\.\//, "").replace(/\.js$|\.ts$/, "");
@@ -295,6 +367,9 @@ function walkFiles(dirPath: string): string[] {
                 if (!IGNORE_DIRS.has(entry.name)) walk(fullPath);
                 continue;
             }
+            // Same jail as the read tools: no symlinks (they can point outside
+            // the project), no sensitive files.
+            if (entry.isSymbolicLink() || isSensitivePath(fullPath)) continue;
 
             const ext = path.extname(entry.name).toLowerCase();
             if (!SUPPORTED_EXTENSIONS.has(ext)) continue;
@@ -416,6 +491,13 @@ export function buildFastLookup(allFiles: string[]): Map<string, string> {
                 lookup.set(dir.slice(4), normalized);
             }
         }
+        // Python package: `import pkg` / `from pkg import x` reads pkg/__init__.py
+        // (a module file pkg.py, if both exist, keeps the key).
+        if (noExt.endsWith("/__init__")) {
+            const dir = noExt.slice(0, -9);
+            if (!lookup.has(dir)) lookup.set(dir, normalized);
+            if (dir.startsWith("src/") && !lookup.has(dir.slice(4))) lookup.set(dir.slice(4), normalized);
+        }
         const match = noExt.match(/^(?:packages|workspaces|libs|apps)\/([^/]+)\/(?:src\/|lib\/)?(.*)$/);
         if (match) {
             const pkgName = match[1];
@@ -439,6 +521,17 @@ export function resolveImportFast(
     currentFile: string,
     lookup: Map<string, string>,
 ): string | null {
+    // Python relative import: ".mod", "..pkg.mod", "." — dots then a dotted name,
+    // never a "/". It used to be joined as a path ("pkg/.mod") and never resolved.
+    if (currentFile.endsWith(".py") && /^\.+[\w.]*$/.test(importStr)) {
+        const rest = importStr.replace(/^\.+/, "");
+        const dots = importStr.length - rest.length;
+        let dir = path.posix.dirname(currentFile.replace(/\\/g, "/"));
+        for (let i = 1; i < dots; i++) dir = path.posix.dirname(dir);
+        const joined = path.posix.join(dir, rest.split(".").filter(Boolean).join("/"));
+        const key = joined === "." ? "" : joined;
+        return lookup.get(key) ?? lookup.get(key ? `${key}/__init__` : "__init__") ?? null;
+    }
     if (!importStr.startsWith(".") && !importStr.startsWith("/") && !importStr.startsWith("@/")) {
         let resolved = lookup.get(importStr);
         if (resolved) return resolved;
@@ -488,12 +581,95 @@ export function resolveImportFast(
     return lookup.get(target) || null;
 }
 /**
+ * Go: resolve an import path to the files of the package it names.
+ *
+ * The file-suffix lookup used for other languages never matched a Go import
+ * (it names a directory), so no Go file had importers: blast radius was empty
+ * and an edit that broke another package was never checked against it.
+ * With a go.mod the path is module path + directory; without one, the longest
+ * directory suffix. Test files are not importable.
+ */
+function goImportResolver(allFiles: string[], goModules: GoModule[]): (importPath: string) => string[] {
+    const byDir = new Map<string, string[]>();
+    for (const f of allFiles) {
+        if (!f.endsWith(".go") || f.endsWith("_test.go")) continue;
+        const dir = path.posix.dirname(f);
+        const list = byDir.get(dir);
+        if (list) list.push(f); else byDir.set(dir, [f]);
+    }
+    const modules = [...goModules].sort((a, b) => b.modulePath.length - a.modulePath.length);
+    const none: string[] = [];
+
+    return (importPath: string): string[] => {
+        if (byDir.size === 0) return none;
+        for (const mod of modules) {
+            if (importPath !== mod.modulePath && !importPath.startsWith(mod.modulePath + "/")) continue;
+            const rel = importPath.slice(mod.modulePath.length + 1);
+            return byDir.get(path.posix.join(mod.dir || ".", rel)) ?? none;
+        }
+        if (modules.length > 0) return none; // standard library or another module
+        const segments = importPath.split("/");
+        for (let i = 0; i < segments.length; i++) {
+            const files = byDir.get(segments.slice(i).join("/"));
+            if (files) return files;
+        }
+        return none;
+    };
+}
+
+/**
+ * Python: resolve an absolute import whose root is a SUBDIRECTORY of the
+ * project ("app.core.auth" for backend/app/core/auth.py). resolveImportFast
+ * only strips leading components of the import; this strips them from the
+ * file path. Among several candidates the one nearest to the importer wins.
+ */
+function pythonSuffixResolver(allFiles: string[]): (importStr: string, importer: string) => string | null {
+    let bySuffix: Map<string, string[]> | null = null;
+    const build = (): Map<string, string[]> => {
+        const map = new Map<string, string[]>();
+        for (const f of allFiles) {
+            if (!f.endsWith(".py")) continue;
+            const noExt = f.slice(0, -3);
+            const segments = (noExt.endsWith("/__init__") ? noExt.slice(0, -9) : noExt).split("/");
+            for (let i = 0; i < segments.length; i++) {
+                const key = segments.slice(i).join("/");
+                if (key === "__init__") continue;
+                const list = map.get(key);
+                if (list) list.push(f); else map.set(key, [f]);
+            }
+        }
+        return map;
+    };
+    const sharedPrefix = (a: string, b: string): number => {
+        const as = a.split("/"), bs = b.split("/");
+        let n = 0;
+        while (n < as.length - 1 && n < bs.length - 1 && as[n] === bs[n]) n++;
+        return n;
+    };
+
+    return (importStr: string, importer: string): string | null => {
+        if (importStr.startsWith(".") || !/^[\w.]+$/.test(importStr)) return null;
+        bySuffix ??= build();
+        const candidates = bySuffix.get(importStr.replace(/\./g, "/"));
+        if (!candidates || candidates.length === 0) return null;
+        let best = candidates[0];
+        let bestShared = sharedPrefix(best, importer);
+        for (let i = 1; i < candidates.length; i++) {
+            const shared = sharedPrefix(candidates[i], importer);
+            if (shared > bestShared) { best = candidates[i]; bestShared = shared; }
+        }
+        return best;
+    };
+}
+
+/**
  * Build a dependency graph from repo map entries.
  * Computes in-degree (how many files import each file) and classifies by percentile.
  */
 export async function buildDependencyGraph(
     entries: RepoMapEntry[],
     allFiles: string[],
+    options: GraphOptions = {},
 ): Promise<DependencyGraph> {
     const lookup = buildFastLookup(allFiles);
     const importedBy = new Map<string, Set<string>>();
@@ -505,16 +681,35 @@ export async function buildDependencyGraph(
         importedBy.set(file, new Set());
     }
 
+    const addEdge = (target: string, importer: string): void => {
+        if (target === importer) return;
+        const consumers = importedBy.get(target) || new Set();
+        if (consumers.has(importer)) return; // one edge per (importer, target)
+        consumers.add(importer);
+        importedBy.set(target, consumers);
+        inDegree.set(target, (inDegree.get(target) || 0) + 1);
+    };
+
+    const resolveGo = goImportResolver(allFiles, options.goModules ?? []);
+    const resolvePython = pythonSuffixResolver(allFiles);
+
     // Build reverse graph
     for (const entry of entries) {
-        for (const imp of entry.imports) {
-            const resolved = resolveImportFast(imp, entry.filePath, lookup);
-            if (resolved && resolved !== entry.filePath) {
-                inDegree.set(resolved, (inDegree.get(resolved) || 0) + 1);
-                const deps = importedBy.get(resolved) || new Set();
-                deps.add(entry.filePath);
-                importedBy.set(resolved, deps);
+        if (entry.filePath.endsWith(".go")) {
+            // A Go import names a PACKAGE: every file of that directory is a target.
+            for (const imp of entry.imports) {
+                for (const target of resolveGo(imp)) addEdge(target, entry.filePath);
             }
+            continue;
+        }
+        const isPython = entry.filePath.endsWith(".py");
+        const imports = isPython && entry.graphImports
+            ? [...new Set([...entry.imports, ...entry.graphImports])]
+            : entry.imports;
+        for (const imp of imports) {
+            const resolved = resolveImportFast(imp, entry.filePath, lookup)
+                ?? (isPython ? resolvePython(imp, entry.filePath) : null);
+            if (resolved) addEdge(resolved, entry.filePath);
         }
     }
 
@@ -709,6 +904,9 @@ export async function generateRepoMap(
 
         const imports = extractImports(content, ext);
         const exports = extractExports(content, ext);
+        const graphImports = ext === ".py"
+            ? extractPythonGraphImports(content).filter(i => !imports.includes(i))
+            : [];
 
         // Parse with tree-sitter for signatures
         const signatures: string[] = [];
@@ -729,15 +927,26 @@ export async function generateRepoMap(
         // Sort signatures alphabetically for deterministic output
         signatures.sort(stableCompare);
 
+        const purpose = extractFilePurpose(content, path.basename(filePath));
         const relPath = path.relative(projectRoot, filePath).replace(/\\/g, "/");
-        entries.push({ filePath: relPath, exports, signatures, imports, lineCount });
+        entries.push({
+            filePath: relPath,
+            exports,
+            signatures,
+            imports,
+            lineCount,
+            ...(purpose ? { purpose } : {}),
+            ...(graphImports.length > 0 ? { graphImports } : {}),
+        });
     }
 
     // Sort by file path for deterministic output (locale-independent)
     entries.sort((a, b) => stableCompare(a.filePath, b.filePath));
 
     const allRelPaths = entries.map(e => e.filePath);
-    const graph = await buildDependencyGraph(entries, allRelPaths);
+    const graph = await buildDependencyGraph(entries, allRelPaths, {
+        goModules: findGoModules(projectRoot, allRelPaths),
+    });
 
     return {
         version: "1.0.0",
@@ -751,6 +960,62 @@ export async function generateRepoMap(
 
 // ─── Text Rendering (Deterministic) ─────────────────────────────────
 
+/**
+ * Extract a concise 1-line purpose description from a file's leading comment block.
+ */
+function extractFilePurpose(content: string, baseName: string): string | undefined {
+    const lines = content.split("\n").slice(0, 20);
+    const commentLines: string[] = [];
+    let inBlock = false;
+
+    for (const raw of lines) {
+        const t = raw.trim();
+        if (!inBlock) {
+            if (t === "" || t.startsWith("#!")) continue;
+            if (t.startsWith("//") || t.startsWith("#")) {
+                const c = t.replace(/^(?:\/\/|#)+\s*/, "").trim();
+                if (c) commentLines.push(c);
+                continue;
+            }
+            if (t.startsWith("/*")) {
+                inBlock = true;
+                const c = t.replace(/^\/\*+\s*/, "").replace(/\*+\/\s*$/, "").trim();
+                if (c) commentLines.push(c);
+                if (t.includes("*/")) inBlock = false;
+                continue;
+            }
+            break;
+        } else {
+            const c = t.replace(/^\*+\/?\s*/, "").replace(/\*+\/\s*$/, "").trim();
+            if (c) commentLines.push(c);
+            if (t.includes("*/")) break;
+        }
+    }
+
+    if (commentLines.length === 0) return undefined;
+
+    const stem = baseName.replace(/\.[^.]+$/, "");
+    for (const line of commentLines) {
+        if (line.startsWith("@")) continue;
+        // Strip leading "filename.ts - " or "dir/filename.ts — " prefix
+        const stripped = line
+            // stem escaped: "[id].tsx", "a(b.ts" are legal file names, and an
+            // unbalanced bracket made this RegExp throw, aborting the whole map.
+            .replace(new RegExp(`^(?:[\\w./-]+\\/)?${escapeRegExp(stem)}(?:\\.[a-z0-9]+)?\\s*[-—:]\\s*`, "i"), "")
+            .trim();
+        if (stripped.length >= 8 && stripped.toLowerCase() !== baseName.toLowerCase()) {
+            return stripped.length > 90 ? stripped.slice(0, 87) + "..." : stripped;
+        }
+    }
+    return undefined;
+}
+
+/** Signature lines per file in depth:"full" (the rest: names only, then `outline`). */
+const FULL_MAP_SIGNATURE_CAP = 15;
+const FULL_MAP_HIDDEN_NAME_CAP = 40;
+/** Data/markup files: their parser chunks are keys and selectors, not signatures. */
+const MAP_NO_SIGNATURES = new Set([".json", ".css", ".html"]);
+
 export function repoMapToText(map: RepoMap, depth: "skeleton" | "full" = "skeleton", pressure: number = 0): string {
     const lines: string[] = [];
     const isSkeleton = depth === "skeleton";
@@ -761,7 +1026,8 @@ export function repoMapToText(map: RepoMap, depth: "skeleton" | "full" = "skelet
     if (!map.graph || !map.graph.clusters) {
         // Fallback for pre-v7.5 caches — render flat list
         for (const entry of map.entries) {
-            lines.push(`${entry.filePath} (${entry.lineCount} lines)`);
+            const purposeSuffix = entry.purpose ? ` — ${entry.purpose}` : "";
+            lines.push(`${entry.filePath} (${entry.lineCount} lines)${purposeSuffix}`);
             if (entry.exports.length > 0) lines.push(`  exports: ${entry.exports.join(", ")}`);
             for (const sig of entry.signatures) lines.push(`  ${sig}`);
             if (entry.imports.length > 0) {
@@ -793,6 +1059,9 @@ export function repoMapToText(map: RepoMap, depth: "skeleton" | "full" = "skelet
     for (const [dir, data] of Array.from(dirs.entries()).sort((a, b) => stableCompare(a[0], b[0]))) {
         const cleanDir = dir === "." ? "(root)" : dir;
 
+        // Skeleton = CORE/BRIDGE only (documented contract). Listing every leaf
+        // with its purpose line tripled the default map (2.6k -> 8.1k tokens on
+        // NREKI itself); leaf purposes are shown by depth:"full".
         if (data.cores.length === 0 && isSkeleton) {
             lines.push(`${cleanDir}/ [${data.leafs} peripheral files]`);
             continue;
@@ -818,17 +1087,35 @@ export function repoMapToText(map: RepoMap, depth: "skeleton" | "full" = "skelet
                     const more = core.exports.length > 3 ? ", ..." : "";
                     exportStr = ` exports: ${topExports}${more}`;
                 }
-                lines.push(`  [${tier.toUpperCase()}] ${cleanName} (${core.lineCount}L)${exportStr}`);
+                const purposeStr = core.purpose && pressure <= 0.7 ? ` — ${core.purpose}` : "";
+                lines.push(`  [${tier.toUpperCase()}] ${cleanName} (${core.lineCount}L)${exportStr}${purposeStr}`);
             } else {
                 // FULL: All topology metadata
                 const inDeg = map.graph!.inDegree.get(core.filePath) || 0;
                 const v2 = map.graph!.v2Score?.get(core.filePath)?.toFixed(3) || "0";
                 const cluster = map.graph!.clusters?.get(core.filePath) || "orphan";
-                lines.push(`  [${tier.toUpperCase()}] ${cleanName} (${core.lineCount}L) (In:${inDeg}, v2:${v2}, ${cluster})`);
-                if (core.exports.length > 0) {
-                    lines.push(`    exports: ${core.exports.join(", ")}`);
+                const purposeStr = core.purpose ? ` — ${core.purpose}` : "";
+                lines.push(`  [${tier.toUpperCase()}] ${cleanName} (${core.lineCount}L) (In:${inDeg}, v2:${v2}, ${cluster})${purposeStr}`);
+                // Token cost: a JSON/CSS/HTML file has no signatures (its keys were
+                // printed as `class: "type":"module"`), an export named by a
+                // signature line was listed twice, and a file of 40 helpers printed
+                // 40 lines. `outline` gives the rest on demand.
+                const sigs = MAP_NO_SIGNATURES.has(path.extname(core.filePath).toLowerCase()) ? [] : core.signatures;
+                const named = new Set(sigs.map(s => /^\w+:\s*([A-Za-z_$][\w$]*)/.exec(s)?.[1]).filter(Boolean));
+                const exportsLeft = core.exports.filter(e => !named.has(e));
+                if (exportsLeft.length > 0) {
+                    lines.push(`    exports: ${exportsLeft.join(", ")}`);
                 }
-                for (const sig of core.signatures) lines.push(`    ${sig}`);
+                for (const sig of sigs.slice(0, FULL_MAP_SIGNATURE_CAP)) lines.push(`    ${sig}`);
+                if (sigs.length > FULL_MAP_SIGNATURE_CAP) {
+                    // The hidden ones keep their NAME (the list is alphabetical: a cut
+                    // without names hid `invoiceTotal` behind 24 `consumerValueNN`).
+                    const hidden = sigs.slice(FULL_MAP_SIGNATURE_CAP)
+                        .map(s => /^\w+:\s*([A-Za-z_$][\w$]*)/.exec(s)?.[1] ?? s);
+                    const names = hidden.slice(0, FULL_MAP_HIDDEN_NAME_CAP).join(", ");
+                    const rest = hidden.length > FULL_MAP_HIDDEN_NAME_CAP ? `, +${hidden.length - FULL_MAP_HIDDEN_NAME_CAP}` : "";
+                    lines.push(`    … +${hidden.length} more: ${names}${rest} (outline ${core.filePath})`);
+                }
                 if (core.imports.length > 0) {
                     lines.push(`    imports: ${core.imports.map(shortenImport).join(", ")}`);
                 }
@@ -879,11 +1166,15 @@ export async function getOrGenerateRepoMap(
     // Check cache
     if (!forceRefresh && fs.existsSync(cachePath)) {
         try {
-            const cached: CachedRepoMap = JSON.parse(
+            const { tag, ...cached } = JSON.parse(
                 fs.readFileSync(cachePath, "utf-8"),
                 (k, v) => (k === "__proto__" || k === "constructor" || k === "prototype" ? undefined : v),
-            );
-            if (cached.digest === currentDigest && (cached.formatVersion ?? 0) === CACHE_FORMAT_VERSION) {
+            ) as CachedRepoMap & { tag?: unknown };
+            // Its text goes straight into `map` output: a cache shipped with the
+            // project (archives keep mtimes, so the digest can match) must not be
+            // served. Only a cache signed on this machine is (NREKI-SEC-06).
+            if (verifyState("repo-map", JSON.stringify(cached), tag) &&
+                cached.digest === currentDigest && (cached.formatVersion ?? 0) === CACHE_FORMAT_VERSION) {
                 // Restore graph from cached serialized form
                 if (cached.graph) {
                     cached.map.graph = deserializeGraph(cached.graph);
@@ -907,7 +1198,7 @@ export async function getOrGenerateRepoMap(
     // Strip non-serializable graph from the map for JSON storage
     const mapForCache = { ...map, graph: undefined };
     const cacheData: CachedRepoMap = { formatVersion: CACHE_FORMAT_VERSION, digest: currentDigest, map: mapForCache, text, graph: graphData };
-    fs.writeFileSync(cachePath, JSON.stringify(cacheData));
+    fs.writeFileSync(cachePath, JSON.stringify({ ...cacheData, tag: signState("repo-map", JSON.stringify(cacheData)) }));
 
     return { map, text, fromCache: false };
 }

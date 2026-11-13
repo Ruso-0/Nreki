@@ -1,16 +1,17 @@
 /**
- * undo.ts - Auto-rollback for nreki_code action:"edit".
+ * undo.ts - Auto-rollback and revert for applied edits (nreki_code action:"edit").
  *
- * Before any semantic edit writes a file, we save a backup to
+ * Before any semantic edit is applied to a file, we save a backup to
  * .nreki/backups/<base64-encoded-filepath>. Only the LAST
  * backup per file is kept (not a full history).
  *
- * nreki_undo restores the file to its state before the last edit.
+ * Reverts an applied edit afterwards by restoring the file to its state before the last edit.
  */
 
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
+import { captureFileTraits, applyModeTraits } from "./utils/file-traits.js";
 
 // ─── Helpers ────────────────────────────────────────────────────────
 
@@ -41,6 +42,13 @@ export function saveBackup(projectRoot: string, filePath: string): void {
     // AUDIT FIX: Always resolve against projectRoot (consistent with getBackupPath)
     const resolved = path.resolve(projectRoot, filePath);
 
+    // Whenever the CURRENT state cannot be captured, a backup left over from an
+    // earlier edit must not survive: undo would silently restore a version from
+    // two edits ago while claiming "state before the last edit".
+    const dropStaleBackup = (): void => {
+        try { fs.unlinkSync(getBackupPath(projectRoot, filePath)); } catch { /* none */ }
+    };
+
     // AUDIT FIX (Patch 3): Binary check + size cap BEFORE full-file load (OOM guard).
     // Pre-fix: readFileSync(..., "utf-8") of a 2GB misdirected file crashed MCP
     // with OOM before the null-byte check fired.
@@ -48,28 +56,34 @@ export function saveBackup(projectRoot: string, filePath: string): void {
     try {
         fd = fs.openSync(resolved, "r");
     } catch {
+        dropStaleBackup();
         return; // File doesn't exist or permission denied
     }
 
+    let capturable = true;
     try {
         const stats = fs.fstatSync(fd);
 
         // Hard cap: refuse to backup files > 100MB. No code file is ever this big;
         // hitting this means the agent pointed at a log/dump/db by mistake.
-        if (stats.size > 100 * 1024 * 1024) return;
+        if (stats.size > 100 * 1024 * 1024) capturable = false;
 
         const probeSize = Math.min(8192, stats.size);
-        if (probeSize > 0) {
+        if (capturable && probeSize > 0) {
             const probe = new Uint8Array(probeSize);
             const bytesRead = fs.readSync(fd, probe, 0, probeSize, 0);
             for (let i = 0; i < bytesRead; i++) {
-                if (probe[i] === 0) return; // Binary file — skip backup
+                if (probe[i] === 0) { capturable = false; break; } // Binary file — skip backup
             }
         }
     } catch {
-        return;
+        capturable = false;
     } finally {
         try { fs.closeSync(fd); } catch { /* already closed or invalid fd */ }
+    }
+    if (!capturable) {
+        dropStaleBackup();
+        return;
     }
 
     // Safe to load: non-binary, under size cap.
@@ -77,6 +91,7 @@ export function saveBackup(projectRoot: string, filePath: string): void {
     try {
         content = fs.readFileSync(resolved, "utf-8");
     } catch {
+        dropStaleBackup();
         return;
     }
 
@@ -92,11 +107,47 @@ export function saveBackup(projectRoot: string, filePath: string): void {
 }
 
 /**
+ * Remember the current backups of `filePaths` so a commit that aborts after
+ * saveBackup() (TOCTOU conflict, OS error) can put them back: otherwise undo
+ * would point at the state the failed commit captured instead of the state
+ * before the last SUCCESSFUL edit (I-03).
+ */
+export function snapshotBackups(projectRoot: string, filePaths: ReadonlyArray<string>): { restore: () => void } {
+    const saved = filePaths.map(fp => {
+        const backup = getBackupPath(projectRoot, fp);
+        let content: Buffer | null = null;
+        try { content = fs.readFileSync(backup); } catch { /* no previous backup */ }
+        return { backup, content };
+    });
+    return {
+        restore: () => {
+            for (const { backup, content } of saved) {
+                try {
+                    if (content === null) fs.rmSync(backup, { force: true });
+                    else fs.writeFileSync(backup, content);
+                } catch { /* best effort: undo then reports the newer backup */ }
+            }
+        },
+    };
+}
+
+/**
  * Restore a file from its backup.
  * Throws a clear error if no backup exists.
  * Returns a success message.
  */
 export function restoreBackup(projectRoot: string, filePath: string): string {
+    return restoreBackupWithContent(projectRoot, filePath).message;
+}
+
+/**
+ * Restore a file from its backup and return the restored content too.
+ * Atomic (temp + rename, original permission bits kept): an interrupted
+ * restore can no longer truncate the file, and the backup — the only copy of
+ * the previous state — is deleted only AFTER the rename succeeded
+ * (NREKI-INT-05).
+ */
+export function restoreBackupWithContent(projectRoot: string, filePath: string): { message: string; content: string } {
     const backupPath = getBackupPath(projectRoot, filePath);
 
     if (!fs.existsSync(backupPath)) {
@@ -108,10 +159,22 @@ export function restoreBackup(projectRoot: string, filePath: string): string {
 
     const content = fs.readFileSync(backupPath, "utf-8");
     const resolved = path.resolve(projectRoot, filePath);
-    fs.writeFileSync(resolved, content, "utf-8");
+    const traits = captureFileTraits(resolved);
+    const tmpPath = `${resolved}.nreki-undo-${crypto.randomBytes(4).toString("hex")}.tmp`;
+    try {
+        fs.writeFileSync(tmpPath, content, "utf-8");
+        applyModeTraits(tmpPath, traits);
+        fs.renameSync(tmpPath, resolved);
+    } catch (err) {
+        try { fs.unlinkSync(tmpPath); } catch { /* not created */ }
+        throw err;
+    }
 
     // Remove the backup after restore (one-shot undo)
     fs.unlinkSync(backupPath);
 
-    return `Restored "${filePath}" to its state before the last nreki_code action:"edit".`;
+    return {
+        message: `Restored "${filePath}" to its state before the last nreki_code action:"edit".`,
+        content,
+    };
 }

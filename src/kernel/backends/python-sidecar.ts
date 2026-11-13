@@ -9,42 +9,34 @@
  * Capabilities:
  *   - supportsAutoHealing: true when basedpyright is active, false otherwise
  *   - supportsTTRD: false (both servers return imprecise hover for type contracts)
+ *   - Diagnostics are pulled: pyright registers textDocument/diagnostic
+ *     dynamically and then stops publishing (verified against pyright 1.1.414:
+ *     tests/lsp-real-pyright.test.ts; basedpyright not verified)
  *
  * @author Jherson Eddie Tintaya Holguin (Ruso-0)
  */
 
-import { spawnSync } from "child_process";
 import { LspSidecarBase } from "./lsp-sidecar-base.js";
 import { logger } from "../../utils/logger.js";
+import { resolveExecutable } from "../../utils/safe-exec.js";
 
 /**
- * Synchronous check whether basedpyright is installed and callable.
- * Uses the `basedpyright` CLI binary (not -langserver, which requires
- * stdio connection to respond). Times out in 3s to prevent boot hang
- * on weird environments.
+ * Is basedpyright-langserver installed in a TRUSTED PATH entry?
+ *
+ * NREKI-SEC-03: this used to run `spawnSync("basedpyright --version",
+ * { shell: true })` at MCP server start-up — no cwd, no env filter. On
+ * Windows cmd.exe searches the current directory (the repository) first, so
+ * a cloned repo shipping `basedpyright.cmd` got code execution with the full
+ * process.env (API keys, tokens) before the user did anything. Resolving the
+ * binary from PATH ourselves executes nothing.
  */
-function isBasedPyrightAvailable(): boolean {
-    try {
-        // Single-string command + shell:true silences Node's DEP0190
-        // (that deprecation fires when passing args array alongside shell:true).
-        // shell:true is required on Windows because npm installs
-        // basedpyright as a .cmd shim, and Node 18+ refuses to spawn
-        // .cmd files without a shell (CVE-2024-27980 mitigation).
-        const res = spawnSync("basedpyright --version", {
-            encoding: "utf8",
-            windowsHide: true,
-            timeout: 3000,
-            shell: true,
-        });
-        return res.status === 0 && !res.error;
-    } catch {
-        return false;
-    }
+function isBasedPyrightAvailable(projectRoot: string): boolean {
+    return resolveExecutable("basedpyright-langserver", { projectRoot }) !== null;
 }
 
 export class PythonLspSidecar extends LspSidecarBase {
     constructor(projectRoot: string) {
-        const isBased = isBasedPyrightAvailable();
+        const isBased = isBasedPyrightAvailable(projectRoot);
         const cmd = isBased
             ? ["basedpyright-langserver", "--stdio"]
             : ["pyright-langserver", "--stdio"];

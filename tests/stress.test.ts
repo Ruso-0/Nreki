@@ -23,8 +23,6 @@ import { NrekiDB } from "../src/database.js";
 import {
     AdvancedCompressor,
     preprocess,
-    scoreTokens,
-    filterTokens,
 } from "../src/compressor.js";
 import { CognitiveEnforcer } from "../src/hooks/cognitive-enforcer.js";
 import { estimateTokens } from "../src/utils/token-estimator.js";
@@ -56,16 +54,6 @@ describe("Stress: Empty file", () => {
         const { cleaned, removed } = preprocess("", "empty.ts");
         expect(cleaned).toBe("");
         expect(removed).toBe(0);
-    });
-
-    it("scoreTokens handles empty string", () => {
-        const scored = scoreTokens("", 0.5);
-        expect(scored).toEqual([]);
-    });
-
-    it("filterTokens handles empty scored array", () => {
-        const result = filterTokens([], "aggressive");
-        expect(result).toBe("");
     });
 
     it("CognitiveEnforcer handles empty file", () => {
@@ -118,17 +106,12 @@ describe("Stress: Huge 500KB TypeScript file", () => {
         expect(removed).toBeGreaterThanOrEqual(0);
     });
 
-    it("scoreTokens handles large input", () => {
-        // Score just the first 10KB to keep test fast
-        const slice = hugeContent.slice(0, 10_000);
-        const scored = scoreTokens(slice, 0.5);
-        expect(scored.length).toBeGreaterThan(100);
-    });
-
-    it("CognitiveEnforcer blocks 500KB file read", () => {
+    it("CognitiveEnforcer lets a 500KB read through to handleRead's auto-shield", () => {
+        // v12.0.1 (audit C-01): size is handleRead's job (it returns a compressed
+        // AUTO-SHIELD view above 12k tokens); blocking cost turns for nothing.
         const enforcer = new CognitiveEnforcer(TMP_DIR);
         const result = enforcer.evaluate("nreki_code", "read", { path: hugePath });
-        expect(result.blocked).toBe(true);
+        expect(result.blocked).toBe(false);
     });
 
     it("estimateTokens handles large content", () => {
@@ -146,12 +129,6 @@ describe("Stress: Binary data", () => {
         const str = binary.toString("utf-8"); // will have replacement chars
         const { cleaned } = preprocess(str, "data.bin");
         expect(typeof cleaned).toBe("string");
-    });
-
-    it("scoreTokens handles binary gibberish", () => {
-        const garbage = "ÿþ\x00\x01\x02ñ©®\uFFFD\uFFFD";
-        const scored = scoreTokens(garbage, 0.5);
-        expect(Array.isArray(scored)).toBe(true);
     });
 
     it("CognitiveEnforcer allows small binary files", () => {
@@ -193,29 +170,17 @@ const greeting = "Hello 世界 🌍";
 const emoji_var = "🎉🎊🎈";
 `;
 
-    it("preprocess preserves unicode identifiers", () => {
-        const { cleaned } = preprocess(UNICODE_CODE, "unicode.ts");
+    it("preprocess preserves unicode identifiers", async () => {
+        // v12.0.1: noise ranges come from the AST (tree-sitter indices are UTF-16
+        // code units, so non-ASCII identifiers before a comment must not shift them).
+        const { ASTParser } = await import("../src/parser.js");
+        const { findNoiseRanges } = await import("../src/compressor.js");
+        const parser = new ASTParser();
+        await parser.initialize();
+        const { cleaned } = preprocess(UNICODE_CODE, "unicode.ts", await findNoiseRanges(UNICODE_CODE, "unicode.ts", parser));
         expect(cleaned).toContain("データ処理");
         expect(cleaned).toContain("名前");
         expect(cleaned).not.toContain("console.log");
-    });
-
-    it("scoreTokens handles CJK + emoji tokens", () => {
-        const scored = scoreTokens("データ 処理 🚀 実行 Hello", 0.5);
-        const nonBreak = scored.filter(t => !t.lineBreak);
-        expect(nonBreak.length).toBeGreaterThan(0);
-        // CJK tokens should have high self-info (not in UNIGRAM_FREQ)
-        const cjk = nonBreak.find(t => t.token === "データ");
-        if (cjk) {
-            expect(cjk.score).toBeGreaterThan(5);
-        }
-    });
-
-    it("filterTokens preserves emoji in output", () => {
-        const scored = scoreTokens("Hello 🚀 world 🌍 test", 0.5);
-        const filtered = filterTokens(scored, "light");
-        expect(filtered).toContain("🚀");
-        expect(filtered).toContain("🌍");
     });
 
     it("database stores and retrieves unicode chunks", () => {
@@ -259,25 +224,6 @@ describe("Stress: Minified JavaScript (single line)", () => {
         expect(cleaned.length).toBeGreaterThan(0);
     });
 
-    it("scoreTokens handles extremely long single line", () => {
-        // Take first 5KB to keep test fast
-        const slice = minified.slice(0, 5_000);
-        const scored = scoreTokens(slice, 0.5);
-        expect(scored.length).toBeGreaterThan(0);
-    });
-
-    it("filterTokens handles minified content without crash", () => {
-        const slice = minified.slice(0, 5_000);
-        const scored = scoreTokens(slice, 0.7);
-        const filtered = filterTokens(scored, "aggressive");
-        // Minified JS is mostly protected tokens (operators, parens, numbers)
-        // so filtering may not reduce size - but it should not crash
-        expect(typeof filtered).toBe("string");
-        expect(filtered.length).toBeGreaterThan(0);
-        // Verify some content survived
-        expect(filtered).toContain("var");
-    });
-
     it("estimateTokens on minified JS", () => {
         const tokens = estimateTokens(minified);
         expect(tokens).toBeGreaterThan(10_000);
@@ -303,22 +249,27 @@ describe("Stress: 100% comments file", () => {
 /* final comment */
 `;
 
-    it("preprocess strips everything, leaving minimal content", () => {
-        const { cleaned, removed } = preprocess(ALL_COMMENTS, "comments.ts");
+    // v12.0.1: comment ranges come from the AST; preprocess() alone only
+    // normalizes whitespace (it no longer guesses with regexes).
+    let parser: import("../src/parser.js").ASTParser;
+    let astClean: (code: string, file: string) => Promise<{ cleaned: string; removed: number }>;
+    beforeAll(async () => {
+        const { ASTParser } = await import("../src/parser.js");
+        const { findNoiseRanges } = await import("../src/compressor.js");
+        parser = new ASTParser();
+        await parser.initialize();
+        astClean = async (code, file) => preprocess(code, file, await findNoiseRanges(code, file, parser));
+    });
+
+    it("preprocess strips everything, leaving minimal content", async () => {
+        const { cleaned, removed } = await astClean(ALL_COMMENTS, "comments.ts");
         // Should remove virtually all content
         expect(removed).toBeGreaterThan(ALL_COMMENTS.length * 0.8);
         // Cleaned should be mostly empty (just whitespace/newlines)
         expect(cleaned.trim().length).toBeLessThan(10);
     });
 
-    it("scoreTokens handles near-empty result from preprocessing", () => {
-        const { cleaned } = preprocess(ALL_COMMENTS, "comments.ts");
-        const scored = scoreTokens(cleaned, 0.5);
-        // Should be very few or no tokens
-        expect(scored.length).toBeLessThan(5);
-    });
-
-    it("Python docstring-only file", () => {
+    it("Python docstring-only file", async () => {
         const pyDocOnly = `
 """
 This module does nothing.
@@ -332,7 +283,7 @@ It's entirely documentation.
 Triple single-quote docstring.
 '''
 `;
-        const { cleaned, removed } = preprocess(pyDocOnly, "doconly.py");
+        const { removed } = await astClean(pyDocOnly, "doconly.py");
         expect(removed).toBeGreaterThan(pyDocOnly.length * 0.7);
     });
 });
@@ -360,25 +311,6 @@ describe("Stress: Deeply nested functions (20 levels)", () => {
         expect(cleaned).toContain("function level0()");
         expect(cleaned).toContain("function level19()");
         expect(cleaned).toContain("'deep'");
-    });
-
-    it("scoreTokens handles nested function tokens", () => {
-        const scored = scoreTokens(nested, 0.7);
-        const functions = scored.filter(t => t.token === "function");
-        expect(functions.length).toBe(20);
-        // "function" keyword should be protected
-        for (const f of functions) {
-            expect(f.protected).toBe(true);
-        }
-    });
-
-    it("filterTokens preserves function keywords at all levels", () => {
-        const scored = scoreTokens(nested, 0.7);
-        for (const level of ["light", "medium", "aggressive"] as const) {
-            const filtered = filterTokens(scored, level);
-            expect(filtered).toContain("function");
-            expect(filtered).toContain("level0()");
-        }
     });
 });
 
@@ -470,18 +402,6 @@ export class { // missing name
         expect(cleaned.length).toBeGreaterThan(0);
     });
 
-    it("scoreTokens handles malformed tokens", () => {
-        const scored = scoreTokens(MALFORMED_TS, 0.5);
-        expect(Array.isArray(scored)).toBe(true);
-        expect(scored.length).toBeGreaterThan(0);
-    });
-
-    it("filterTokens handles malformed scored tokens", () => {
-        const scored = scoreTokens(MALFORMED_TS, 0.5);
-        const result = filterTokens(scored, "aggressive");
-        expect(typeof result).toBe("string");
-    });
-
     it("preprocess handles unclosed string literals", () => {
         const unclosed = `const x = "unclosed string\nconst y = 'also unclosed\nconst z = \`template`;
         const { cleaned } = preprocess(unclosed, "unclosed.ts");
@@ -504,8 +424,6 @@ describe("Stress: Repeated 100x indexing (idempotency)", () => {
 
         const content = "export function repeat() { return 42; }";
         const hash = db.hashContent(content);
-        const embedding = new Float32Array(512).fill(0.42);
-
         for (let i = 0; i < 100; i++) {
             // Simulate re-indexing: clear + insert + upsert
             db.clearChunks("/test/repeat.ts");
@@ -514,7 +432,7 @@ describe("Stress: Repeated 100x indexing (idempotency)", () => {
                 "[func] repeat() { /* TG:L1-L3 */ }",
                 content,
                 "func", 1, 3,
-                embedding
+                0, content.length, "repeat",
             );
             db.upsertFile("/test/repeat.ts", hash);
         }
@@ -564,7 +482,7 @@ describe("Stress: Repeated 100x indexing (idempotency)", () => {
 
         // Log 100 usage entries
         for (let i = 0; i < 100; i++) {
-            db.logUsage("nreki_search", 10, 20, 50);
+            db.batchInsertUsage([["nreki_search", 10, 20, 50]]);
         }
 
         const stats = db.getUsageStats();

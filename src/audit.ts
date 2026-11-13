@@ -505,15 +505,9 @@ export async function computeAudit(
 
     // B.4 Fix: Chronos Honeymoon check.
     // Require minimum 5 sessions of history before trusting Stability metric.
-    try {
-        const dbPath = path.join(projectRoot, ".nreki", "chronos-history.json");
-        if (fs.existsSync(dbPath)) {
-            const data = JSON.parse(fs.readFileSync(dbPath, "utf-8"));
-            sessionCount = data.currentSessionId || 0;
-        }
-    } catch {
-        // Chronos history unavailable, stability stays unavailable
-    }
+    // Read from the loaded ChronosMemory, which only trusts a history file
+    // signed on this machine (a raw read would count a planted file).
+    sessionCount = chronos?.sessionCount ?? 0;
 
     if (chronos && sessionCount >= 5) {
         stabilityAvailable = true;

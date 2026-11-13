@@ -11,6 +11,30 @@ import { semanticEdit, batchSemanticEdit, detectSignatureChange, type EditMode, 
 import { acquireFileLock, releaseFileLock } from "../../middleware/file-lock.js";
 import { logger } from "../../utils/logger.js";
 import { ensureKernelBooted, processKernelResult } from "./kernel-bridge.js";
+import { buildValidationBanner, describeKernelUnavailable, type DependentsScope } from "./validation-banner.js";
+import { formatBlastRadius, verifiedImporters } from "./blast-radius.js";
+
+/** Max importers type-checked per edit in file/hologram mode (unveil/check cost bound). */
+const DEPENDENT_CHECK_CAP = 50;
+
+const isConflictError = (err: unknown): boolean => (err as Error)?.name === "NrekiConflictError";
+
+/** True when the file's semantic checker is an LSP sidecar (Go, Python). A failing lookup means "no". */
+function isLspCovered(kernel: NonNullable<RouterDependencies["kernel"]>, file: string): boolean {
+    try {
+        return kernel.getSemanticCoverage(file).backend === "lsp";
+    } catch {
+        return false;
+    }
+}
+
+/** Copy-pasteable recovery call. JSON.stringify escapes quotes/backslashes in paths. */
+function chronosRecoveryCall(filePath: string): string {
+    return JSON.stringify({
+        name: "nreki_code",
+        arguments: { action: "read", path: filePath, compress: false, _nreki_bypass: "chronos_recovery" },
+    });
+}
 
 // ─── Edit ───────────────────────────────────────────────────────────
 
@@ -80,7 +104,7 @@ export async function handleEdit(
                         `Required: read the full file before editing, with chronos recovery bypass.\n\n` +
                         `**Emit this exact JSON-RPC tool call:**\n` +
                         `\`\`\`json\n` +
-                        `{"name":"nreki_code","arguments":{"action":"read","path":"${file}","compress":false,"_nreki_bypass":"chronos_recovery"}}\n` +
+                        `${chronosRecoveryCall(file)}\n` +
                         `\`\`\`\n\n` +
                         `After NREKI returns the file content, retry your edit.`,
                 }],
@@ -128,13 +152,38 @@ export async function handleEdit(
         // ─── NREKI Layer 2: Cross-file semantic verification ─────────
         let kernelResult: NrekiInterceptResult | undefined;
         let ttrdFeedback = "";
+        const depScope: DependentsScope = { lookedUp: false, checked: 0, total: 0 };
+        // Importers handed to the kernel with the edit: TypeScript ones are
+        // type-checked, Go/Python ones are opened in their LSP sidecar.
+        let dependentsToInject: string[] = [];
+        let lspImportersUnknown = false;
         if (useKernel && deps.kernel) {
-            let dependentsToInject: string[] = [];
-            if (deps.nrekiMode === "hologram") {
+            const relPath = path.relative(engine.getProjectRoot(), resolvedPath).replace(/\\/g, "/");
+            if (isLspCovered(deps.kernel, resolvedPath)) {
+                // Go/Python, in every mode: gopls/pyright only report OPEN documents,
+                // so the kernel opens the importers (plus the files of the same Go
+                // package) before it measures the edit. It caps them and reports
+                // how many it left out.
                 try {
-                    const relPath = path.relative(engine.getProjectRoot(), resolvedPath).replace(/\\/g, "/");
+                    dependentsToInject = await engine.findDependents(relPath);
+                } catch {
+                    lspImportersUnknown = true;
+                }
+            } else if (deps.nrekiMode === "file") {
+                // NREKI-INT-06: file mode used to type-check ONLY the edited file, so a
+                // signature change breaking every importer was committed as [OK].
+                try {
                     const allDependents = await engine.findDependents(relPath);
-                    if (allDependents.length <= 50) {
+                    dependentsToInject = allDependents.slice(0, DEPENDENT_CHECK_CAP);
+                    Object.assign(depScope, { lookedUp: true, total: allDependents.length });
+                } catch {
+                    dependentsToInject = [];
+                }
+            } else if (deps.nrekiMode === "hologram") {
+                try {
+                    const allDependents = await engine.findDependents(relPath);
+                    Object.assign(depScope, { lookedUp: true, total: allDependents.length });
+                    if (allDependents.length <= DEPENDENT_CHECK_CAP) {
                         dependentsToInject = allDependents;
                     } else {
                         // O(1) AST-based signature diff. The old split("\n")
@@ -172,10 +221,11 @@ export async function handleEdit(
                     dependentsToInject = [];
                 }
             }
+            depScope.checked = dependentsToInject.length;
 
             try {
                 kernelResult = await deps.kernel.interceptAtomicBatch([
-                    { targetFile: resolvedPath, proposedContent: result.newContent! },
+                    { targetFile: resolvedPath, proposedContent: result.newContent!, baseContent: result.baseContent },
                 ], dependentsToInject, params.compute_diff === true);
 
                 const verifyResult = await processKernelResult(
@@ -197,6 +247,12 @@ export async function handleEdit(
                 logger.error(`Kernel error during edit verification: ${kernelError}`);
                 try { await deps.kernel.rollbackAll(); } catch (e) {
                     logger.error(`Rollback after kernel crash also failed: ${e}`);
+                }
+                if (isConflictError(kernelError)) {
+                    return {
+                        content: [{ type: "text" as const, text: `## Edit: CONFLICT\n\n${(kernelError as Error).message}` }],
+                        isError: true,
+                    };
                 }
                 return {
                     content: [{
@@ -237,10 +293,18 @@ export async function handleEdit(
                     const relPath = path.relative(engine.getProjectRoot(), resolvedPath).replace(/\\/g, "/");
                     const dependents = await engine.findDependents(relPath);
                     if (dependents.length > 0) {
-                        const depList = dependents.map(d => `  - ${d}`).join("\n");
-                        blastRadiusWarning =
-                            `\n[BLAST RADIUS] Signature of "${symbol}" changed. Imported by:\n${depList}\n` +
-                            `Fix dependents via batch_edit before running tests.`;
+                        blastRadiusWarning = formatBlastRadius(
+                            `Signature of "${symbol}" changed`,
+                            dependents,
+                            verifiedImporters(dependents, {
+                                kernelRan: useKernel && !!kernelResult,
+                                kernel: deps.kernel,
+                                mode: deps.nrekiMode,
+                                injected: dependentsToInject,
+                                degradedLanguages: kernelResult?.degradedLanguages,
+                                lspCoverage: kernelResult?.lspCoverage,
+                            }),
+                        );
                     }
                 }
             } catch { /* non-fatal */ }
@@ -272,8 +336,19 @@ export async function handleEdit(
         if (ttrdFeedback) feedback += `\n[TTRD] ${ttrdFeedback.replace(/\n/g, " ").trim()}`;
         if (blastRadiusWarning) feedback += blastRadiusWarning;
         if (bridgeGuard) feedback += bridgeGuard;
-        feedback += "\n[Validated: AST + Semantic check passed. Do not run bash verification.]";
-        feedback += "\n[ZERO-CHATTER: Edits applied. Do not summarize.]";
+        feedback += "\n" + buildValidationBanner({
+            kernelRan: useKernel && !!deps.kernel,
+            reasonNoKernel: describeKernelUnavailable(!!deps.kernel, deps.nrekiMode),
+            mode: deps.nrekiMode,
+            files: [resolvedPath],
+            coverage: deps.kernel ? (f) => deps.kernel!.getSemanticCoverage(f) : undefined,
+            degradedLanguages: kernelResult?.degradedLanguages,
+            dependents: depScope,
+            lspCoverage: kernelResult?.lspCoverage,
+            lspImportersUnknown,
+            exportedApiUnchanged: kernelResult?.exportedApiUnchanged,
+            declaresGlobals: kernelResult?.declaresGlobals,
+        });
 
         return {
             content: [{
@@ -373,7 +448,7 @@ export async function handleBatchEdit(
                             `Required: read the full file before editing, with chronos recovery bypass.\n\n` +
                             `**Emit this exact JSON-RPC tool call:**\n` +
                             `\`\`\`json\n` +
-                            `{"name":"nreki_code","arguments":{"action":"read","path":"${path.relative(engine.getProjectRoot(), p)}","compress":false,"_nreki_bypass":"chronos_recovery"}}\n` +
+                            `${chronosRecoveryCall(path.relative(engine.getProjectRoot(), p))}\n` +
                             `\`\`\`\n\n` +
                             `After NREKI returns the file content, retry your batch edit.`,
                     }],
@@ -424,47 +499,87 @@ export async function handleBatchEdit(
         // ─── NREKI Layer 2: Cross-file semantic verification ─────────
         let batchKernelResult: NrekiInterceptResult | undefined;
         let batchTtrdFeedback = "";
+        const batchDepScope: DependentsScope = { lookedUp: false, checked: 0, total: 0 };
+        // Importers handed to the kernel with the batch (TS: type-checked; Go/Python: opened in the LSP).
+        let batchInjected: string[] = [];
+        let batchLspImportersUnknown = false;
         if (useKernel && deps.kernel) {
             try {
-                const kernelEdits: Array<{ targetFile: string; proposedContent: string | null }> = [];
+                const kernelEdits: Array<{ targetFile: string; proposedContent: string | null; baseContent?: string }> = [];
                 for (const [filePath, content] of result.vfs!.entries()) {
-                    kernelEdits.push({ targetFile: filePath, proposedContent: content });
+                    kernelEdits.push({ targetFile: filePath, proposedContent: content, baseContent: result.baseContents?.get(filePath) });
+                }
+
+                // result.files are OS-relative (backslashes on Windows); the graph is POSIX.
+                const batchFiles = new Set(result.files.map(f => f.replace(/\\/g, "/")));
+                const isLspFile = (rel: string): boolean => isLspCovered(deps.kernel!, rel);
+
+                // Go/Python files, in every mode: their importers are opened in the
+                // LSP sidecar with the edit (it only reports open documents).
+                const lspDependents = new Set<string>();
+                try {
+                    for (const fp of batchFiles) {
+                        if (!isLspFile(fp)) continue;
+                        for (const d of await engine.findDependents(fp)) {
+                            if (!batchFiles.has(d)) lspDependents.add(d);
+                        }
+                    }
+                } catch {
+                    batchLspImportersUnknown = true;
                 }
 
                 let batchDependents: string[] = [];
-                if (deps.nrekiMode === "hologram" && result.oldRawCodes && result.newRawCodes) {
+                if (deps.nrekiMode === "file" || deps.nrekiMode === "hologram") {
+                    let sigChanged = false;
+                    let allDepSet: Set<string> | undefined;
                     try {
-                        const changedFiles = new Set<string>();
                         for (const edit of batchOps) {
                             if (edit.mode && edit.mode !== "replace" && edit.mode !== "patch") continue;
-                            const resolvedPath = safePath(engine.getProjectRoot(), edit.path);
-                            const key = `${resolvedPath}::${edit.symbol}`;
-                            const oldRaw = result.oldRawCodes.get(key);
-                            const newRaw = result.newRawCodes.get(key);
-                            if (oldRaw && newRaw && detectSignatureChange(oldRaw, newRaw)) {
-                                changedFiles.add(
-                                    path.relative(engine.getProjectRoot(), safePath(engine.getProjectRoot(), edit.path)).replace(/\\/g, "/")
-                                );
-                            }
+                            if (isLspFile(edit.path)) continue; // the importer cap below is TypeScript's
+                            const key = `${safePath(engine.getProjectRoot(), edit.path)}::${edit.symbol}`;
+                            const oldRaw = result.oldRawCodes?.get(key);
+                            const newRaw = result.newRawCodes?.get(key);
+                            if (oldRaw && newRaw && detectSignatureChange(oldRaw, newRaw)) sigChanged = true;
                         }
-                        if (changedFiles.size > 0) {
-                            const allDepSet = new Set<string>();
-                            for (const fp of changedFiles) {
-                                const fileDeps2 = await engine.findDependents(fp);
-                                for (const d of fileDeps2) allDepSet.add(d);
-                            }
-                            for (const fp of result.files) {
-                                allDepSet.delete(fp);
-                            }
-                            if (allDepSet.size <= 50) {
-                                batchDependents = [...allDepSet];
-                            }
+                        allDepSet = new Set<string>();
+                        for (const fp of batchFiles) {
+                            if (isLspFile(fp)) continue;
+                            for (const d of await engine.findDependents(fp)) allDepSet.add(d);
                         }
-                    } catch { /* non-fatal */ }
+                        for (const fp of batchFiles) allDepSet.delete(fp);
+                        Object.assign(batchDepScope, { lookedUp: true, total: allDepSet.size });
+                    } catch { /* graph unavailable — reported in the banner */ }
+
+                    if (allDepSet) {
+                        if (allDepSet.size <= DEPENDENT_CHECK_CAP) {
+                            batchDependents = [...allDepSet];
+                        } else if (deps.nrekiMode === "file") {
+                            batchDependents = [...allDepSet].slice(0, DEPENDENT_CHECK_CAP);
+                        } else if (sigChanged) {
+                            // NREKI-INT-06: mirror handleEdit. The batch path used to fall
+                            // through with ZERO dependents and commit, leaving every caller
+                            // outside the batch unvalidated.
+                            for (const vfsPath of result.vfs!.keys()) engine.cancelInternalEdit(vfsPath);
+                            return {
+                                content: [{
+                                    type: "text" as const,
+                                    text:
+                                        `## Batch Edit: BLOCKED\n\n` +
+                                        `Signature change affects ${allDepSet.size} importer(s) outside this batch ` +
+                                        `(hologram mode validates at most ${DEPENDENT_CHECK_CAP}). ` +
+                                        `Add the affected callers to the batch until ≤ ${DEPENDENT_CHECK_CAP} remain outside, ` +
+                                        `or split the change. No files were modified.`,
+                                }],
+                                isError: true,
+                            };
+                        }
+                    }
                 }
+                batchDepScope.checked = batchDependents.length;
+                batchInjected = [...batchDependents, ...lspDependents];
 
                 if (kernelEdits.length > 0) {
-                    batchKernelResult = await deps.kernel.interceptAtomicBatch(kernelEdits, batchDependents, params.compute_diff === true);
+                    batchKernelResult = await deps.kernel.interceptAtomicBatch(kernelEdits, batchInjected, params.compute_diff === true);
                     const committedFiles = Array.from(result.vfs!.keys());
 
                     const verifyResult = await processKernelResult(
@@ -496,6 +611,12 @@ export async function handleBatchEdit(
                     logger.error(`Rollback after kernel crash also failed: ${e}`);
                 }
                 for (const rp of acquiredLocks) releaseFileLock(rp);
+                if (isConflictError(kernelError)) {
+                    return {
+                        content: [{ type: "text" as const, text: `## Batch Edit: CONFLICT\n\n${(kernelError as Error).message}` }],
+                        isError: true,
+                    };
+                }
                 return {
                     content: [{
                         type: "text" as const,
@@ -541,25 +662,49 @@ export async function handleBatchEdit(
                             for (const d of fileDeps) allDependents.add(d);
                         } catch { /* non-fatal */ }
                     }
-                    for (const f of result.files) allDependents.delete(f);
+                    for (const f of result.files) allDependents.delete(f.replace(/\\/g, "/"));
 
-                    const depList = allDependents.size > 0
-                        ? `\nImported by: ${[...allDependents].join(", ")}`
-                        : "";
-
-                    blastRadiusWarning =
-                        `\n[BLAST RADIUS] Signature changed: ${changedSymbols.join(", ")}.${depList}`;
+                    const importers = [...allDependents];
+                    blastRadiusWarning = formatBlastRadius(
+                        `Signature changed: ${changedSymbols.join(", ")}`,
+                        importers,
+                        verifiedImporters(importers, {
+                            kernelRan: useKernel && !!batchKernelResult,
+                            kernel: deps.kernel,
+                            mode: deps.nrekiMode,
+                            injected: batchInjected,
+                            degradedLanguages: batchKernelResult?.degradedLanguages,
+                            lspCoverage: batchKernelResult?.lspCoverage,
+                        }),
+                    );
                 }
             } catch { /* non-fatal */ }
         }
 
         logger.info(`[BATCH_EDIT] ${result.fileCount} files — complete`);
 
-        let feedback = `[OK] ${result.fileCount} files modified: ${result.files.join(", ")}`;
+        // POSIX separators: a Windows "\" is escaped to "\\" by every JSON transport.
+        let feedback = `[OK] ${result.fileCount} files modified: ${result.files.map(f => f.replace(/\\/g, "/")).join(", ")}`;
+        // NREKI-GAR-02: batch_edit is the path agents are told to use, yet it dropped
+        // auto-heal notices (incl. collateral files NREKI patched on disk), LSP
+        // offline/failed warnings and Python/Go TTRD alerts. handleEdit always had them.
+        if (batchKernelResult?.errorText) feedback += `\n${batchKernelResult.errorText}`;
+        if (batchKernelResult?.warnings?.length) feedback += `\n${batchKernelResult.warnings.join("\n")}`;
         if (batchTtrdFeedback) feedback += `\n[TTRD] ${batchTtrdFeedback.replace(/\n/g, " ").trim()}`;
         if (blastRadiusWarning) feedback += blastRadiusWarning;
-        feedback += "\n[Validated: AST + Semantic check passed. Do not run bash verification.]";
-        feedback += "\n[ZERO-CHATTER: Edits applied. Do not summarize.]";
+        feedback += "\n" + buildValidationBanner({
+            kernelRan: useKernel && !!deps.kernel,
+            reasonNoKernel: describeKernelUnavailable(!!deps.kernel, deps.nrekiMode),
+            mode: deps.nrekiMode,
+            files: result.vfs ? [...result.vfs.keys()] : result.files,
+            coverage: deps.kernel ? (f) => deps.kernel!.getSemanticCoverage(f) : undefined,
+            degradedLanguages: batchKernelResult?.degradedLanguages,
+            dependents: batchDepScope,
+            lspCoverage: batchKernelResult?.lspCoverage,
+            lspImportersUnknown: batchLspImportersUnknown,
+            exportedApiUnchanged: batchKernelResult?.exportedApiUnchanged,
+            declaresGlobals: batchKernelResult?.declaresGlobals,
+        });
 
         return {
             content: [{

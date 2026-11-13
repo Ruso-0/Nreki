@@ -6,9 +6,11 @@
  * Heartbeat wrapping is the router's responsibility.
  */
 
-import crypto from "crypto";
 import path from "path";
 import type { McpToolResponse, GuardParams, RouterDependencies } from "../router.js";
+import {
+    ENGRAM_MAX_CHARS, engramHash, isImmortalEngram, qualifiedNames, resolveEngramTarget,
+} from "../utils/engram-identity.js";
 import { estimateTokens } from "../utils/token-estimator.js";
 import { safePath } from "../utils/path-jail.js";
 import { readSource } from "../utils/read-source.js";
@@ -217,9 +219,9 @@ export async function handleReport(
     }
 
     const modelName = burnRate.estimatedCostUsd > 0
-        // Opus 4.6 = $5/MTok = $0.000005/tok input.
-        // Sonnet 4.6 = $3/MTok = $0.000003/tok. Midpoint = $0.000004.
-        ? (burnRate.estimatedCostUsd / Math.max(1, burnRate.totalConsumed) >= 0.000004
+        // Opus 5.5 = $4/MTok = $0.000004/tok input.
+        // Sonnet 5.5 = $2/MTok = $0.000002/tok. Midpoint = $0.000003.
+        ? (burnRate.estimatedCostUsd / Math.max(1, burnRate.totalConsumed) >= 0.000003
             ? "Opus" : "Sonnet")
         : "Unknown";
 
@@ -252,8 +254,8 @@ export async function handleReport(
         `Overall Compression: ${(sessionReport.overallRatio * 100).toFixed(1)}%`,
         "",
         "USD Saved (estimated):",
-        `  Sonnet ($3/M input): $${sessionReport.savedUsdSonnet.toFixed(3)}`,
-        `  Opus ($15/M input): $${sessionReport.savedUsdOpus.toFixed(3)}`,
+        `  Sonnet 5.5 ($2/M input): $${sessionReport.savedUsdSonnet.toFixed(3)}`,
+        `  Opus 5.5 ($4/M input): $${sessionReport.savedUsdOpus.toFixed(3)}`,
         "",
         "Per-File-Type Breakdown:",
         fileTypeRows,
@@ -268,7 +270,7 @@ export async function handleReport(
     return {
         content: [{
             type: "text" as const,
-            text: healthScoreStr + report + receipt,
+            text: healthScoreStr + report + "\n\n" + receipt,
         }],
     };
 }
@@ -394,7 +396,9 @@ export async function handleSetPlan(
     const usage = deps.engine.getUsageStats();
     deps.engine.setMetadata(
         "nreki_plan_last_drift",
-        String(usage.total_input + usage.total_output),
+        // Same measure applyContextHeartbeat compares against (T-02): the sum
+        // was ~2x larger, so the next safe call reset it and fired at once.
+        String(usage.total_output),
     );
 
     return {
@@ -465,6 +469,16 @@ export async function handleEngram(
             isError: true,
         };
     }
+    if (insight.length > ENGRAM_MAX_CHARS) {
+        // Printed in every outline of the file: a long note costs tokens on every read.
+        return {
+            content: [{
+                type: "text" as const,
+                text: `Error: engram text is ${insight.length} chars (max ${ENGRAM_MAX_CHARS}). Keep it to the invariant or gotcha.`,
+            }],
+            isError: true,
+        };
+    }
 
     const root = deps.engine.getProjectRoot();
     let resolvedPath: string;
@@ -496,22 +510,28 @@ export async function handleEngram(
     const content = readSource(resolvedPath);
     const parser = deps.engine.getParser();
     const parseResult = await parser.parse(resolvedPath, content);
-    const chunk = parseResult.chunks.find(c => c.symbolName === symbol);
-
-    if (!chunk) {
+    const qualified = qualifiedNames(parseResult.chunks);
+    const symbols = parseResult.chunks
+        .map((c, i) => ({ qualified: qualified[i], bare: c.symbolName, body: c.rawCode, startLine: c.startLine, endLine: c.endLine }))
+        .filter(s => s.qualified !== "");
+    const target = resolveEngramTarget(symbols, symbol);
+    if (!target.ok) {
         return {
-            content: [{ type: "text" as const, text: `Error: symbol "${symbol}" not found in ${file}. Check spelling or run outline first.` }],
+            content: [{ type: "text" as const, text: `Error: ${target.error} (in ${file})` }],
             isError: true,
         };
     }
 
-    const astHash = crypto.createHash("sha256").update(chunk.rawCode).digest("hex");
-    deps.engine.upsertEngram(resolvedPath, symbol, astHash, insight);
+    const anchor = target.symbol;
+    deps.engine.upsertEngram(resolvedPath, anchor.qualified, engramHash(anchor.body), insight);
+    const lifetime = isImmortalEngram(insight)
+        ? "ASSERT engram: it survives code changes."
+        : "If this symbol's code changes, the engram is deleted (prefix the text with ASSERT to keep it).";
 
     return {
         content: [{
             type: "text" as const,
-            text: `[Engram Anchored] Insight saved for \`${symbol}\`. If the code changes, this memory will auto-delete to prevent hallucinations.`,
+            text: `[Engram Anchored] \`${anchor.qualified}\` (L${anchor.startLine}). ${lifetime}`,
         }],
     };
 }

@@ -85,6 +85,8 @@ Usage:
   npx @ruso-0/nreki                       Start MCP server (default)
   npx @ruso-0/nreki init [options]        Install per-agent instructions
   npx @ruso-0/nreki deinit                Safely remove NREKI hooks before uninstall
+  npx @ruso-0/nreki trust-db              Review and restore quarantined engrams/notes/pins
+                                          (interactive terminal only)
 
 \`init\` options:
   --agent <name>        Force agent: claude | cursor | cline | copilot | generic
@@ -241,6 +243,14 @@ if (args[0] === "deinit") {
     process.exit(0);
 }
 
+// ─── trust-db Subcommand (NREKI-SEC-06) ─────────────────────────────
+// A person reviews and restores memory quarantined because it was not signed
+// on this machine (interactive terminal only; see init/trust-db.ts).
+if (args[0] === "trust-db") {
+    const { runTrustDbCli } = await import("./init/trust-db.js");
+    process.exit(await runTrustDbCli(process.cwd()));
+}
+
 // ─── Init Subcommand ────────────────────────────────────────────────
 
 if (args[0] === "init") {
@@ -360,98 +370,51 @@ const server = new McpServer({
 });
 
 logger.info(
-    "NREKI edit-safety MCP. Retrieval via search (Type Ledger) + fast_grep (RAM-resident). "
-    + "v11.0.0 amputated ONNX embeddings; v12.0.0 amputated hybrid_search/BM25.",
+    "NREKI edit-safety MCP. Retrieval via search (BM25 + topology, optional Voyage semantic index) + fast_grep (RAM-resident). "
+    + "v11.0.0 removed ONNX embeddings; v12.0.0 removed hybrid_search.",
 );
 
 // ─── Tool 1: nreki_navigate ───────────────────────────────────────────
 
-server.tool(
+// Tool definitions are paid on EVERY model request (Claude Code) or printed by
+// the agent to learn the calls (Codex code mode: ~1k tokens each time in the
+// 2026-11-13 A/B). Only everyday parameters are declared; the advanced ones are
+// still accepted (passthrough), validated by the handlers, and named in the
+// descriptions. Usage guidance lives in AGENTS.md/CLAUDE.md.
+const optStr = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
+const optNum = (v: unknown): number | undefined => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+const optBool = (v: unknown): boolean | undefined => (typeof v === "boolean" ? v : undefined);
+
+server.registerTool(
     "nreki_navigate",
-    "AST-powered code navigation and semantic search. Use for finding code, understanding project structure, and locating symbols.",
     {
-        action: z
-            .enum(["search", "definition", "references", "outline", "map", "prepare_refactor", "orphan_oracle", "type_shape", "fast_grep", "type_graph"])
-            .describe(
-                "search: Type Ledger semantic + keyword fallback across codebase (single retriever). " +
-                "definition: go-to-definition by symbol name. " +
-                "references: find all usages of a symbol. " +
-                "outline: list all symbols in a file. " +
-                "map: full repo structure map with pinned rules. " +
-                "prepare_refactor: analyze a symbol for safe renaming (classifies each occurrence as high-confidence or needs-review). " +
-                "orphan_oracle: identify files with zero static reachability (candidates for dead code review). " +
-                "type_shape: invoke TS compiler for exact resolved type shape without reading file (requires TypeScript project with tsconfig.json). " +
-                "fast_grep: ultra-fast exact substring match returning AST-aware topological coordinates (replaces native grep). Best for finding hardcoded strings or exact syntax. " +
-                "type_graph: walk the Type Ledger graph from a seed type (chunks that consume/produce it). Pure semantic walker. Requires type_name param.",
-            ),
-        query: z
-            .string()
-            .optional()
-            .describe("For search and fast_grep: the query string."),
-        symbol: z
-            .string()
-            .optional()
-            .describe("For definition/references: the symbol name."),
-        path: z
-            .string()
-            .optional()
-            .describe("For outline: the file path."),
-        limit: z
-            .number()
-            .optional()
-            .describe("For search: max results to return (1-50, default 10)."),
-        include_raw: z
-            .boolean()
-            .optional()
-            .describe("For search: include full source code in results."),
-        kind: z
-            .string()
-            .optional()
-            .describe("For definition: filter by symbol kind (function, class, interface, etc.)."),
-        signatures: z
-            .boolean()
-            .optional()
-            .describe("For outline: if true, show full signatures for ALL symbols including [LOW]. Default false — LOW-risk symbols without engrams are collapsed into a name-only list."),
-        refresh: z
-            .boolean()
-            .optional()
-            .describe("For map: force regeneration, ignoring cache."),
-        auto_context: z
-            .boolean()
-            .optional()
-            .describe("Auto-inject signatures of imported dependencies. Set to false for pure output without context."),
-        depth: z
-            .enum(["skeleton", "full"])
-            .optional()
-            .describe("For map: 'skeleton' (default) shows only CORE/BRIDGE files with top exports. 'full' shows all files with topology metrics."),
-        type_name: z
-            .string()
-            .optional()
-            .describe("For type_graph: the seed type name to walk from (case-sensitive, must exist in Type Ledger)."),
-        walk_depth: z
-            .number()
-            .optional()
-            .describe("For type_graph: BFS depth, 1 (default) or 2 (max). K=1 returns chunks directly related to seed_type; K=2 expands one more hop via their other types."),
-        direction: z
-            .enum(["bidirectional", "consumers", "producers"])
-            .optional()
-            .describe("For type_graph: 'bidirectional' (default) returns both consumers and producers; 'consumers' only chunks that consume seed_type; 'producers' only chunks that produce it."),
-        max_nodes: z
-            .number()
-            .optional()
-            .describe("For type_graph: BFS hard cap, default 50, max 100. Anti-hub ordering applied before truncation."),
-        token_budget: z
-            .number()
-            .optional()
-            .describe("For type_graph: Knapsack rendering budget in estimated tokens, default 3000. Chunks beyond budget listed as shorthand-only overflow."),
+        description:
+            "Find code. context: query = the task; returns the code it names (symbols verbatim, other mentions, importers) in one call. " +
+            "fast_grep: exact text -> file:line [symbol]. search: concept search. definition/references: by symbol. outline: symbols of path. " +
+            "type_shape: resolved TS type. prepare_refactor: occurrences to rename. map: repo overview (large). " +
+            "orphan_oracle: unreachable files. type_graph: code using type_name. Also: token_budget (context), depth, kind.",
+        inputSchema: z.object({
+            action: z.enum(["context", "search", "definition", "references", "outline", "map", "prepare_refactor", "orphan_oracle", "type_shape", "fast_grep", "type_graph"]),
+            query: z.string().optional(),
+            symbol: z.string().optional(),
+            path: z.string().optional(),
+            limit: z.number().optional(),
+        }).passthrough(),
     },
-    async ({ action, query, symbol, path: navPath, limit, include_raw, kind, signatures, refresh, auto_context, depth, type_name, walk_depth, direction, max_nodes, token_budget }) => {
-        const params: NavigateParams = { action, query, symbol, path: navPath, limit, include_raw, kind, signatures, refresh, auto_context, depth, type_name, walk_depth, direction, max_nodes, token_budget };
+    async (args) => {
+        const a: Record<string, unknown> = args;
+        const params: NavigateParams = {
+            action: args.action, query: args.query, symbol: args.symbol, path: args.path, limit: args.limit,
+            include_raw: optBool(a.include_raw), kind: optStr(a.kind), signatures: optBool(a.signatures),
+            refresh: optBool(a.refresh), auto_context: optBool(a.auto_context), depth: optStr(a.depth),
+            type_name: optStr(a.type_name), walk_depth: optNum(a.walk_depth), direction: optStr(a.direction),
+            max_nodes: optNum(a.max_nodes), token_budget: optNum(a.token_budget),
+        };
         return wrapWithCircuitBreaker(
             circuitBreaker,
             "nreki_navigate",
-            action,
-            () => handleNavigate(action, params, deps),
+            args.action,
+            () => handleNavigate(args.action, params, deps),
             undefined, undefined, chronos,
         );
     },
@@ -459,117 +422,54 @@ server.tool(
 
 // ─── Tool 2: nreki_code ───────────────────────────────────────────────
 
-server.tool(
+server.registerTool(
     "nreki_code",
-    "Read, compress, and surgically edit code files. " +
-    "All edits are automatically validated via AST before writing to disk - " +
-    "if syntax is invalid, the edit is blocked and you get the exact error. " +
-    "Undo reverts the last edit. filter_output strips noisy terminal output.",
     {
-        action: z
-            .enum(["read", "compress", "edit", "batch_edit", "undo", "filter_output"])
-            .describe(
-                "read: read file with optional compression. " +
-                "compress: compress file/directory with full control. " +
-                "edit: surgically edit a function/class by name (auto-validated). " +
-                "batch_edit: atomically edit multiple symbols across multiple files (all-or-nothing). " +
-                "undo: revert last edit. " +
-                "filter_output: filter noisy terminal output (strips ANSI, deduplicates errors). Does NOT execute commands.",
-            ),
-        path: z
-            .string()
-            .optional()
-            .describe("File or directory path (required for read, compress, edit, undo)."),
-        symbol: z
-            .string()
-            .optional()
-            .describe("For edit: the function/class/interface name to replace."),
-        new_code: z
-            .string()
-            .optional()
-            .describe("For edit: the complete replacement source code for the symbol."),
-        compress: z
-            .boolean()
-            .optional()
-            .describe("For read: enable auto-compression (default true)."),
-        level: z
-            .string()
-            .optional()
-            .describe("Compression level: 'light', 'medium', or 'aggressive'."),
-        focus: z
-            .string()
-            .optional()
-            .describe("For compress: focus query to rank chunks by relevance."),
-        tier: z
-            .number()
-            .optional()
-            .describe("For compress: legacy tier (1-3)."),
-        output: z
-            .string()
-            .optional()
-            .describe("For filter_output: the terminal output text to filter."),
-        max_lines: z
-            .number()
-            .optional()
-            .describe("For filter_output: max output lines (1-1000, default 100)."),
-        mode: z
-            .enum(["replace", "insert_before", "insert_after", "patch"])
-            .optional()
-            .describe(
-                "CRITICAL: Use 'patch' for minor edits (<30% of the symbol body) with search_text/replace_text to minimize output tokens. " +
-                "Use 'replace' ONLY for major structural rewrites. 'insert_before'/'insert_after' add code adjacent to the symbol."
-            ),
-        edits: z.preprocess(
-            (val) => (typeof val === "string" ? JSON.parse(val) : val),
-            z.array(z.object({
-                path: z.string(),
-                symbol: z.string(),
-                new_code: z.string().optional(),
-                mode: z.enum(["replace", "insert_before", "insert_after", "patch"]).optional(),
-                search_text: z.string().optional(),
-                replace_text: z.string().optional(),
-            }))
-        )
-            .optional()
-            .describe("For batch_edit: array of edits to apply atomically. Each edit specifies path, symbol, new_code, and optional mode."),
-        auto_context: z
-            .boolean()
-            .optional()
-            .describe("Auto-inject signatures of imported dependencies. Set to false for pure output without context."),
-        compute_diff: z
-            .boolean()
-            .optional()
-            .describe("Compute spectral topology diff (Fiedler value, circuit rank). Adds ~50-200ms latency for structural batches."),
-        search_text: z
-            .string()
-            .optional()
-            .describe("REQUIRED for mode:'patch'. The EXACT existing string to replace inside the symbol. Must include exact original indentation and be unique within the symbol."),
-        replace_text: z
-            .string()
-            .optional()
-            .describe("REQUIRED for mode:'patch'. The new string to insert. Must match original indentation style."),
-        _nreki_bypass: z
-            .string()
-            .optional()
-            .describe("INTERNAL SYSTEM STATE TOKEN. DO NOT USE. Triggers context penalties."),
-        walk_depth: z
-            .number()
-            .optional()
-            .describe("For compress: Phase 4 cross-file Type Ledger walk depth. Furia round 12 spec: K=1 ESTRICTO, max=1 (K=2 RECHAZADO). Default 1."),
-        max_cross_file: z
-            .number()
-            .optional()
-            .describe("For compress: Phase 4 hard cap on UNIQUE cross-file chunks injected via Type Ledger parafovea. Default 10, max 50, set to 0 to disable cross-file injection."),
+        description:
+            "Read and edit code. read: whole file; with focus:\"a,b\" only those symbols (also compress focus). " +
+            "edit/batch_edit: change a symbol by name; syntax and types are checked before writing, nothing is written on error. " +
+            "mode patch: replace search_text with replace_text inside the symbol (cheapest). undo: revert the last edit of path. " +
+            "filter_output: shrink terminal text (output). Also: compress:true or level for skeletons.",
+        inputSchema: z.object({
+            action: z.enum(["read", "compress", "edit", "batch_edit", "undo", "filter_output"]),
+            path: z.string().optional(),
+            symbol: z.string().optional(),
+            focus: z.string().optional(),
+            mode: z.enum(["replace", "insert_before", "insert_after", "patch"]).optional(),
+            new_code: z.string().optional(),
+            search_text: z.string().optional(),
+            replace_text: z.string().optional(),
+            edits: z.preprocess(
+                (val) => (typeof val === "string" ? JSON.parse(val) : val),
+                z.array(z.object({
+                    path: z.string(),
+                    symbol: z.string(),
+                    new_code: z.string().optional(),
+                    mode: z.enum(["replace", "insert_before", "insert_after", "patch"]).optional(),
+                    search_text: z.string().optional(),
+                    replace_text: z.string().optional(),
+                }))
+            ).optional(),
+            output: z.string().optional(),
+        }).passthrough(),
     },
-    async ({ action, path: filePath, symbol, new_code, compress, level, focus, tier, output, max_lines, mode, edits, auto_context, compute_diff, search_text, replace_text, _nreki_bypass, walk_depth, max_cross_file }) => {
-        const params: CodeParams = { action, path: filePath, symbol, new_code, compress, level, focus, tier, output, max_lines, mode, edits, auto_context, compute_diff, search_text, replace_text, _nreki_bypass, walk_depth, max_cross_file };
+    async (args) => {
+        const a: Record<string, unknown> = args;
+        const params: CodeParams = {
+            action: args.action, path: args.path, symbol: args.symbol, focus: args.focus, mode: args.mode,
+            new_code: args.new_code, search_text: args.search_text, replace_text: args.replace_text,
+            edits: args.edits, output: args.output,
+            compress: optBool(a.compress), level: optStr(a.level), tier: optNum(a.tier), max_lines: optNum(a.max_lines),
+            auto_context: optBool(a.auto_context), compute_diff: optBool(a.compute_diff),
+            _nreki_bypass: optStr(a._nreki_bypass), max_cross_file: optNum(a.max_cross_file),
+        };
         return wrapWithCircuitBreaker(
             circuitBreaker,
             "nreki_code",
-            action,
-            () => handleCode(action, params, deps),
-            filePath,
-            symbol,
+            args.action,
+            () => handleCode(args.action, params, deps),
+            args.path,
+            args.symbol,
             chronos,
         );
     },
@@ -577,48 +477,24 @@ server.tool(
 
 // ─── Tool 3: nreki_guard ──────────────────────────────────────────────
 
-server.tool(
+server.registerTool(
     "nreki_guard",
-    "Safety controls, session monitoring, and persistent memory. " +
-    "Pin rules that persist across messages, check token burn rate, " +
-    "and get session reports.",
     {
-        action: z
-            .enum(["pin", "unpin", "status", "report", "reset", "set_plan", "memorize", "audit", "engram"])
-            .describe(
-                "pin: add a persistent rule (injected into every map response). " +
-                "unpin: remove a pinned rule. " +
-                "status: token burn rate and alerts. " +
-                "report: full session savings receipt. " +
-                "reset: clear circuit breaker state to resume editing. " +
-                "set_plan: anchor a master plan file to prevent Claude from forgetting it during context compaction. " +
-                "memorize: write your current progress/thoughts to NREKI's active memory. " +
-                "audit: run AHI (Automated Hardening Index) audit on the project. " +
-                "engram: save a long-term memory note about a symbol. Auto-appears in future outlines. Auto-deletes if code changes.",
-            ),
-        text: z
-            .string()
-            .optional()
-            .describe("For pin: the rule text (max 200 chars). For set_plan: the file path to your plan. For memorize: your thoughts/progress to remember. For engram: the insight to save."),
-        index: z
-            .number()
-            .optional()
-            .describe("For unpin: the pin number to remove (1-based, as shown in map output)."),
-        id: z
-            .string()
-            .optional()
-            .describe("For unpin: the pin id to remove."),
-        path: z
-            .string()
-            .optional()
-            .describe("For engram: the file path containing the symbol."),
-        symbol: z
-            .string()
-            .optional()
-            .describe("For engram: the exact symbol name to anchor the memory to."),
+        description:
+            "Session memory. pin/unpin (index): standing rules. set_plan (text = plan file). memorize (text): notes that survive context compaction. " +
+            "engram (path, symbol, text): note on a symbol. status/report: token use. reset: clear the circuit breaker. audit.",
+        inputSchema: z.object({
+            action: z.enum(["pin", "unpin", "status", "report", "reset", "set_plan", "memorize", "audit", "engram"]),
+            text: z.string().optional(),
+            path: z.string().optional(),
+            symbol: z.string().optional(),
+            index: z.number().optional(),
+        }).passthrough(),
     },
-    async ({ action, text, index, id, path: guardPath, symbol }) => {
-        const params: GuardParams = { action, text, index, id, path: guardPath, symbol };
+    async (args) => {
+        const a: Record<string, unknown> = args;
+        const { action, text, index, path: guardPath, symbol } = args;
+        const params: GuardParams = { action, text, index, id: optStr(a.id), path: guardPath, symbol };
         return wrapWithCircuitBreaker(
             circuitBreaker,
             "nreki_guard",
@@ -706,14 +582,34 @@ async function main(): Promise<void> {
         parentWatchdog.unref();
     }
 
+    // ─── SESSION MARKER (read by the Claude Code enforcer hook) ───
+    // The hook only steers native reads while a NREKI server is alive for this
+    // project; without a live marker it fails open (NREKI-SEC-04).
+    const sessionMarker = path.join(process.cwd(), ".nreki", "sessions", String(process.pid));
+    try {
+        fs.mkdirSync(path.dirname(sessionMarker), { recursive: true });
+        fs.writeFileSync(sessionMarker, new Date().toISOString(), "utf-8");
+        process.on("exit", () => {
+            try { fs.unlinkSync(sessionMarker); } catch { /* already gone */ }
+        });
+    } catch { /* read-only checkout: hook simply fails open */ }
+
     // ─── AUTO-PATCH SECURITY HOOK (v10.x) ───
     // v11.3.0: enforcer template now lives at templates/hooks/nreki-enforcer.mjs
     // (read at runtime) instead of being inlined as a TS string literal.
+    // v12.0.1: also upgrade the unmodified v1 enforcer (MultiEdit bypass, symlinks,
+    // hard block when NREKI is down) and the unreleased v2 (blocked edits and
+    // partial reads, costing turns) to v3. Hooks the user customized are left alone.
     try {
         const hookScriptPath = path.join(process.cwd(), ".claude", "hooks", "nreki-enforcer.mjs");
         if (fs.existsSync(hookScriptPath)) {
             const currentHook = fs.readFileSync(hookScriptPath, "utf-8");
-            if (!currentHook.includes("cwdPosix")) {
+            const isCurrent = currentHook.includes("nreki-enforcer:v3");
+            const isLegacy = !currentHook.includes("cwdPosix");
+            const isStockV1 = !currentHook.includes("nreki-enforcer:v") &&
+                currentHook.includes("/^(Write|Edit|Replace)(File)?$/i");
+            const isV2 = currentHook.includes("nreki-enforcer:v2");
+            if (!isCurrent && (isLegacy || isStockV1 || isV2)) {
                 const upstreamHook = fs.readFileSync(
                     new URL("../templates/hooks/nreki-enforcer.mjs", import.meta.url),
                     "utf-8",

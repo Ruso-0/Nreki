@@ -5,7 +5,7 @@
 import fs from "fs";
 import path from "path";
 import type { McpToolResponse, CodeParams, RouterDependencies } from "../../router.js";
-import type { CompressionLevel } from "../../compressor.js";
+import type { CompressionLevel, AdvancedCompressionResult } from "../../compressor.js";
 import { estimateTokens } from "../../utils/token-estimator.js";
 import { safePath } from "../../utils/path-jail.js";
 import { shouldProcess } from "../../utils/file-filter.js";
@@ -13,6 +13,40 @@ import { readSource } from "../../utils/read-source.js";
 import { extractDependencies, cleanSignature, isSensitiveSignature } from "../../utils/imports.js";
 import { tfcCompress } from "../../compressor-foveal.js";
 import { validatePath } from "../../utils/path-guard.js";
+
+// ─── Honest compression labels ──────────────────────────────────────
+//
+// v12.0.1: headers used to report a CHARACTER reduction and never said what
+// was dropped, so a medium "read" (signatures + ≤5 key lines per symbol) was
+// easy to mistake for the file. Measured on 10 real files it answered 11/30
+// questions whose answer was in the code.
+
+const SKELETON_HINT = `Bodies omitted — exact code: compress focus:"<symbol>"; whole file: read (verbatim by default).`;
+
+function percentFewer(before: number, after: number): number {
+    return before > 0 ? Math.max(0, Math.round((1 - after / before) * 100)) : 0;
+}
+
+/** What an AdvancedCompressor output contains, in tokens, plainly. */
+function describeAdvanced(result: AdvancedCompressionResult, originalTokens: number): { label: string; skeleton: boolean } {
+    const outTokens = estimateTokens(result.compressed);
+    const skeleton = result.breakdown.structuralReduction > 0;
+    const what = !skeleton
+        ? "code verbatim minus comments/docstrings/logging (whitespace normalized)"
+        : result.level === "aggressive"
+            ? "SKELETON: signatures only, bodies replaced by stubs"
+            : "SKELETON: signatures + up to 5 key lines per symbol, most body logic omitted";
+    return {
+        label: `${what}. ${originalTokens.toLocaleString()} → ${outTokens.toLocaleString()} tokens (${percentFewer(originalTokens, outTokens)}% fewer)`,
+        skeleton,
+    };
+}
+
+const TIER_LABEL: Record<1 | 2 | 3, string> = {
+    1: "SKELETON: signatures only, bodies omitted",
+    2: "SKELETON: signatures + key lines, most body logic omitted",
+    3: "SKELETON: signatures + docs + key lines, most body logic omitted",
+};
 
 // ─── Read ───────────────────────────────────────────────────────────
 
@@ -22,6 +56,13 @@ export async function handleRead(
 ): Promise<McpToolResponse> {
     const { engine } = deps;
     await engine.initialize();
+
+    // read + focus asks for symbols, not the file. focus used to be ignored:
+    // four reads returned four whole files (4,764 tokens) in the 2026-11-13
+    // Codex A/B, where the four symbols were ~300 tokens.
+    if (typeof params.focus === "string" && params.focus.trim() !== "" && params.compress !== true && !params.level) {
+        return handleCompress(params, deps);
+    }
 
     const file_path = params.path ?? "";
     let resolvedPath: string;
@@ -93,10 +134,19 @@ export async function handleRead(
             }
         }
 
+        // Verbatim reads count too: the heartbeat and context pressure are driven
+        // by total_output, and only the compressed paths used to log (T-01).
+        const logVerbatim = () => {
+            const shown = estimateTokens(rawContent) + extraTokens;
+            engine.logUsage("nreki_read", shown, shown, 0);
+        };
+
         const lineCount = rawContent.split("\n").length;
         if (stat.size < 1024 || lineCount < 100) {
             engine.markFileRead(resolvedPath);
+            logVerbatim();
             if (deps.chronos) deps.chronos.markReadUncompressed(resolvedPath);
+            deps.enforcer?.registerRawRead(resolvedPath);
             return {
                 content: [{
                     type: "text" as const,
@@ -109,7 +159,9 @@ export async function handleRead(
             };
         }
 
-        const compress = params.compress !== false;
+        // v12.0.1: verbatim by default. A skeleton is opt-in (compress:true or an
+        // explicit level); files >12k tokens still get the AUTO-SHIELD below.
+        const compress = params.compress === true || typeof params.level === "string";
         const level: CompressionLevel = (typeof params.level === "string" &&
             ["light", "medium", "aggressive"].includes(params.level))
             ? params.level as CompressionLevel
@@ -133,12 +185,13 @@ export async function handleRead(
                     zbResult.tokensSaved,
                 );
 
+                const shield = describeAdvanced(zbResult, fullTokens);
                 return {
                     content: [{
                         type: "text" as const,
                         text:
-                            `[AUTO-SHIELD: File >12k tokens (${fullTokens.toLocaleString()}t). Auto-compressed to 'medium'. ` +
-                            `To inspect bodies, use compress with focus:"<symbol>".]\n\n` +
+                            `[AUTO-SHIELD: File >12k tokens (${fullTokens.toLocaleString()}t) — returned compressed, NOT verbatim. ` +
+                            `${shield.label}. To inspect bodies, use compress with focus:"<symbol>".]\n\n` +
                             `\`\`\`\n${zbResult.compressed}\n\`\`\`` +
                             (autoContextBlock ? `\n\n${autoContextBlock}` : ""),
                     }],
@@ -147,8 +200,11 @@ export async function handleRead(
             // ─── END ZERO-BOUNCE ─────────────────────────────────────
 
             engine.markFileRead(resolvedPath);
+            logVerbatim();
 
             if (deps.chronos) deps.chronos.markReadUncompressed(resolvedPath);
+            // The agent saw every body verbatim: edits of this file are not blind.
+            deps.enforcer?.registerRawRead(resolvedPath);
 
             const jitWarning = deps.chronos ? deps.chronos.getContextWarnings(resolvedPath) : "";
 
@@ -180,14 +236,14 @@ export async function handleRead(
             : "";
 
         const jitWarning = deps.chronos ? deps.chronos.getContextWarnings(resolvedPath) : "";
+        const described = describeAdvanced(result, estimateTokens(rawContent));
 
         return {
             content: [{
                 type: "text" as const,
                 text:
-                    `${path.basename(resolvedPath)} (${level} compression)\n` +
-                    `${result.originalSize.toLocaleString()} → ${result.compressedSize.toLocaleString()} chars ` +
-                    `(${(result.ratio * 100).toFixed(1)}% reduction)\n\n` +
+                    `${path.basename(resolvedPath)} (${level}) — ${described.label}.\n` +
+                    (described.skeleton ? `${SKELETON_HINT}\n` : "") + `\n` +
                     mapHint +
                     jitWarning +
                     `\`\`\`\n${result.compressed}\n\`\`\`\n\n` +
@@ -200,6 +256,9 @@ export async function handleRead(
                 type: "text" as const,
                 text: `Error reading ${file_path}: ${(err as Error).message}`,
             }],
+            // READ_ONLY_ACTIONS skip the text heuristic in the circuit breaker;
+            // without the explicit flag ENOENT loops were recorded as successes.
+            isError: true,
         };
     }
 }
@@ -254,6 +313,8 @@ export async function handleCompress(
             const bypassLineCount = rawForBypass.split("\n").length;
             if (bypassLineCount < 100) {
                 engine.markFileRead(resolvedPath);
+                const shown = estimateTokens(rawForBypass);
+                engine.logUsage("nreki_compress", shown, shown, 0);
                 return {
                     content: [{
                         type: "text" as const,
@@ -313,24 +374,32 @@ export async function handleCompress(
                     tfcResult.tokensSaved
                 );
 
+                // One header line. The char/zone statistics it carried were for
+                // humans; the agent pays them on every later request.
+                const name = path.basename(resolvedPath);
+                const whole = tfcResult.compressed === content;
+                const header = whole
+                    ? `${name} (whole file, ${content.split("\n").length}L)`
+                    : `${name} [${tfcResult.zones.foveas.join(", ")}]` +
+                        (tfcResult.zones.darkMatterLines > 0 ? ` — ${tfcResult.zones.darkMatterLines} unrelated lines omitted` : "");
                 return {
                     content: [{
                         type: "text" as const,
-                        text:
-                            `TFC-Pro: ${path.basename(resolvedPath)} [${tfcResult.zones.foveas.join(", ")}] ` +
-                            `${tfcResult.originalSize.toLocaleString()}→${tfcResult.compressedSize.toLocaleString()} chars ` +
-                            `(${(tfcResult.ratio * 100).toFixed(1)}% reduction)\n` +
-                            `Fovea: 100% | Upstream: ${tfcResult.zones.upstream} | Downstream: ${tfcResult.zones.localParafovea}+${tfcResult.zones.externalParafovea} | Dark: ${tfcResult.zones.darkMatterLines}L\n\n` +
-                            `\`\`\`\n${tfcResult.compressed}\n\`\`\``,
-                        }],
-                    };
-            } else if (tfcPayload.kind === "shield_tripped") {
-                return {
-                    content: [{
-                        type: "text" as const,
-                        text: `TFC-Pro shield tripped: focus "${focus}" spans >85% of file (compression ratio ${(tfcPayload.ratio * 100).toFixed(1)}%). Use action:"read" compress:false to read raw, or omit focus for aggressive compression.`
+                        text: `${header}\n\n\`\`\`\n${tfcResult.compressed}\n\`\`\``,
                     }],
-                    isError: true,
+                };
+            } else if (tfcPayload.kind === "shield_tripped") {
+                // The focus is most of the file: the file itself is barely larger
+                // than any view of it. It used to answer an ERROR asking for a
+                // second call (action:"read"), i.e. one more full-context turn.
+                engine.markFileRead(resolvedPath);
+                const tokens = estimateTokens(content);
+                engine.logUsage("nreki_compress_tfc", tokens, tokens, 0);
+                return {
+                    content: [{
+                        type: "text" as const,
+                        text: `${path.basename(resolvedPath)} (whole file, ${content.split("\n").length}L: "${focus}" is most of it)\n\n\`\`\`\n${content}\n\`\`\``,
+                    }],
                 };
             } else {
                 // kind === "not_found"
@@ -339,16 +408,29 @@ export async function handleCompress(
                     return {
                         content: [{
                             type: "text" as const,
-                            text: `TFC-Pro: language AST not supported for '${ext}'. Use action:"read" compress:false.`
+                            text: `No parser for '${ext}': use action:"read".`
                         }],
                         isError: true,
                     };
                 }
 
+                // List the names so the retry needs no outline call in between,
+                // closest to what was asked first (a typo's target is not cut off).
+                const want = focus.toLowerCase();
+                const shared = (n: string): number => {
+                    const a = n.toLowerCase();
+                    let k = 0;
+                    while (k < a.length && k < want.length && a[k] === want[k]) k++;
+                    return k;
+                };
+                const available = [...(tfcPayload.available ?? [])].sort((a, b) => shared(b) - shared(a));
+                const shown = available.slice(0, 40).join(", ");
+                const more = available.length > 40 ? `, +${available.length - 40} more` : "";
                 return {
                     content: [{
                         type: "text" as const,
-                        text: `TFC-Pro: symbol "${focus}" not found in ${path.basename(resolvedPath)}. Run action:"outline" first to verify exact name.`
+                        text: `Symbol "${focus}" not found in ${path.basename(resolvedPath)}.` +
+                            (available.length > 0 ? ` Symbols: ${shown}${more}` : ""),
                     }],
                     isError: true,
                 };
@@ -356,7 +438,8 @@ export async function handleCompress(
         }
 
         if (compression_level) {
-            const result = await engine.compressFileAdvanced(resolvedPath, compression_level);
+            const original = readSource(resolvedPath);
+            const result = await engine.compressFileAdvanced(resolvedPath, compression_level, original);
             const saved = result.tokensSaved;
 
             engine.logUsage(
@@ -366,13 +449,13 @@ export async function handleCompress(
                 saved,
             );
 
+            const described = describeAdvanced(result, estimateTokens(original));
             return {
                 content: [{
                     type: "text" as const,
                     text:
-                        `${path.basename(resolvedPath)} (${compression_level}) ` +
-                        `${result.originalSize.toLocaleString()}→${result.compressedSize.toLocaleString()} chars ` +
-                        `(${(result.ratio * 100).toFixed(1)}% reduction)\n\n` +
+                        `${path.basename(resolvedPath)} (${compression_level}) — ${described.label}.\n` +
+                        (described.skeleton ? `${SKELETON_HINT}\n` : "") + `\n` +
                         `\`\`\`\n${result.compressed}\n\`\`\``,
                 }],
             };
@@ -384,21 +467,23 @@ export async function handleCompress(
 
         const result = await engine.compressFile(resolvedPath, tier, focus);
         const saved = result.tokensSaved;
+        const outTokens = estimateTokens(result.compressed);
 
         engine.logUsage(
             "nreki_compress",
-            estimateTokens(result.compressed),
-            estimateTokens(result.compressed),
+            outTokens,
+            outTokens,
             saved,
         );
 
+        const originalTokens = estimateTokens(readSource(resolvedPath));
         return {
             content: [{
                 type: "text" as const,
                 text:
-                    `${path.basename(resolvedPath)} (tier ${tier}, ${result.chunksFound} chunks) ` +
-                    `${result.originalSize.toLocaleString()}→${result.compressedSize.toLocaleString()} chars ` +
-                    `(${(result.ratio * 100).toFixed(1)}% reduction)\n\n` +
+                    `${path.basename(resolvedPath)} (tier ${tier}, ${result.chunksFound} chunks) — ${TIER_LABEL[tier]}. ` +
+                    `${originalTokens.toLocaleString()} → ${outTokens.toLocaleString()} tokens ` +
+                    `(${percentFewer(originalTokens, outTokens)}% fewer).\n${SKELETON_HINT}\n\n` +
                     `\`\`\`\n${result.compressed}\n\`\`\``,
             }],
         };
@@ -408,6 +493,7 @@ export async function handleCompress(
                 type: "text" as const,
                 text: `Error compressing ${file_path}: ${(err as Error).message}`,
             }],
+            isError: true,
         };
     }
 }

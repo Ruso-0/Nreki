@@ -29,6 +29,9 @@ export interface CrossFileChunk {
     seedType: string;
     source: "type-ledger" | "bm25-fallback";
     score: number;
+    /** Source of the chunk and where it starts (renders short type declarations verbatim). */
+    rawCode?: string;
+    startLine?: number;
 }
 
 export interface CrossFileFovea {
@@ -255,6 +258,8 @@ export function extractTypeLedgerParafovea(
                 seedType: c.seedType,
                 source: c.source,
                 score: c.score,
+                rawCode: record.raw_code,
+                startLine: record.start_line,
             });
         }
     }
@@ -301,9 +306,9 @@ export function countTotalCrossFileBeforeTruncation(
 // ─── Render functions (Furia #3 cleanSignature pure) ───────────────────
 
 /**
- * Render upstream cross-file chunks (consumers of fovea-produced types).
- * Format: `// [UPSTREAM]: relPath::symbolName` per line.
- * Empty input → empty string (caller decides whether to emit header).
+ * Render upstream cross-file chunks (consumers of fovea-produced types) as one
+ * line: `// used by (other files): relPath::symbolName, …`.
+ * Empty input → empty string.
  */
 export function renderCrossFileUpstream(
     chunks: CrossFileChunk[],
@@ -314,24 +319,20 @@ export function renderCrossFileUpstream(
 
     // Dedup by (path, symbolName) — same chunk via multiple types appears once.
     const seen = new Set<string>();
-    const lines: string[] = [];
-    for (const c of upstream) {
-        const display = relPath ? relPath(c.path) : c.path;
-        const key = `${display}::${c.symbolName}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        lines.push(`// [UPSTREAM]: ${key}`);
-    }
-
-    return [
-        "// ─── UPSTREAM CROSS-FILE (Type Ledger consumers) ───",
-        ...lines,
-    ].join("\n");
+    for (const c of upstream) seen.add(`${relPath ? relPath(c.path) : c.path}::${c.symbolName}`);
+    return `// used by (other files): ${[...seen].join(", ")}`;
 }
+
+/** A type declaration short enough to show whole (its fields are what callers need). */
+const SHORT_TYPE_LINES = 12;
+const SHORT_TYPE_CHARS = 700;
+const TYPE_DECL = /^\s*(?:export\s+)?(?:declare\s+)?(?:interface|type|enum|const\s+enum)\b/;
 
 /**
  * Render downstream cross-file chunks (producers of fovea-consumed types).
- * Format: `// [DOWNSTREAM relPath::symbolName]: <cleanSignature>`.
+ * A short interface/type/enum is shown whole, under `// from relPath:L<n>`:
+ * its stored shorthand has the body stripped (`interface Invoice { }`), which
+ * read as an EMPTY type. Anything else is one line: location + signature.
  * Empty input → empty string.
  */
 export function renderCrossFileDownstream(
@@ -348,14 +349,16 @@ export function renderCrossFileDownstream(
         const key = `${display}::${c.symbolName}`;
         if (seen.has(key)) continue;
         seen.add(key);
-        const sig = cleanSignature(c.shorthand);
-        lines.push(`// [DOWNSTREAM ${key}]: ${sig}`);
+        const where = c.startLine ? `${display}:L${c.startLine}` : key;
+        const raw = c.rawCode?.trim() ?? "";
+        if (raw && TYPE_DECL.test(raw) && raw.length <= SHORT_TYPE_CHARS && raw.split("\n").length <= SHORT_TYPE_LINES) {
+            lines.push(`// from ${where}`, raw);
+            continue;
+        }
+        const head = raw ? raw.split("\n")[0].replace(/\s*\{\s*$/, "").trim() : cleanSignature(c.shorthand);
+        lines.push(`// from ${where}: ${head}`);
     }
-
-    return [
-        "// ─── DOWNSTREAM CROSS-FILE (Type Ledger producers) ───",
-        ...lines,
-    ].join("\n");
+    return lines.join("\n");
 }
 
 /**

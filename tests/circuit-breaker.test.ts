@@ -12,7 +12,7 @@
  * - Error hashing and detection
  */
 
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import path from "path";
 import {
     CircuitBreaker,
@@ -333,34 +333,21 @@ describe("CircuitBreaker", () => {
 
     describe("TTL eviction", () => {
         it("cleans up old entries after 5 minutes", () => {
-            // Manually inject old entries by accessing internal state
-            const oldTimestamp = Date.now() - 400_000; // 6+ minutes ago
-            for (let i = 0; i < 5; i++) {
-                cb.recordToolCall("bash", "TypeError: old error");
+            // The previous version never aged anything (it recorded 3 fresh
+            // errors and expected a trip), so it could not fail on a TTL bug.
+            vi.useFakeTimers();
+            try {
+                const cb2 = new CircuitBreaker();
+                cb2.recordToolCall("bash", "TypeError: stale error");
+                cb2.recordToolCall("bash", "TypeError: stale error");
+                vi.advanceTimersByTime(301_000); // past HISTORY_TTL_MS (300 s)
+
+                expect(cb2.recordToolCall("bash", "TypeError: stale error").tripped).toBe(false); // 2 old ones expired
+                expect(cb2.recordToolCall("bash", "TypeError: stale error").tripped).toBe(false); // 2 fresh
+                expect(cb2.recordToolCall("bash", "TypeError: stale error").tripped).toBe(true);  // 3 fresh → loop
+            } finally {
+                vi.useRealTimers();
             }
-
-            // Tamper with timestamps to simulate old entries
-            const state = cb.getState();
-            // Record fresh entries to force a checkForLoop
-            cb.reset();
-            // Re-add with old timestamps via the internal recording
-            // We'll simulate by recording calls then checking state clears
-
-            // Instead: record 3 identical errors, but make the first 2 "old"
-            // by verifying that after TTL passes, they don't count
-            const cb2 = new CircuitBreaker();
-
-            // Record 2 errors
-            cb2.recordToolCall("bash", "TypeError: stale error");
-            cb2.recordToolCall("bash", "TypeError: stale error");
-
-            // Manually age the history entries
-            const internalState = cb2.getState();
-            // Since getState returns a copy, we need direct manipulation
-            // This test verifies the TTL mechanism exists by checking that
-            // fresh errors within the window still trip correctly
-            const r = cb2.recordToolCall("bash", "TypeError: stale error");
-            expect(r.tripped).toBe(true); // 3 within window still trips
         });
     });
 

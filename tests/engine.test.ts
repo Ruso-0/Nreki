@@ -153,8 +153,10 @@ describe("NrekiDB", () => {
     });
 
     it("should log and retrieve usage stats", () => {
-        db.logUsage("nreki_search", 100, 200, 500);
-        db.logUsage("nreki_compress", 50, 100, 300);
+        db.batchInsertUsage([
+            ["nreki_search", 100, 200, 500],
+            ["nreki_compress", 50, 100, 300],
+        ]);
 
         const stats = db.getUsageStats();
         expect(stats.total_saved).toBeGreaterThanOrEqual(800);
@@ -240,14 +242,14 @@ describe("CognitiveEnforcer", () => {
         expect(result.blocked).toBe(false);
     });
 
-    it("should block raw read on large files", () => {
+    // v12.0.1 (audit C-01): read is never blocked. handleRead returns small and
+    // medium files verbatim and AUTO-SHIELDs (compresses) files over 12k tokens;
+    // the old block made "read" unreachable through MCP and cost 1-2 turns.
+    it("allows read on large files (handleRead's auto-shield handles size)", () => {
         const tempFile = path.join(tmpDir, "large.ts");
         fs.writeFileSync(tempFile, Array(150).fill("const x = 1;").join("\n"));
         const result = enforcer.evaluate("nreki_code", "read", { path: tempFile });
-        expect(result.blocked).toBe(true);
-        expect(result.errorText).toContain('nreki_code action:"compress"');
-        expect(result.errorText).toContain('focus:');
-        expect(result.errorText).toContain('outline');
+        expect(result.blocked).toBe(false);
     });
 
     it("should allow compress with focus", () => {
@@ -257,11 +259,19 @@ describe("CognitiveEnforcer", () => {
         expect(result.blocked).toBe(false);
     });
 
-    it("should block compress without focus on large files", () => {
+    it("allows compress without focus (a skeleton is the cheap overview)", () => {
         const tempFile = path.join(tmpDir, "nofocus.ts");
         fs.writeFileSync(tempFile, Array(150).fill("const x = 1;").join("\n"));
         const result = enforcer.evaluate("nreki_code", "compress", { path: tempFile });
-        expect(result.blocked).toBe(true);
+        expect(result.blocked).toBe(false);
+    });
+
+    it("still blocks a blind replace-mode edit until the symbol was seen", () => {
+        const tempFile = path.join(tmpDir, "blind.ts");
+        fs.writeFileSync(tempFile, Array(150).fill("const x = 1;").join("\n"));
+        expect(enforcer.evaluate("nreki_code", "edit", { path: tempFile, symbol: "x", mode: "replace" }).blocked).toBe(true);
+        enforcer.registerRawRead(tempFile);
+        expect(enforcer.evaluate("nreki_code", "edit", { path: tempFile, symbol: "x", mode: "replace" }).blocked).toBe(false);
     });
 });
 

@@ -1,36 +1,12 @@
-# NREKI ACTIVE (IMMUNE SYSTEM)
-Native Read/Write blocked for >100L files. Fallback only for new files or <100L.
+# NREKI ACTIVE
+NREKI checks edits (syntax + types, in RAM) before writing them. Every tool result stays in your context for the rest of the session, so ask for the smallest answer.
+Hook: a whole-file Read of a big code file (~6k+ tokens) is blocked once with its symbol list; re-Read only the lines you need (offset/limit) or repeat the Read.
 
-## 0. ZERO-CHATTER
-Call tools immediately. No preambles. One-line responses.
-
-## 1. NAVIGATION & READING
-- NEVER use Bash grep/rg or native Read. Use `nreki_navigate action:"fast_grep"` for exact search, `action:"search"` for semantic (Type Ledger).
-- If `search` returns "No semantic results found", **read the fallback list in the response** — it names `fast_grep` (exact substring, RAM-resident) and broaden-query before reaching for the host agent's grep.
-- Batch reads: `nreki_code action:"compress" focus:"sym1, sym2"`.
-- Large files: `nreki_navigate action:"outline"` first. If `[BUDGET LIMIT REACHED]`, use `compress focus`. Heed ⚠️ and 👻 markers.
-- Small files: `nreki_code action:"read"`.
-
-## 2. SURGICAL EDITING
-- NEVER native Write/Replace. NEVER edit sequentially. Batch ALL edits in ONE `batch_edit`.
-- **80L payload limit:** Decompose `new_code`/`replace_text` >80 lines. **Patch mode:** Use `search_text`/`replace_text` for symbols >100L (default, empirically calibrated; override via `NREKI_SYMBOL_LIMIT`).
-- ACID rule: every `search_text` targets ORIGINAL source, not prior patches.
-- Anti-sweep: no `// eslint-disable`, `@ts-ignore`, `# noqa`. Rename via `prepare_refactor` first.
-
-## 3. BLAST RADIUS & TYPES
-- Cascade all dependents in same `batch_edit`. NEVER downgrade to `any`/`unknown`.
-- Heal `[UNPAID TYPE DEBT]` by restoring strict types. NREKI auto-injects missing imports.
-
-## 4. MEMORY
-- Plan: `nreki_guard action:"set_plan" text:"PLAN.md"`.
-- Scratchpad: `nreki_guard action:"memorize" text:"<notes>"`.
-- Engrams: `nreki_guard action:"engram" path:"..." symbol:"..." text:"ASSERT: <rule>"`.
-
-## 5. VERIFICATION
-- NEVER run tsc/eslint. NREKI validates edits in RAM. `[OK]` = guaranteed valid.
-- Errors: fix with NREKI tools, not bash. Filter output: `nreki_code action:"filter_output"`.
-- **Pre-existing TS errors** in the file you edit are NOT blockers — NREKI's differential check (`count > baseline` per error fingerprint) only rejects edits that *introduce* a new error. You are not obligated to fix pre-existing problems that are unrelated to your change.
-- `BREAK & BUILD` or `DECOMPOSE`: STOP and rethink.
-
-## 6. INPUT VALIDATION
-- `read` / `compress` are FILE operations. Passing a directory returns a clear error pointing to `nreki_navigate action:"outline" / "fast_grep" / "search"`. Use the right tool for the input shape.
+- Start: `nreki_navigate action:"context" query:"<the task, as given>"` returns the code the task names (symbols verbatim with line ranges, other mentions, importers) in one call. Often that is all you need to read before editing.
+- Find: `nreki_navigate action:"fast_grep"` (exact text, gives file:line + symbol) or `action:"search"` (concept). `map` is an overview, not a way to find code.
+- Read: `nreki_code action:"compress" focus:"a,b,c"` returns only those symbols, several per call. Small files and line ranges: native Read.
+- Edit: one `nreki_code action:"batch_edit"` with every change. `mode:"patch"` (search_text -> replace_text, matched against the original source) for small changes; symbols over 100 lines require it; payloads over 80 lines are rejected. A rejected edit writes nothing: fix it and resend.
+- Changing a signature: update its callers in the same batch. Do not weaken types to `any`/`unknown`. Edits that add `@ts-ignore`, `# type: ignore`, `# noqa` or a blanket `eslint-disable` are rejected. Rename: `nreki_navigate action:"prepare_refactor"` first.
+- `[Validated: …]` footer: skip tsc only when it says re-running is redundant; if it says syntax only, NOT checked or LSP offline, run the compiler/tests before finishing. Errors that were already there never block an edit.
+- Memory across compaction: `nreki_guard action:"set_plan"` / `"memorize"`; a note on a symbol: `action:"engram"`.
+- `BREAK & BUILD` or `DECOMPOSE` in a response: stop and rethink the approach.

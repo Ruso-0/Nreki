@@ -10,7 +10,6 @@ import {
     scanProject,
     classifyAndGenerateShadow,
 } from "../src/hologram/shadow-generator.js";
-import { ShadowCache } from "../src/hologram/shadow-cache.js";
 
 const toPosix = (p: string) => path.normalize(p).replace(/\\/g, "/");
 
@@ -141,22 +140,6 @@ describe("hologram integration", () => {
         ].join("\n");
         const result2 = classifyAndGenerateShadow("api.ts", content2, parser, lang);
         expect(result2.prunable).toBe(false);
-    });
-
-    it("43. Shadow cache persists between instantiations", () => {
-        dir = createTempProject({});
-
-        const cache1 = new ShadowCache(dir);
-        cache1.setVersions("6.0.0", "5.9.3");
-        cache1.setShadow("/test/file.ts", "export declare const x: number;", "pruned");
-        cache1.save(new Map([["/test/file.ts", "export declare const x: number;"]]));
-
-        // Create a new instance and load
-        const cache2 = new ShadowCache(dir);
-        const shadows = cache2.load();
-
-        expect(shadows.size).toBe(1);
-        expect(shadows.get("/test/file.ts")).toContain("export declare const x: number");
     });
 
     it("44. Pre-warming completes before first edit (simulated)", async () => {

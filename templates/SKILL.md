@@ -1,58 +1,30 @@
 ---
 name: nreki-optimizer
-description: AST-aware context firewall for AI coding agents. Compresses code, validates edits before disk writes, detects blast radius, and enables atomic multi-file refactoring via NREKI MCP tools.
+description: Edit code through NREKI MCP tools (edits checked for syntax and types before writing) and read only the symbols a task needs.
 ---
 
-# NREKI ACTIVE (IMMUNE SYSTEM)
+# NREKI ACTIVE
+If nreki_* tools fail, native Read/Edit/Write still work. While a NREKI server runs, the Claude Code hook blocks only whole-file Reads of big code files (~6k+ tokens), once, answering with the symbol list: re-Read the lines you need (offset/limit) or repeat the Read.
 
-If nreki_* tools fail: fall back to native Read/Write ONLY for new files or <100L. Native tools are BLOCKED by filesystem hooks for >100L files.
+Every tool result stays in your context for the rest of the session, so ask for the smallest answer.
 
-## 0. ZERO-CHATTER
-- Call tools immediately. No "I will now..." or "Let me...".
-- State changes in one line. No ASCII tables, no summaries.
-- Output tokens cost 5x input. Optimize every syllable.
+## Find and read
+- Start: `nreki_navigate action:"context" query:"<the task, as given>"` returns the code the task names (symbols verbatim with line ranges, other mentions, importers) in one call. Often that is all you need to read before editing.
+- `nreki_navigate action:"fast_grep"`: exact text, gives file:line + symbol. `action:"search"`: concept search. `map` is an overview, not a way to find code.
+- `nreki_code action:"compress" focus:"a,b,c"`: only those symbols, several per call. Small files and line ranges: native Read.
+- `outline` lists a file's symbols. If it says `[BUDGET LIMIT REACHED]`, read the omitted symbols with `compress focus` before editing them.
 
-## 1. NAVIGATION & READING
-- NEVER use Explore, Bash grep/rg/cat, or native Read File.
-- EXACT SEARCH: ALWAYS use nreki_navigate action:"fast_grep". Returns 3D AST topological coordinates (File + Symbol + Line) via SQLite index. Benchmarked 5-33x faster than bash grep on indexed codebases.
-- SEMANTIC SEARCH: Use nreki_navigate action:"search" for concept-based queries (Type Ledger).
-- BATCH READING: NEVER read functions one by one. Use ONE call with comma-separated targets: nreki_code action:"compress" focus:"func1, func2, func3".
-- LARGE FILES: nreki_navigate action:"outline" auto-expands HIGH-risk methods up to 6,000 token budget.
-  - CRITICAL: If outline says [BUDGET LIMIT REACHED], you MUST use compress focus:"<omitted_symbols>" to read the hidden logic before editing. Do not guess.
-  - Pay attention to [Defect] flags and [orphan / 0 ext refs] markers.
-- Small files: nreki_code action:"read".
+## Edit
+- One `nreki_code action:"batch_edit"` with every change (all-or-nothing). A rejected edit writes nothing: fix it and resend.
+- `mode:"patch"`: search_text -> replace_text inside the symbol; indentation is matched loosely. Symbols over 100 lines require it (`NREKI_SYMBOL_LIMIT`). Payloads over 80 lines are rejected: split them. Several patches to one symbol go in one batch, each matching the ORIGINAL source.
+- Changing a signature: update its callers in the same batch. Rename: `nreki_navigate action:"prepare_refactor"` first.
+- Do not weaken types to `any`/`unknown`. Edits that add `@ts-ignore`/`@ts-expect-error`/`@ts-nocheck`, `# type: ignore`, `# pyright: ignore`, `# noqa` or a blanket `eslint-disable` are rejected. NREKI may add a missing import itself; keep it.
 
-## 2. SURGICAL EDITING & ACID BATCHES
-- NEVER use native Write/Replace on existing files (bypasses AST validation).
-- NEVER edit sequentially. Read ALL targets first, then batch ALL fixes in ONE nreki_code action:"batch_edit" call.
-- 80L PAYLOAD GUILLOTINE: NREKI mathematically rejects any single payload (new_code or replace_text) >80 lines. You MUST decompose large rewrites.
-- PATCH MODE (MANDATORY): If the original symbol is larger than `SYMBOL_REPLACE_LIMIT` (default 100 lines, empirically calibrated in v11.3.1; override via `NREKI_SYMBOL_LIMIT` env), mode:"replace" is BLOCKED. You MUST use mode:"patch" with search_text and replace_text.
-  - Tolerant Match: search_text indentation is fuzzy. Focus on unique logical content.
-  - Multi-Patching: To bypass the 80L limit, send MULTIPLE patch edits to the SAME symbol sequentially in one batch_edit.
-  - ACID Rule: When multi-patching a symbol, EVERY search_text must match the ORIGINAL unaltered source code. Do not target code injected by previous patches.
-- ANTI-SWEEP SHIELD: NEVER use // eslint-disable, @ts-ignore, or # noqa. NREKI will block your edit. Fix the structural flaw.
-- RENAMING: Run nreki_navigate action:"prepare_refactor" first.
+## Verify
+- The `[Validated: …]` footer says what was checked. Skip tsc only when it says re-running is redundant; if it says syntax only, NOT checked or LSP offline, run the compiler/tests before finishing.
+- Errors that were already in the file never block an edit: only new ones do.
+- Long terminal output: `nreki_code action:"filter_output"`. `BREAK & BUILD` or `DECOMPOSE`: stop and rethink.
 
-## 3. BLAST RADIUS & TTRD (TYPE DISCIPLINE)
-- CASCADES: Fix all downstream dependents in the SAME batch_edit when changing signatures.
-- TTRD SHIELD: NEVER downgrade strict types to any or unknown to appease the compiler. NREKI catches type degradation in RAM and penalizes the file's Cognitive Friction Index (CFI).
-- BOUNTIES: If you see [UNPAID TYPE DEBT] warnings, restore the original strict types to earn a CFI reduction reward.
-- AUTO-HEALER: NREKI may auto-inject missing imports in RAM. Do not revert them.
-
-## 4. CONTEXT SURVIVAL & MEMORY
-- Anchor plans: nreki_guard action:"set_plan" text:"PLAN.md".
-- Scratchpad: nreki_guard action:"memorize" text:"<notes>".
-- Engrams: Use nreki_guard action:"engram" path:"..." symbol:"..." text:"ASSERT: <rule>" to pin architectural invariants to an AST node. The ASSERT prefix makes it immortal across code mutations.
-
-## 5. ALERTS & VERIFICATION
-- NEVER run tsc, eslint, or npm install to verify edits. NREKI mathematically validates every edit via TypeScript Compiler and LSP sidecars (Go/Python) in RAM BEFORE disk write.
-- If nreki_code returns [OK], the edit is guaranteed valid. Trust it. Move on.
-- DIFFERENTIAL CHECK: pre-existing TypeScript errors in the file you edit are NOT blockers. NREKI captures a per-fingerprint baseline and only rejects edits that introduce NEW errors (count > baseline). You are not required to fix pre-existing problems that are unrelated to your change.
-- If NREKI returns an error, read the structured output and fix it using NREKI tools. Do not drop to the bash terminal.
-- Terminal output: nreki_code action:"filter_output".
-- Circuit breaker: If you see BREAK & BUILD or DECOMPOSE, STOP. Read the strategy and rethink.
-
-## 6. INPUT VALIDATION
-- nreki_code action:"read" and action:"compress" operate on individual FILES. Passing a directory returns an explicit error pointing to nreki_navigate action:"outline" / "fast_grep" / "search".
-- nreki_navigate action:"outline" and nreki_guard action:"set_plan" / "engram" likewise operate on single FILE paths. Pass a directory and the response will name the correct alternative tool.
-- When semantic search returns no results, the response lists fallbacks: fast_grep, broaden-query, host-agent grep. Follow that list in order.
+## Memory
+- `nreki_guard action:"set_plan" text:"PLAN.md"`, `action:"memorize" text:"<notes>"` (survive context compaction).
+- `action:"engram" path:"…" symbol:"…" text:"ASSERT: <rule>"`: a note on a symbol; `ASSERT` notes survive code changes.

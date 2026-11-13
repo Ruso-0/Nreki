@@ -8,8 +8,9 @@
  *  A. The focus symbol's `rawCode` appears verbatim in the compressed payload
  *  B. A non-focus symbol's body (>3 lines of distinctive code) does NOT
  *     appear verbatim in the compressed payload (only its signature can)
- *  C. The "FOVEA (100% Resolution)" section header is present when a focus
- *     was resolved (sanity)
+ *  C. The focus body is preceded by its line-range comment (L<start>-L<end>)
+ *     when a focus was resolved (sanity; the old "FOVEA (100% Resolution)"
+ *     banner was cut for token cost)
  *
  * Note on scope (Sprint 8.0 honest):
  *  This test verifies the focus-symbol preservation rule. It does NOT yet
@@ -121,8 +122,8 @@ describe("Sprint 8.0 Phase 1.2 — foveal binary findings", () => {
         // The focus body's distinctive marker MUST appear (verbatim copy of rawCode).
         expect(result.data.compressed).toContain("EPICENTER_PAYLOAD_0_distinctive_marker");
         expect(result.data.compressed).toContain("EPICENTER_PAYLOAD_34_distinctive_marker");
-        // The FOVEA section header must be present.
-        expect(result.data.compressed).toMatch(/FOVEA \(100% Resolution/);
+        // The focus body is announced by its line range.
+        expect(result.data.compressed).toMatch(/\/\* L\d+-L\d+ \*\/\n[^\n]*validateToken/);
         // And the foci metadata names the focus symbol.
         expect(result.data.zones.foveas).toContain("validateToken");
     });
@@ -153,8 +154,9 @@ describe("Sprint 8.0 Phase 1.2 — foveal binary findings", () => {
         expect(result.data.compressed).not.toContain("DARK_MATTER_unique_payload");
     });
 
-    it("C. Density Shield gate: tiny file bypasses compression altogether (no header)", async () => {
-        // <100 lines and <1024 bytes -> bypass at compressor-foveal.ts:109
+    it("C. tiny files: a focus returns that symbol; a focus that is the whole file trips the shield (the handler returns the file)", async () => {
+        // No small-file bypass any more (it returned 17 lines for a 4-line focus);
+        // the shield still keeps a focus from costing more than the file.
         const tinySource = [
             "export function tinyFoo() { return 1; }",
             "export function tinyBar() { return 2; }",
@@ -162,21 +164,33 @@ describe("Sprint 8.0 Phase 1.2 — foveal binary findings", () => {
         const filePath = path.join(tmpDir, "tiny.ts");
         fs.writeFileSync(filePath, tinySource, "utf-8");
 
-        const result = await tfcCompress(
-            filePath,
-            tinySource,
-            "tinyFoo",
-            makeStubEngine(),
-            { maxCrossFile: 0 },
-        );
+        const one = await tfcCompress(filePath, tinySource, "tinyFoo", makeStubEngine(), { maxCrossFile: 0 });
+        expect(one.kind).toBe("success");
+        if (one.kind !== "success") return;
+        expect(one.data.compressed).toContain("tinyFoo");
+        expect(one.data.compressed).not.toContain("tinyBar");
+
+        const single = "export function onlyFn() { return 1; }\n";
+        const singlePath = path.join(tmpDir, "single.ts");
+        fs.writeFileSync(singlePath, single, "utf-8");
+        const whole = await tfcCompress(singlePath, single, "onlyFn", makeStubEngine(), { maxCrossFile: 0 });
+        expect(whole.kind).toBe("shield_tripped");
+    });
+
+    it("C2. on a small file a focus on one symbol among several returns only that symbol", async () => {
+        const helpers = Array.from({ length: 6 }, (_, i) =>
+            `export function helper${i}(value: number): number {\n    const shifted = value + ${i};\n    return shifted * ${i + 2};\n}`).join("\n\n");
+        const smallSource = `${helpers}\n\nexport function target(x: number): number {\n    return x - 1;\n}\n`;
+        const filePath = path.join(tmpDir, "small.ts");
+        fs.writeFileSync(filePath, smallSource, "utf-8");
+
+        const result = await tfcCompress(filePath, smallSource, "target", makeStubEngine(), { maxCrossFile: 0 });
 
         expect(result.kind).toBe("success");
         if (result.kind !== "success") return;
-
-        // Bypass returns content as-is; ratio = 0; no NREKI TFC header.
-        expect(result.data.compressed).toBe(tinySource);
-        expect(result.data.ratio).toBe(0);
-        expect(result.data.compressed).not.toContain("NREKI TFC-PRO");
+        expect(result.data.compressed).toContain("export function target(x: number): number {");
+        expect(result.data.compressed).not.toContain("helper3");
+        expect(result.data.compressed.length).toBeLessThan(smallSource.length / 2);
     });
 });
 
@@ -238,6 +252,6 @@ describe("Sprint 8.0 — FOVEAL_OFF=1 control arm (symmetric to Phase 1.2)", () 
         expect(result.data.ratio).toBeGreaterThan(0);
         expect(result.data.compressed).toContain("EPICENTER_PAYLOAD_0_distinctive_marker");
         expect(result.data.compressed).not.toContain("NEIGHBOR_PAYLOAD_0_distinctive_marker");
-        expect(result.data.compressed).toMatch(/FOVEA \(100% Resolution/);
+        expect(result.data.compressed).toMatch(/\/\* L\d+-L\d+ \*\/\n[^\n]*validateToken/);
     });
 });

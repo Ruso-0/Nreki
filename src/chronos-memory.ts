@@ -1,6 +1,14 @@
+/**
+ * chronos-memory.ts - Historical error rate and fragility memory per file.
+ *
+ * Remembers the historical error rate, circuit-breaker trips, cognitive friction
+ * index (CFI), auto-heals, and unpaid type debts of each file across sessions.
+ */
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
+import { logger } from "./utils/logger.js";
+import { quarantineFile, signState, verifyState } from "./utils/trust.js";
 
 export interface TypeDebtRecord {
     symbol: string;
@@ -52,13 +60,25 @@ export class ChronosMemory {
     private load(): ChronosState {
         if (fs.existsSync(this.dbPath)) {
             try {
-                return JSON.parse(fs.readFileSync(this.dbPath, "utf-8"), (k, v) => {
+                const parsed = JSON.parse(fs.readFileSync(this.dbPath, "utf-8"), (k, v) => {
                     if (k === "__proto__" || k === "constructor" || k === "prototype") return undefined;
                     return v;
-                });
+                }) as ChronosState & { tag?: unknown };
+                const { tag, ...state } = parsed;
+                // Its symbol/type strings reach the agent in debt warnings: only
+                // a file signed on this machine is trusted (utils/trust.ts).
+                if (verifyState("chronos", JSON.stringify(state), tag)) return state as ChronosState;
+                const moved = quarantineFile(this.dbPath);
+                logger.warn(`[NREKI] ${this.dbPath} is not signed by this machine; file history starts fresh` +
+                    (moved ? ` (old file moved to ${moved}).` : "."));
             } catch { /* Corrupt, start fresh */ }
         }
         return { version: 1, currentSessionId: 0, globalTechDebt: 0, files: {} };
+    }
+
+    /** Sessions recorded so far (signed history only). */
+    get sessionCount(): number {
+        return this.state.currentSessionId;
     }
 
     // Debounced persistence (atomic write, crash-safe)
@@ -73,7 +93,8 @@ export class ChronosMemory {
         if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
         const tmp = `${this.dbPath}.${crypto.randomBytes(4).toString("hex")}.tmp`;
-        fs.writeFileSync(tmp, JSON.stringify(this.state, null, 2), "utf-8");
+        const signed = { ...this.state, tag: signState("chronos", JSON.stringify(this.state)) };
+        fs.writeFileSync(tmp, JSON.stringify(signed, null, 2), "utf-8");
         try {
             fs.renameSync(tmp, this.dbPath);
         } catch {

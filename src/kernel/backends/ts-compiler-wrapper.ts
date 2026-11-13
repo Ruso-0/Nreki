@@ -41,6 +41,23 @@ export interface VfsAdapter {
     getScriptVersion(fileName: string): string;
     getScriptSnapshot(fileName: string): ts.IScriptSnapshot | undefined;
 }
+
+/** What files that never import some edited files can still see of them. */
+export interface DeclarationSurface {
+    /** The .d.ts TypeScript emits for each file; null when one could not be emitted cleanly (a .d.ts, a file outside the program, an emit diagnostic). */
+    declarations: string | null;
+    /** Every file of the program: a new import can bring global declarations in. */
+    programFiles: string;
+    /** One of the files is a script (its top-level names are global), or has `declare global` / `declare module "x"`. */
+    globalScope: boolean;
+}
+
+/** A script's top-level declarations are global; `declare global` and `declare module "x"` reach files that never import this one. */
+function declaresGlobals(sf: ts.SourceFile): boolean {
+    if (!ts.isExternalModule(sf)) return true;
+    return sf.statements.some(s => ts.isModuleDeclaration(s)
+        && ((s.flags & ts.NodeFlags.GlobalAugmentation) !== 0 || ts.isStringLiteral(s.name)));
+}
 import type { NrekiStructuredError, PreEditContract, TypeRegression } from "../nreki-kernel.js";
 import { escapeRegExp } from "../../utils/imports.js";
 import { toPosix as toPosixUtil } from "../../utils/to-posix.js";
@@ -67,6 +84,39 @@ const isEnvironmentFile = (filePath: string): boolean => {
     return base.endsWith(".d.ts") || base.startsWith(".") || ENV_FILE_BASENAMES.has(base);
 };
 
+/**
+ * Diagnostics inside third-party code (root-level or nested node_modules)
+ * are never the agent's fault and must not abort its transaction. Filtering
+ * HERE — before the kernel decides safe/unsafe and rolls back — is what makes
+ * "ignore node_modules errors" actually commit the edit (NREKI-INT-01: the
+ * old post-hoc filter in processKernelResult ran after the rollback, so it
+ * "committed" an empty VFS and answered [OK] with zero bytes written).
+ */
+const NODE_MODULES_PATH = /(?:^|[\\/])node_modules[\\/]/i;
+const isThirdPartyDiagnostic = (diag: ts.Diagnostic): boolean =>
+    !!diag.file && NODE_MODULES_PATH.test(diag.file.fileName);
+
+interface CachedSourceFile {
+    file: ts.SourceFile;
+    languageVersion: ts.ScriptTarget;
+    impliedNodeFormat: ts.ResolutionMode;
+    /** Program build that last asked for this file. */
+    lastUsed: number;
+}
+
+/**
+ * A parsed file is forgotten once this many program builds have not asked for
+ * it. More than one, so a file that leaves and re-enters the program (hologram
+ * unveiling, a rejected edit followed by a retry) is not parsed again.
+ */
+const SOURCE_FILE_GRACE_BUILDS = 8;
+
+/** Module specifier of an auto-import fix ("node:fs" and "fs" are the same module). */
+const importFixModule = (description: string): string => {
+    const m = /from ["']([^"']+)["']/.exec(description);
+    return (m ? m[1] : description).replace(/^node:/, "");
+};
+
 export class TsCompilerWrapper {
     readonly name = "TypeScript-Strada";
 
@@ -79,6 +129,10 @@ export class TsCompilerWrapper {
     public compilerOptions!: ts.CompilerOptions;
     public rootNames!: Set<string>;
     public tsBuildInfoPath!: string;
+    /** Files the tsconfig itself selects (include/files minus exclude), for honest coverage claims. */
+    private configuredFileNames = new Set<string>();
+    private configFile: string | undefined;
+    private configBase: string | undefined;
 
     // ─── Compiler Infrastructure (owned by backend, referenced by kernel) ───
     public host!: ts.CompilerHost;
@@ -96,6 +150,13 @@ export class TsCompilerWrapper {
     private editCount = 0;
     private gcThreshold = 100;
     private isStateCorrupted = false;
+
+    // ─── Parsed files kept across program builds (see installSourceFileCache) ───
+    private sourceFiles = new Map<string, CachedSourceFile>();
+    /** Options object / value the cached files were parsed and bound under. */
+    private sourceFilesOptionsRef?: ts.CompilerOptions;
+    private sourceFilesOptionsDigest = "";
+    private programGeneration = 0;
 
     // ─── Diagnostic State (moved from kernel) ───
     private baselineFrequencies = new Map<string, number>();
@@ -134,6 +195,10 @@ export class TsCompilerWrapper {
                 target: ts.ScriptTarget.ES2022,
                 module: ts.ModuleKind.ESNext,
                 skipLibCheck: true,
+                // No automatic @types: with no root files TypeScript still loaded
+                // every @types package visible from the cwd on alternate builds
+                // (121 files here: 489 ms per Go/Python edit, 6 ms without them).
+                types: [],
                 tsBuildInfoFile: this.tsBuildInfoPath,
                 incremental: true,
             };
@@ -148,8 +213,31 @@ export class TsCompilerWrapper {
         this.rootNames = new Set(
             parsed.fileNames.map((f) => this.toPosix(path.resolve(projectRoot, f)))
         );
+        this.configFile = configPath;
+        this.configBase = projectRoot; // same base parseJsonConfigFileContent used above
+        this.configuredFileNames = new Set(this.rootNames);
         this.compilerOptions.tsBuildInfoFile = this.tsBuildInfoPath;
         this.compilerOptions.incremental = true;
+    }
+
+    /**
+     * Does the tsconfig select this file? False for excluded files and for a
+     * solution-style root config (`"files": []` + `references`), where the
+     * importers of the file are NOT in the program, so a "project-wide" check
+     * did not happen. Files created after boot are re-evaluated once.
+     */
+    public isInConfiguredProgram(posixPath: string): boolean {
+        if (this.configuredFileNames.has(posixPath)) return true;
+        if (!this.configFile || !this.configBase || !ts.sys.fileExists(posixPath)) return false;
+        try {
+            const parsed = ts.parseJsonConfigFileContent(
+                ts.readConfigFile(this.configFile, ts.sys.readFile).config, ts.sys, this.configBase,
+            );
+            this.configuredFileNames = new Set(
+                parsed.fileNames.map((f) => this.toPosix(path.resolve(this.configBase!, f))),
+            );
+        } catch { return false; }
+        return this.configuredFileNames.has(posixPath);
     }
 
     /**
@@ -172,9 +260,14 @@ export class TsCompilerWrapper {
         // Create base host from TS
         this.host = ts.createIncrementalCompilerHost(this.compilerOptions, ts.sys);
 
-        // Save originals for fallback (kernel closures use these via tsBackend)
-        this.originalReadFile = this.host.readFile;
-        this.originalFileExists = this.host.fileExists;
+        // Disk fallbacks for the kernel's VFS closures. Straight from ts.sys, NOT
+        // from the host: createIncrementalCompilerHost is built for ONE
+        // compilation and caches every fileExists() answer and the text of every
+        // .json file for its whole life. In this long-lived server a module
+        // created after a failed import stayed "missing" (TS2307 until restart)
+        // and a JSON module stayed at its first content after being edited.
+        this.originalReadFile = (fileName: string) => ts.sys.readFile(fileName);
+        this.originalFileExists = (fileName: string) => ts.sys.fileExists(fileName);
 
         // Override with VfsAdapter (kernel's eyes)
         this.host.readFile = (fileName: string): string | undefined => {
@@ -203,6 +296,8 @@ export class TsCompilerWrapper {
             return vfsAdapter.directoryExists(dirName);
         };
 
+        this.installSourceFileCache();
+
         // DocumentRegistry
         this.documentRegistry = ts.createDocumentRegistry(
             ts.sys.useCaseSensitiveFileNames,
@@ -222,6 +317,79 @@ export class TsCompilerWrapper {
             directoryExists: this.host.directoryExists,
             readDirectory: ts.sys.readDirectory,
         }, this.documentRegistry);
+    }
+
+    /**
+     * Keep parsed files across program builds.
+     *
+     * The stock host re-reads AND re-parses every file for each new program,
+     * and updateProgram() runs at least twice per accepted edit: editing one
+     * file of a 48-file program cost 96 parses (~200 ms), growing with the
+     * project. Handing back the SAME SourceFile while its text is unchanged
+     * also lets TypeScript reuse the old program's structure.
+     *
+     * Exact by construction: an entry is served only if the text the host
+     * reads right now (VFS first, then disk) equals the text it was parsed
+     * from, under the same parse options. No mtime, no version counter.
+     */
+    private installSourceFileCache(): void {
+        const parse = this.host.getSourceFile.bind(this.host);
+        this.host.getSourceFile = (fileName, languageVersionOrOptions, onError, shouldCreateNewSourceFile) => {
+            this.dropSourceFilesIfOptionsChanged();
+            const options: ts.CreateSourceFileOptions = typeof languageVersionOrOptions === "object"
+                ? languageVersionOrOptions
+                : { languageVersion: languageVersionOrOptions };
+            const key = this.host.getCanonicalFileName(this.toPosix(path.resolve(fileName)));
+            const cached = this.sourceFiles.get(key);
+            if (
+                cached && !shouldCreateNewSourceFile &&
+                cached.languageVersion === options.languageVersion &&
+                cached.impliedNodeFormat === options.impliedNodeFormat
+            ) {
+                let current: string | undefined;
+                // A read error is left to the stock implementation below.
+                try { current = this.host.readFile(fileName); } catch { current = undefined; }
+                if (current !== undefined && current === cached.file.text) {
+                    cached.lastUsed = this.programGeneration;
+                    return cached.file;
+                }
+            }
+            const file = parse(fileName, languageVersionOrOptions, onError, shouldCreateNewSourceFile);
+            if (file) {
+                this.sourceFiles.set(key, {
+                    file,
+                    languageVersion: options.languageVersion,
+                    impliedNodeFormat: options.impliedNodeFormat,
+                    lastUsed: this.programGeneration,
+                });
+            } else {
+                this.sourceFiles.delete(key);
+            }
+            return file;
+        };
+    }
+
+    /**
+     * Options decide how a file is parsed and bound. initConfig() builds a new
+     * options object on every rollback, so only a change of VALUE empties the
+     * cache; TypeScript's own shouldCreateNewSourceFile covers the case where
+     * an old program exists, this covers a build from scratch after a purge.
+     */
+    private dropSourceFilesIfOptionsChanged(): void {
+        if (this.sourceFilesOptionsRef === this.compilerOptions) return;
+        let digest: string;
+        try { digest = JSON.stringify(this.compilerOptions); } catch { digest = `unserializable:${this.programGeneration}`; }
+        if (digest !== this.sourceFilesOptionsDigest) this.sourceFiles.clear();
+        this.sourceFilesOptionsRef = this.compilerOptions;
+        this.sourceFilesOptionsDigest = digest;
+    }
+
+    /** Forget parsed files no program build has asked for in a while. */
+    private releaseUnusedSourceFiles(): void {
+        this.programGeneration++;
+        for (const [key, entry] of this.sourceFiles) {
+            if (this.programGeneration - entry.lastUsed > SOURCE_FILE_GRACE_BUILDS) this.sourceFiles.delete(key);
+        }
     }
 
     /**
@@ -264,6 +432,8 @@ export class TsCompilerWrapper {
                 this.projectRoot
             );
             this.languageService = ts.createLanguageService(this.createLSHost(), this.documentRegistry);
+            // A full rebuild trusts nothing parsed before the corruption.
+            this.sourceFiles.clear();
 
             this.isStateCorrupted = false;
         } else if (++this.editCount >= this.gcThreshold) {
@@ -274,6 +444,7 @@ export class TsCompilerWrapper {
             Array.from(this.rootNames), this.compilerOptions, this.host,
             this.builderProgram // undefined after purge = fresh rebuild with cached files
         );
+        this.releaseUnusedSourceFiles();
     }
 
     /**
@@ -548,6 +719,51 @@ export class TsCompilerWrapper {
         return regressions;
     }
 
+    /**
+     * File mode checks the edited files and their direct importers. Taken before
+     * and after an edit: the same declarations and program files mean no other
+     * file can type-check differently. extractCanonicalTypes is not enough for
+     * that: it prints `() => Totals` whatever a local `Totals` holds.
+     * `withDeclarations: false` only looks for globals (declarations stay null).
+     * null: no program yet.
+     */
+    public declarationSurface(files: ReadonlySet<string>, withDeclarations = true): DeclarationSurface | null {
+        if (!this.builderProgram) return null;
+        const program = this.builderProgram.getProgram();
+        // Program.emit's 6th parameter, forceDtsEmit (public as LanguageService.getEmitOutput's
+        // 3rd): emits the .d.ts in memory even under noEmit or without `declaration`.
+        const emit = program.emit.bind(program) as (
+            targetSourceFile: ts.SourceFile,
+            writeFile: ts.WriteFileCallback,
+            cancellationToken: ts.CancellationToken | undefined,
+            emitOnlyDtsFiles: boolean,
+            customTransformers: ts.CustomTransformers | undefined,
+            forceDtsEmit: boolean,
+        ) => ts.EmitResult;
+
+        let declarations: string | null = withDeclarations ? "" : null;
+        let globalScope = false;
+        for (const file of [...files].sort()) {
+            const sf = program.getSourceFile(file);
+            if (!sf) { declarations = null; continue; }
+            if (declaresGlobals(sf)) globalScope = true;
+            if (declarations === null || sf.isDeclarationFile) { declarations = null; continue; }
+            let dts: string | undefined;
+            try {
+                const result = emit(sf, (name, text) => { if (/\.d\.[cm]?ts$/i.test(name)) dts = text; }, undefined, true, undefined, true);
+                if (result.diagnostics.length > 0) dts = undefined;
+            } catch {
+                dts = undefined;
+            }
+            declarations = dts === undefined ? null : `${declarations}// ${file}\n${dts}\n`;
+        }
+        return {
+            declarations,
+            programFiles: withDeclarations ? program.getSourceFiles().map(sf => sf.fileName).sort().join("\n") : "",
+            globalScope,
+        };
+    }
+
     /** @internal Strangler Fig bridge: inject pre-loaded builderProgram from cache */
     public _injectBuilderProgram(program: ts.EmitAndSemanticDiagnosticsBuilderProgram): void {
         this.builderProgram = program;
@@ -605,6 +821,7 @@ export class TsCompilerWrapper {
 
         const processDiag = (diag: ts.Diagnostic) => {
             if (!diag.file && !touchedEnvironment) return;
+            if (isThirdPartyDiagnostic(diag)) return;
             const hash = this.getFingerprint(diag);
             const count = (currentFrequencies.get(hash) || 0) + 1;
             currentFrequencies.set(hash, count);
@@ -639,6 +856,7 @@ export class TsCompilerWrapper {
 
             while ((nextAffected = this.builderProgram!.getSemanticDiagnosticsOfNextAffectedFile())) {
                 for (const diag of nextAffected.result as ts.Diagnostic[]) {
+                    if (isThirdPartyDiagnostic(diag)) continue;
                     processDiag(diag);
                     if (diag.file && !editedFiles.has(this.toPosix(diag.file.fileName))) {
                         cascadeCount++;
@@ -676,16 +894,19 @@ export class TsCompilerWrapper {
     }
 
     // Safe fix whitelist: only 100% structural fixes that don't mutate business logic.
-    // Safe fix whitelist: only 100% structural fixes that don't mutate business logic.
     // REMOVED: fixClassDoesntImplementInheritedAbstractMember — inserts throw stubs
     // REMOVED: fixAddMissingMember — inserts throw stubs
     // Both generate `throw new Error("Method not implemented.")` which compiles
     // but crashes unconditionally at runtime. Better to return the error to the LLM.
+    // REMOVED (NREKI-GAR-04): fixMissingProperties — fabricates values for missing
+    // required fields (0, "", false, and `throw new Error("Function not implemented.")`
+    // for methods): it compiles and silently changes business data.
+    // KEPT: fixPromiseResolve only adds a `<void>` type argument; fixAddOverrideModifier
+    // only adds the `override` keyword. Neither changes runtime behavior.
     private static readonly SAFE_FIXES = new Set([
         "import",
         "fixMissingImport",
         "fixPromiseResolve",
-        "fixMissingProperties",
         "fixAddOverrideModifier",
     ]);
 
@@ -718,9 +939,19 @@ export class TsCompilerWrapper {
             [errorCode], formatOptions, preferences
         );
 
+        // NREKI-GAR-04: when several modules export the missing name (e.g. two
+        // `parseConfig` in ./a and ./b), TS offers one import per module and
+        // fixes[0] would pick one blindly — compiling fine while wiring the wrong
+        // implementation. Only auto-import when the candidate module is unique.
+        const importModules = new Set(
+            tsFixes.filter(f => f.fixName === "import").map(f => importFixModule(f.description)),
+        );
+        const ambiguousImport = importModules.size > 1;
+
         const results: BackendFix[] = [];
         for (const fix of tsFixes) {
             if (!TsCompilerWrapper.SAFE_FIXES.has(fix.fixName)) continue;
+            if (ambiguousImport && fix.fixName === "import") continue;
 
             results.push({
                 description: fix.description,
@@ -738,6 +969,16 @@ export class TsCompilerWrapper {
         return results;
     }
 
+    /**
+     * The declaration of `symbolName` as the checker resolves it, ready to print:
+     * `function f(a: number): string`, `const x: 5`, `interface I { … }`,
+     * `type T = …`, `class C { … }`, `enum E { … }`.
+     *
+     * A symbol has a declared type only when it NAMES a type. Asking for the
+     * declared type of a function or a const (as this did for every symbol)
+     * answers the error type, printed as `any`: a false contract. Values are
+     * resolved with getTypeOfSymbolAtLocation instead.
+     */
     public getTypeShape(posixPath: string, symbolName: string): string | null {
         if (!this.builderProgram) return null;
         const program = this.builderProgram.getProgram();
@@ -745,45 +986,157 @@ export class TsCompilerWrapper {
         const sourceFile = program.getSourceFile(posixPath);
         if (!sourceFile) return null;
 
+        const unalias = (s: ts.Symbol): ts.Symbol =>
+            s.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(s) : s;
+
         // Try exports first
         const fileSymbol = checker.getSymbolAtLocation(sourceFile);
-        if (fileSymbol?.exports) {
-            const exported = fileSymbol.exports.get(ts.escapeLeadingUnderscores(symbolName));
-            if (exported) {
-                const resolved = exported.flags & ts.SymbolFlags.Alias
-                    ? checker.getAliasedSymbol(exported) : exported;
-                const type = checker.getDeclaredTypeOfSymbol(resolved);
-                return checker.typeToString(type, undefined,
-                    ts.TypeFormatFlags.NoTruncation | ts.TypeFormatFlags.InTypeAlias);
-            }
-        }
+        const exported = fileSymbol?.exports?.get(ts.escapeLeadingUnderscores(symbolName));
+        if (exported) return this.describeSymbol(checker, unalias(exported), symbolName);
 
-        // Fallback: walk AST for top-level declarations matching name
+        // Fallback: top-level declarations that are not exported
         for (const node of sourceFile.statements) {
-            let name: string | undefined;
-            if (
+            const names: ts.Node[] = [];
+            if (ts.isVariableStatement(node)) {
+                for (const d of node.declarationList.declarations) names.push(d.name);
+            } else if (
                 (ts.isInterfaceDeclaration(node) || ts.isTypeAliasDeclaration(node) ||
                  ts.isClassDeclaration(node) || ts.isFunctionDeclaration(node) ||
-                 ts.isVariableStatement(node)) &&
-                !ts.isVariableStatement(node)
+                 ts.isEnumDeclaration(node) || ts.isModuleDeclaration(node)) && node.name
             ) {
-                name = (node as ts.DeclarationStatement).name?.getText(sourceFile);
-            } else if (ts.isVariableStatement(node)) {
-                name = node.declarationList.declarations[0]?.name.getText(sourceFile);
+                names.push(node.name);
             }
-            if (name !== symbolName) continue;
-            const sym = checker.getSymbolAtLocation(
-                ts.isVariableStatement(node)
-                    ? node.declarationList.declarations[0].name
-                    : (node as ts.DeclarationStatement).name!
-            );
-            if (!sym) continue;
-            const resolved = sym.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(sym) : sym;
-            const type = checker.getDeclaredTypeOfSymbol(resolved);
-            return checker.typeToString(type, undefined,
-                ts.TypeFormatFlags.NoTruncation | ts.TypeFormatFlags.InTypeAlias);
+            for (const nameNode of names) {
+                if (nameNode.getText(sourceFile) !== symbolName) continue;
+                const sym = checker.getSymbolAtLocation(nameNode);
+                if (sym) return this.describeSymbol(checker, unalias(sym), symbolName);
+            }
         }
 
         return null;
+    }
+
+    /** Members shown for one class/interface before the list is cut (token bound). */
+    private static readonly SHAPE_MEMBER_CAP = 60;
+
+    private describeSymbol(checker: ts.TypeChecker, symbol: ts.Symbol, name: string): string | null {
+        const F = ts.SymbolFlags;
+        const full = ts.TypeFormatFlags.NoTruncation;
+        const decl = symbol.valueDeclaration ?? symbol.declarations?.[0];
+        if (!decl) return null;
+        const typeParams = (d: ts.Declaration | undefined): string => {
+            const tps = (d as ts.DeclarationWithTypeParameterChildren | undefined)?.typeParameters;
+            return tps && tps.length > 0 ? `<${tps.map(p => p.getText()).join(", ")}>` : "";
+        };
+        const typeDecl = (kind: ts.SyntaxKind): ts.Declaration | undefined =>
+            symbol.declarations?.find(d => d.kind === kind);
+        const parts: string[] = [];
+
+        if (symbol.flags & F.Class) {
+            const classDecl = typeDecl(ts.SyntaxKind.ClassDeclaration) ?? decl;
+            const members = this.describeMembers(checker, checker.getDeclaredTypeOfSymbol(symbol), classDecl);
+            const ctorType = checker.getTypeOfSymbolAtLocation(symbol, classDecl);
+            for (const sig of ctorType.getConstructSignatures()) {
+                members.push(`new ${checker.signatureToString(sig, classDecl, full, ts.SignatureKind.Construct)}`);
+            }
+            for (const prop of ctorType.getProperties()) {
+                if (prop.getName() === "prototype" || this.isHiddenMember(prop)) continue;
+                members.push(`static ${this.describeMember(checker, prop, classDecl)}`);
+            }
+            parts.push(`class ${name}${typeParams(classDecl)} ${this.braces(members)}`);
+        } else if (symbol.flags & F.Interface) {
+            const ifaceDecl = typeDecl(ts.SyntaxKind.InterfaceDeclaration) ?? decl;
+            const members = this.describeMembers(checker, checker.getDeclaredTypeOfSymbol(symbol), ifaceDecl);
+            parts.push(`interface ${name}${typeParams(ifaceDecl)} ${this.braces(members)}`);
+        }
+        if (symbol.flags & F.TypeAlias) {
+            const aliasDecl = typeDecl(ts.SyntaxKind.TypeAliasDeclaration);
+            const shape = checker.typeToString(checker.getDeclaredTypeOfSymbol(symbol), undefined,
+                full | ts.TypeFormatFlags.InTypeAlias);
+            parts.push(`type ${name}${typeParams(aliasDecl)} = ${shape}`);
+        }
+        if (symbol.flags & F.Enum) {
+            const members: string[] = [];
+            symbol.exports?.forEach((member) => {
+                const d = member.valueDeclaration;
+                const value = d && ts.isEnumMember(d) ? checker.getConstantValue(d) : undefined;
+                members.push(value === undefined ? member.getName() : `${member.getName()} = ${JSON.stringify(value)}`);
+            });
+            const keyword = symbol.flags & F.ConstEnum ? "const enum" : "enum";
+            parts.push(`${keyword} ${name} { ${members.join(", ")} }`);
+        }
+        if (symbol.flags & F.Function) {
+            const signatures = checker.getTypeOfSymbolAtLocation(symbol, decl).getCallSignatures();
+            for (const sig of signatures) {
+                parts.push(`function ${name}${checker.signatureToString(sig, decl, full, ts.SignatureKind.Call)}`);
+            }
+        }
+        if (symbol.flags & F.Variable) {
+            const varDecl = typeDecl(ts.SyntaxKind.VariableDeclaration) ?? decl;
+            const list = varDecl.parent;
+            const keyword = ts.isVariableDeclarationList(list)
+                ? (list.flags & ts.NodeFlags.Const ? "const" : list.flags & ts.NodeFlags.Let ? "let" : "var")
+                : "const";
+            const type = checker.getTypeOfSymbolAtLocation(symbol, varDecl);
+            parts.push(`${keyword} ${name}: ${checker.typeToString(type, varDecl, full)}`);
+        }
+        if (parts.length === 0 && symbol.flags & (F.ValueModule | F.NamespaceModule)) {
+            const names = checker.getExportsOfModule(symbol).map(e => e.getName());
+            parts.push(`namespace ${name} ${this.braces(names)}`);
+        }
+        return parts.length > 0 ? parts.join("\n") : null;
+    }
+
+    private braces(members: string[]): string {
+        const cap = TsCompilerWrapper.SHAPE_MEMBER_CAP;
+        const shown = members.length > cap
+            ? [...members.slice(0, cap), `/* +${members.length - cap} more */`]
+            : members;
+        return shown.length > 0 ? `{ ${shown.join("; ")}; }` : "{}";
+    }
+
+    /** Private/protected members are not part of the shape a consumer can use. */
+    private isHiddenMember(member: ts.Symbol): boolean {
+        const d = member.valueDeclaration ?? member.declarations?.[0];
+        if (!d) return false;
+        if (ts.isPrivateIdentifier((d as ts.NamedDeclaration).name ?? d)) return true;
+        return (ts.getCombinedModifierFlags(d) & (ts.ModifierFlags.Private | ts.ModifierFlags.Protected)) !== 0;
+    }
+
+    private describeMember(checker: ts.TypeChecker, member: ts.Symbol, location: ts.Node): string {
+        const full = ts.TypeFormatFlags.NoTruncation;
+        const d = member.valueDeclaration ?? member.declarations?.[0];
+        const type = checker.getTypeOfSymbolAtLocation(member, d ?? location);
+        const optional = member.flags & ts.SymbolFlags.Optional ? "?" : "";
+        if (member.flags & ts.SymbolFlags.Method) {
+            const sigs = type.getCallSignatures();
+            if (sigs.length > 0) {
+                return sigs
+                    .map(sig => `${member.getName()}${optional}${checker.signatureToString(sig, location, full, ts.SignatureKind.Call)}`)
+                    .join("; ");
+            }
+        }
+        const readonly = d && (ts.getCombinedModifierFlags(d) & ts.ModifierFlags.Readonly) ? "readonly " : "";
+        return `${readonly}${member.getName()}${optional}: ${checker.typeToString(type, location, full)}`;
+    }
+
+    /** Properties, methods, call/construct and index signatures of an object type. */
+    private describeMembers(checker: ts.TypeChecker, type: ts.Type, location: ts.Node): string[] {
+        const full = ts.TypeFormatFlags.NoTruncation;
+        const out: string[] = [];
+        for (const prop of checker.getPropertiesOfType(type)) {
+            if (!this.isHiddenMember(prop)) out.push(this.describeMember(checker, prop, location));
+        }
+        for (const sig of type.getCallSignatures()) {
+            out.push(checker.signatureToString(sig, location, full, ts.SignatureKind.Call));
+        }
+        for (const sig of type.getConstructSignatures()) {
+            out.push(`new ${checker.signatureToString(sig, location, full, ts.SignatureKind.Construct)}`);
+        }
+        for (const info of checker.getIndexInfosOfType(type)) {
+            const key = checker.typeToString(info.keyType, location, full);
+            out.push(`${info.isReadonly ? "readonly " : ""}[key: ${key}]: ${checker.typeToString(info.type, location, full)}`);
+        }
+        return out;
     }
 }

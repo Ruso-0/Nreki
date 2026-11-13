@@ -36,7 +36,7 @@ const INACTIVITY_TIMEOUT_MS = 60_000;
 const READ_ONLY_ACTIONS = new Set<string>([
     // nreki_navigate
     "search", "definition", "references", "outline", "map",
-    "fast_grep", "prepare_refactor", "orphan_oracle", "type_shape",
+    "fast_grep", "prepare_refactor", "orphan_oracle", "type_shape", "context",
     // nreki_code (read-only sub-actions; filter_output deliberately excluded)
     "read", "compress",
     // nreki_guard (state inspection + agent's own memory annotations)

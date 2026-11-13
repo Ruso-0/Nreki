@@ -3,6 +3,10 @@ import * as path from "path";
 import * as fs from "fs";
 import { SpectralTopologist, SpectralMath, SparseEdge, TopologicalEdge } from "../src/kernel/spectral-topology.js";
 
+/** λ₂ for printing: analyzeTopology leaves it undefined above 25,000 nodes. */
+const fmtL2 = (v: number | undefined, digits: number): string => v === undefined ? "n/a (N>25000)" : v.toFixed(digits);
+
+
 const externalPath = process.argv[2] || process.cwd();
 const projectRoot = path.resolve(externalPath);
 const tsConfigPath = path.join(projectRoot, "tsconfig.json");
@@ -68,7 +72,7 @@ for (const file of candidateFiles) {
     const { fiedler, volume } = SpectralMath.analyzeTopology(N, sparseEdges);
     const ms = performance.now() - start;
     latencies.push(ms);
-    console.log(`  ${path.basename(file)}: blanket=${blanketFiles.size} files, crown=${crownNodes.size} nodes, ${crownEdges.length} edges, ${ms.toFixed(1)}ms, λ₂=${fiedler.toFixed(4)}`);
+    console.log(`  ${path.basename(file)}: blanket=${blanketFiles.size} files, crown=${crownNodes.size} nodes, ${crownEdges.length} edges, ${ms.toFixed(1)}ms, λ₂=${fmtL2(fiedler, 4)}`);
 }
 
 const avgLatency = latencies.reduce((a, b) => a + b, 0) / latencies.length;
@@ -115,7 +119,7 @@ for (const file of candidateFiles) {
     const detected = delta.verdict === "REJECTED_ENTROPY";
     if (!detected) falseNegatives++;
 
-    console.log(`  ${path.basename(file)}: crown=${preCrown.crownNodes.size} nodes, pre(λ₂=${pre.fiedler.toFixed(4)}, vol=${pre.volume}) → post(λ₂=${post.fiedler.toFixed(4)}, vol=${post.volume}) Φ_pre=${(pre.fiedler/N_AST_pre).toFixed(4)} Φ_post=${(post.fiedler/N_AST_post).toFixed(4)} = ${delta.verdict} ${detected ? "✅" : "❌"}`);
+    console.log(`  ${path.basename(file)}: crown=${preCrown.crownNodes.size} nodes, pre(λ₂=${fmtL2(pre.fiedler, 4)}, vol=${pre.volume}) → post(λ₂=${fmtL2(post.fiedler, 4)}, vol=${post.volume}) Φ_pre=${fmtL2(pre.fiedler === undefined ? undefined : pre.fiedler / N_AST_pre, 4)} Φ_post=${fmtL2(post.fiedler === undefined ? undefined : post.fiedler / N_AST_post, 4)} = ${delta.verdict} ${detected ? "✅" : "❌"}`);
 }
 
 console.log(`  False negatives: ${falseNegatives}/${totalWideningTests}`);

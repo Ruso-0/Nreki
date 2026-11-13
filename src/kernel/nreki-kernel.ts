@@ -3,8 +3,9 @@ import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
 import type Parser from "web-tree-sitter";
-import { isSensitivePath } from "../utils/path-jail.js";
+import { isSensitivePath, safePath } from "../utils/path-jail.js";
 import { readSource } from "../utils/read-source.js";
+import { captureFileTraits, withTraits, applyModeTraits, contentDigest, readSourceForEdit } from "../utils/file-traits.js";
 import { toPosix as toPosixUtil } from "../utils/to-posix.js";
 import { logger, setTxId, clearTxId } from "../utils/logger.js";
 import { latencyTracker } from "../utils/latency-tracker.js";
@@ -13,16 +14,18 @@ import type { LspSidecarBase } from "./backends/lsp-sidecar-base.js";
 import { AsyncMutex } from "./mutex.js";
 import type {
     NrekiStructuredError, NrekiEdit,
-    NrekiInterceptResult,
+    NrekiInterceptResult, LspDependentsCoverage,
     TsHealingContext, LspHealingContext,
 } from "./types.js";
 import { extractRawSignatures, detectSignatureRegression, isToxicType } from "./ttrd.js";
 import { attemptAutoHealing, attemptLspAutoHealing } from "./healer.js";
+import { countErrors, errorsBeyondBaseline, type ErrorBaseline } from "./error-baseline.js";
+import { formatErrorList } from "./error-format.js";
 
 export { AsyncMutex } from "./mutex.js";
 export type {
     NrekiStructuredError, NrekiEdit, TypeRegression,
-    NrekiInterceptResult, NrekiMode, PreEditContract,
+    NrekiInterceptResult, NrekiMode, PreEditContract, LspDependentsCoverage,
 } from "./types.js";
 
 
@@ -41,6 +44,37 @@ export type {
  * Used by predictBlastRadius to avoid O(N × refs) split operations.
  * Cached per ts.SourceFile via WeakMap (auto-invalidated on rebuild).
  */
+/**
+ * Thrown by commitToDisk() when a file changed on disk between the moment the
+ * edit was computed and the commit (IDE save, formatter, another agent).
+ * Nothing is written (NREKI-INT-03).
+ */
+export class NrekiConflictError extends Error {
+    constructor(public readonly files: string[]) {
+        super(
+            `[NREKI] CONFLICT: ${files.join(", ")} changed on disk while NREKI was validating the edit ` +
+            `(external editor, formatter or another agent). Nothing was written. Re-read the file(s) and retry.`,
+        );
+        this.name = "NrekiConflictError";
+    }
+}
+
+/** Paths NREKI must never write as a side effect of auto-heal. */
+const HEAL_FORBIDDEN_SEGMENT = /(?:^|[\\/])(?:node_modules|\.git|\.nreki)(?:[\\/]|$)/i;
+/** Legit WAL backups are always <8 hex>.bak directly inside .nreki/transactions. */
+const WAL_BACKUP_NAME = /^[0-9a-f]{8}\.bak$/;
+
+/** True when `pid` names a live process other than this one. */
+function isLiveForeignPid(pid: unknown): boolean {
+    if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0 || pid === process.pid) return false;
+    try {
+        process.kill(pid, 0);
+        return true;
+    } catch (err) {
+        return (err as NodeJS.ErrnoException).code === "EPERM";
+    }
+}
+
 class LineMap {
     private offsets: number[];
     constructor(text: string) {
@@ -79,8 +113,23 @@ export class NrekiKernel {
     private mutatedFiles = new Set<string>();
     private bootErrorCount: number = -1;
 
+    /**
+     * Monotonic per-file version for content that lives on DISK (not in the
+     * VFS). Bumped whenever NREKI itself changes a file on disk (commit,
+     * undo). Without it getScriptVersion() fell back to a constant "1" after
+     * commitToDisk() cleared vfsClock, so a LanguageService that had cached the
+     * pre-edit snapshot at version "1" kept serving it (NREKI-ROB-02).
+     */
+    private diskVersions = new Map<string, number>();
+    private diskVersionCounter = 0;
+
+    /** Digest of the on-disk content each pending edit was based on (NREKI-INT-03). */
+    private diskExpectations = new Map<string, string>();
+
     // ─── LSP Sidecars (Go, Python — async child processes) ────
     private lspSidecars = new Map<string, LspSidecarBase>();
+    /** Dependents (same package + importers) a sidecar opens per edit, at most. */
+    public static readonly LSP_DEPENDENT_CAP = 50;
     private tsBuildInfoPath!: string;
 
     // ─── TypeScript Compiler Wrapper ──────────────────────────
@@ -132,17 +181,166 @@ export class NrekiKernel {
      * a un índice absoluto de string. Sobrevive \r\n (Windows).
      */
     private getLspOffset(content: string, line: number, character: number): number {
-        let currentLine = 0;
         let offset = 0;
-
-        while (currentLine < line && offset < content.length) {
+        for (let currentLine = 0; currentLine < line; currentLine++) {
             const nl = content.indexOf('\n', offset);
-            if (nl === -1) break;
+            // LSP spec: a line past the end of the document means end of document.
+            if (nl === -1) return content.length;
             offset = nl + 1;
-            currentLine++;
+        }
+        // LSP spec: a character past the end of the line means end of line
+        // (never spill into the next line, never split a \r\n pair).
+        let lineEnd = content.indexOf('\n', offset);
+        if (lineEnd === -1) lineEnd = content.length;
+        else if (lineEnd > offset && content[lineEnd - 1] === '\r') lineEnd--;
+        return Math.min(offset + Math.max(0, character), lineEnd);
+    }
+
+    // ─── Path policy helpers ──────────────────────────────────────────
+
+    /**
+     * May NREKI write `filePath` as a SIDE EFFECT (auto-heal)? Requires the
+     * real path to stay inside the project (symlink-aware), not be a sensitive
+     * file (.env, .git/hooks, .claude/settings.json…), and not live under
+     * node_modules/.git/.nreki (NREKI-SEC-02).
+     */
+    private isHealWritable(filePath: string): boolean {
+        try {
+            const resolved = safePath(this.projectRoot, filePath);
+            if (HEAL_FORBIDDEN_SEGMENT.test(path.relative(this.projectRoot, resolved))) return false;
+            // A collateral file (not in this transaction's VFS) is read from disk
+            // with the lenient decoder: a Latin-1 / UTF-16 file would be written
+            // back with U+FFFD. Heal only files NREKI can round-trip (I-03, INT-07).
+            if (!this.vfs.has(this.toPosix(resolved)) && fs.existsSync(resolved)) readSourceForEdit(resolved);
+            return true;
+        } catch {
+            return false;
+        }
+    }
+
+    /** Validate a commit target: inside the project (symlink-aware) and not sensitive. */
+    private assertCommitTarget(osPath: string): void {
+        safePath(this.projectRoot, osPath);
+    }
+
+    private bumpDiskVersion(posixPath: string): void {
+        this.diskVersions.set(posixPath, ++this.diskVersionCounter);
+    }
+
+    /**
+     * Record the disk state a pending edit is based on. An explicit
+     * baseContent (what the caller actually read) always wins; otherwise the
+     * current disk content is captured once.
+     */
+    private captureDiskExpectation(posixPath: string, baseContent?: string | null): void {
+        if (baseContent !== undefined) {
+            this.diskExpectations.set(posixPath, contentDigest(baseContent));
+            return;
+        }
+        if (this.diskExpectations.has(posixPath)) return;
+        let base: string | null;
+        try { base = readSource(path.normalize(posixPath)); } catch { base = null; }
+        this.diskExpectations.set(posixPath, contentDigest(base));
+    }
+
+    /** Files whose disk content no longer matches what the edit was computed from. */
+    private findDiskConflicts(files: Iterable<string>): string[] {
+        const conflicts: string[] = [];
+        for (const posixPath of files) {
+            const expected = this.diskExpectations.get(posixPath);
+            if (expected === undefined) continue;
+            let current: string | null;
+            try { current = readSource(path.normalize(posixPath)); } catch { current = null; }
+            if (contentDigest(current) !== expected) {
+                conflicts.push(path.relative(this.projectRoot, posixPath).replace(/\\/g, "/"));
+            }
+        }
+        return conflicts;
+    }
+
+    /**
+     * Crash recovery from .nreki/transactions/wal.json.
+     *
+     * The WAL lives inside the repository, so it is UNTRUSTED input: a cloned
+     * repo can ship one. Every entry is validated before touching the disk
+     * (NREKI-SEC-01): backups must be <8hex>.bak regular files directly inside
+     * the transactions dir, targets must resolve (symlink-aware) inside the
+     * project, must not be sensitive and must not live under .git/.nreki.
+     * A WAL owned by another live NREKI process is left alone (it is
+     * mid-commit), as is its transactions directory.
+     */
+    private recoverFromWal(): void {
+        const txDir = path.join(this.projectRoot, ".nreki", "transactions");
+        if (!fs.existsSync(txDir)) return;
+        let keepTxDir = false;
+
+        // One WAL per committing process (wal-<pid>.json) so concurrent NREKI
+        // instances never recover or delete each other's log; "wal.json" is the
+        // pre-12.0.1 name.
+        let walFiles: string[] = [];
+        try {
+            walFiles = fs.readdirSync(txDir).filter(n => /^wal(?:-\d+)?\.json$/.test(n));
+        } catch { /* unreadable dir: nothing to recover */ }
+
+        for (const name of walFiles) {
+            const walPath = path.join(txDir, name);
+            try {
+                const wal = JSON.parse(fs.readFileSync(walPath, "utf-8")) as {
+                    status?: unknown; pid?: unknown; files?: unknown;
+                };
+                if (wal && wal.status === "pending" && Array.isArray(wal.files)) {
+                    if (isLiveForeignPid(wal.pid)) {
+                        keepTxDir = true;
+                        logger.warn(`WAL ${name} belongs to live process ${String(wal.pid)} (another NREKI is committing). Recovery skipped.`);
+                        continue;
+                    }
+                    logger.warn(`WAL recovery: restoring ${wal.files.length} file(s) from crashed transaction`);
+                    for (const entry of wal.files as Array<{ target?: unknown; backup?: unknown }>) {
+                        // Per-entry try-catch: one failed restore must not abort the rest.
+                        try {
+                            this.recoverWalEntry(entry, txDir);
+                        } catch (entryErr) {
+                            logger.error(`WAL recovery failed for ${String(entry?.target)}: ${entryErr}`);
+                        }
+                    }
+                }
+                fs.unlinkSync(walPath);
+            } catch (walErr) {
+                logger.error(`WAL recovery failed: ${walErr}`);
+            }
+        }
+        if (!keepTxDir) {
+            try { fs.rmSync(txDir, { recursive: true, force: true }); } catch { /* best effort */ }
+        }
+    }
+
+    private recoverWalEntry(entry: { target?: unknown; backup?: unknown }, txDir: string): void {
+        if (!entry || typeof entry.target !== "string" || entry.target.length === 0) {
+            throw new Error("malformed entry");
+        }
+        // Throws on traversal, symlink escape and sensitive targets.
+        const target = safePath(this.projectRoot, entry.target);
+        if (/(?:^|[\\/])(?:\.git|\.nreki)(?:[\\/]|$)/i.test(path.relative(this.projectRoot, target))) {
+            throw new Error("refusing target inside .git/.nreki");
         }
 
-        return Math.min(offset + character, content.length);
+        if (entry.backup === null || entry.backup === undefined) {
+            // File was newly created in the crashed tx — remove it.
+            if (fs.existsSync(target)) fs.unlinkSync(target);
+            return;
+        }
+        if (typeof entry.backup !== "string") throw new Error("malformed backup");
+
+        const backup = safePath(this.projectRoot, entry.backup);
+        const sameDir = process.platform === "win32"
+            ? path.dirname(backup).toLowerCase() === path.resolve(txDir).toLowerCase()
+            : path.dirname(backup) === path.resolve(txDir);
+        if (!sameDir || !WAL_BACKUP_NAME.test(path.basename(backup))) {
+            throw new Error(`refusing backup outside the transactions directory: ${entry.backup}`);
+        }
+        if (!fs.existsSync(backup)) return;
+        if (!fs.lstatSync(backup).isFile()) throw new Error("backup is not a regular file");
+        fs.renameSync(backup, target);
     }
 
     /**
@@ -202,6 +400,9 @@ export class NrekiKernel {
         if (mode) this.mode = mode;
         logger.info(`Booting VFS-LSP Kernel (${this.mode} mode). Applying CompilerHost overrides...`);
         this.projectRoot = this.toPosix(path.resolve(workspacePath));
+        // D2: WAL-aware crash recovery. Runs FIRST so tsconfig, the program and
+        // the baseline are all built from the recovered disk state.
+        this.recoverFromWal();
         this.initConfig();
 
         // Hologram mode: override rootNames and compilerOptions
@@ -287,6 +488,8 @@ export class NrekiKernel {
 
             fileExists(fileName: string): boolean {
                 const posixPath = self.toPosix(path.resolve(self.projectRoot, fileName));
+                // Consistent with readFile(): sensitive files do not exist for the compiler.
+                if (isSensitivePath(fileName)) return false;
 
                 if (self.mode === "hologram") {
                     if (self.currentEditTargets.has(posixPath)) {
@@ -333,7 +536,10 @@ export class NrekiKernel {
 
             getScriptVersion(fileName: string): string {
                 const posixPath = self.toPosix(path.resolve(self.projectRoot, fileName));
-                return self.vfsClock.get(posixPath)?.getTime().toString() || "1";
+                const staged = self.vfsClock.get(posixPath);
+                if (staged) return staged.getTime().toString();
+                // Disk-backed content: monotonic per file, bumped on every NREKI write.
+                return `d${self.diskVersions.get(posixPath) ?? 0}`;
             },
 
             getScriptSnapshot(fileName: string): ts.IScriptSnapshot | undefined {
@@ -354,6 +560,8 @@ export class NrekiKernel {
                     if (content === null || content === undefined) return undefined;
                     return ts.ScriptSnapshot.fromString(content);
                 }
+                // NREKI-SEC-05: the LanguageService reads through here, not readFile().
+                if (isSensitivePath(fileName)) return undefined;
                 if (!self.tsBackend.originalFileExists.call(self.tsBackend.host, fileName)) return undefined;
                 const content = self.tsBackend.originalReadFile.call(self.tsBackend.host, fileName);
                 if (!content) return undefined;
@@ -396,38 +604,6 @@ export class NrekiKernel {
         // handles it scoped to target files.
         if (this.mode === "project") {
             this.tsBackend.captureBaseline(undefined, this.mode);
-        }
-        // D2: WAL-aware crash recovery.
-        // If a previous session crashed mid-commit, the WAL tells us
-        // exactly which files to restore from their .bak backups.
-        const txDir = path.join(this.projectRoot, ".nreki", "transactions");
-        const walPath = path.join(txDir, "wal.json");
-        if (fs.existsSync(walPath)) {
-            try {
-                const wal = JSON.parse(fs.readFileSync(walPath, "utf-8"));
-                if (wal.status === "pending" && Array.isArray(wal.files)) {
-                    logger.warn(`WAL recovery: restoring ${wal.files.length} file(s) from crashed transaction`);
-                    for (const entry of wal.files) {
-                        // Per-entry try-catch: one failed restore must not abort the rest.
-                        // Without this, a lock on one file destroys backups for all others.
-                        try {
-                            if (entry.backup && fs.existsSync(entry.backup)) {
-                                fs.renameSync(entry.backup, entry.target);
-                            } else if (!entry.backup && fs.existsSync(entry.target)) {
-                                // File was newly created in the crashed tx — remove it
-                                fs.unlinkSync(entry.target);
-                            }
-                        } catch (entryErr) {
-                            logger.error(`WAL recovery failed for ${entry.target}: ${entryErr}`);
-                        }
-                    }
-                }
-            } catch (walErr) {
-                logger.error(`WAL recovery failed: ${walErr}`);
-            }
-        }
-        if (fs.existsSync(txDir)) {
-            try { fs.rmSync(txDir, { recursive: true, force: true }); } catch { /* best effort */ }
         }
 
         // Capture initial error count at boot (immutable after this point)
@@ -566,12 +742,27 @@ export class NrekiKernel {
                 }
             }
 
+            // Importers of Go/Python files go to their LSP sidecar (phase 2.5), in
+            // every mode; the rest are TypeScript importers for file/hologram mode.
+            const lspDependents: string[] = [];
+            const tsDependents: string[] = [];
+            for (const dep of dependents) {
+                (this.lspSidecars.has(path.extname(dep).toLowerCase()) ? lspDependents : tsDependents).push(dep);
+            }
+
             // TOPOLOGICAL INJECTION: unveil dependents in hologram mode
             const filesToEvaluate = new Set<string>(explicitlyEditedFiles);
             const temporarilyUnveiled = new Set<string>();
 
-            if (this.mode === "hologram") {
-                for (const dep of dependents) {
+            if (this.mode === "file") {
+                // NREKI-INT-06: file mode only type-checks the evaluated set. When the
+                // caller passes the direct importers of a changed API, check them too
+                // (they are already in rootNames; baseline below is scoped to them).
+                for (const dep of tsDependents) {
+                    filesToEvaluate.add(this.toPosix(path.resolve(this.projectRoot, dep)));
+                }
+            } else if (this.mode === "hologram") {
+                for (const dep of tsDependents) {
                     const posixDep = this.toPosix(path.resolve(this.projectRoot, dep));
                     filesToEvaluate.add(posixDep);
                     if (this.prunedTsLookup.has(posixDep)) {
@@ -597,6 +788,26 @@ export class NrekiKernel {
 
             // TTRD: Extract pre-mutation type contracts (before VFS injection)
             const preContracts = await this.tsBackend.extractCanonicalTypes(explicitlyEditedFiles);
+
+            // File/hologram mode check the edited files and their direct importers.
+            // What the others can see of the edit is compared after it: global
+            // declarations in both modes, the emitted .d.ts in file mode.
+            const surfaceFiles = new Set([...explicitlyEditedFiles].filter(f => this.isTypeScriptFile(f)));
+            const preSurface = (this.mode === "file" || this.mode === "hologram")
+                && surfaceFiles.size > 0 && edits.every(e => e.proposedContent !== null)
+                ? this.tsBackend.declarationSurface(surfaceFiles, this.mode === "file")
+                : null;
+            const compareSurface = (): { exportedApiUnchanged?: boolean; declaresGlobals?: boolean } => {
+                const post = preSurface ? this.tsBackend.declarationSurface(surfaceFiles, this.mode === "file") : null;
+                if (!preSurface || !post) return {};
+                let exportedApiUnchanged: boolean | undefined;
+                if (preSurface.declarations !== null && post.declarations !== null
+                    && preSurface.programFiles === post.programFiles) {
+                    exportedApiUnchanged = preSurface.declarations === post.declarations;
+                }
+                const declaresGlobals = exportedApiUnchanged !== true && (preSurface.globalScope || post.globalScope);
+                return { exportedApiUnchanged, declaresGlobals: declaresGlobals || undefined };
+            };
 
             // TTRD SINTÁCTICO PRE-SCAN: Python/Go
             const preRawSignatures = new Map<string, Map<string, string>>();
@@ -684,9 +895,13 @@ export class NrekiKernel {
             const originalFatalErrors = await this.tsBackend.getDiagnostics(filesToEvaluate, explicitlyEditedFiles, this.mode);
 
             // ─── Phase 2.5: LSP Sidecar Validation (Go, Python) ─────────
-            const sidecarResult = await this.phase2_validateSidecars(edits, originalFatalErrors);
+            const sidecarResult = await this.phase2_validateSidecars(edits, originalFatalErrors, rollbackState, lspDependents);
             sidecarEdits = sidecarResult.sidecarEdits;
             const sidecarWarnings = sidecarResult.sidecarWarnings;
+            const degradedLanguages = sidecarResult.degradedLanguages.length > 0
+                ? sidecarResult.degradedLanguages : undefined;
+            const lspCoverage = sidecarResult.lspCoverage.length > 0
+                ? sidecarResult.lspCoverage : undefined;
             // ─── End Phase 2.5 ───────────────────────────────────────────
 
             // ─── TTRD SINTÁCTICO: Evaluación Post-Mutación ───
@@ -713,7 +928,8 @@ export class NrekiKernel {
                 // ─── NREKI L3.3: Iterative Auto-Healing (Dual Cascade) ─────────────────
                 const tHealStart = performance.now();
                 const healing = await this.phase4_healingCascade(
-                    originalFatalErrors, explicitlyEditedFiles, filesToEvaluate, transactionMutated
+                    originalFatalErrors, explicitlyEditedFiles, filesToEvaluate, transactionMutated,
+                    sidecarResult.sidecarBaselines,
                 );
 
                 if (healing.healed) {
@@ -751,6 +967,8 @@ export class NrekiKernel {
                     for (const f of healing.newlyTouchedFiles) finalEditedFiles.add(f);
                     const postContracts = await this.tsBackend.extractCanonicalTypes(finalEditedFiles);
                     const regressions = this.tsBackend.computeTypeRegressions(preContracts, postContracts);
+                    // The healer also edited other files: never claim an unchanged API here.
+                    const { declaresGlobals } = compareSurface();
 
                     this.restoreHologramVeil(temporarilyUnveiled);
 
@@ -774,6 +992,9 @@ export class NrekiKernel {
                             : undefined,
                         warnings: sidecarWarnings.length > 0 ? sidecarWarnings : undefined,
                         architectureDiff,
+                        degradedLanguages,
+                        lspCoverage,
+                        declaresGlobals,
                     };
                 }
                 // ─── END Auto-Healing ────────────────────────────────────
@@ -799,7 +1020,10 @@ export class NrekiKernel {
 
                 // Remove this transaction's files from mutatedFiles
                 // to prevent ghost deletion in the next commitToDisk().
-                for (const file of transactionMutated) this.mutatedFiles.delete(file);
+                for (const file of transactionMutated) {
+                    this.mutatedFiles.delete(file);
+                    this.diskExpectations.delete(file);
+                }
 
                 // B6: Restore logicalTime on rollback
                 this.logicalTime = savedLogicalTime;
@@ -825,9 +1049,9 @@ export class NrekiKernel {
                     errorText:
                         `[Edit rejected - ${latency}ms] Atomic transaction aborted. ` +
                         `${originalFatalErrors.length} violation(s) detected in RAM.\n` +
-                        structured.map((e) =>
-                            `  → ${e.file} (${e.line},${e.column}): ${e.code} - ${e.message}`
-                        ).join("\n") +
+                        formatErrorList(structured, {
+                            isPrimary: (e) => explicitlyEditedFiles.has(this.toPosix(path.resolve(this.projectRoot, e.file))),
+                        }) +
                         `\nACTION: Disk untouched. Fix the code and retry.`,
                 };
             }
@@ -835,6 +1059,10 @@ export class NrekiKernel {
             // TTRD post-contracts (clean path)
             const postContracts = await this.tsBackend.extractCanonicalTypes(explicitlyEditedFiles);
             const regressions = this.tsBackend.computeTypeRegressions(preContracts, postContracts);
+
+            // Same declarations and same program files: nothing beyond the checked
+            // files can change. Otherwise the footer asks for tsc.
+            const surface = compareSurface();
 
             this.restoreHologramVeil(temporarilyUnveiled);
 
@@ -852,6 +1080,9 @@ export class NrekiKernel {
                     : undefined,
                 warnings: sidecarWarnings.length > 0 ? sidecarWarnings : undefined,
                 architectureDiff,
+                degradedLanguages,
+                lspCoverage,
+                ...surface,
             };
 
             } catch (phaseError) {
@@ -868,7 +1099,10 @@ export class NrekiKernel {
                 await this.rollbackSidecars(sidecarEdits, rollbackState);
 
                 // Remove this transaction's files from mutatedFiles (crash path)
-                for (const file of transactionMutated) this.mutatedFiles.delete(file);
+                for (const file of transactionMutated) {
+                    this.mutatedFiles.delete(file);
+                    this.diskExpectations.delete(file);
+                }
 
                 // A-02: Restore vfsDirectories
                 this.vfsDirectories = savedDirectories;
@@ -918,6 +1152,9 @@ export class NrekiKernel {
                 });
             }
 
+            // INT-03: remember which disk state this edit was computed from.
+            this.captureDiskExpectation(posixPath, edit.baseContent);
+
             this.vfs.set(posixPath, edit.proposedContent);
             this.vfsClock.set(posixPath, new Date(this.logicalTime));
             if (!this.mutatedFiles.has(posixPath)) transactionMutated.add(posixPath);
@@ -943,12 +1180,22 @@ export class NrekiKernel {
     private async phase2_validateSidecars(
         edits: NrekiEdit[],
         originalFatalErrors: NrekiStructuredError[],
+        rollbackState: ReadonlyMap<string, { content: string | null | undefined }>,
+        lspDependents: readonly string[] = [],
     ): Promise<{
         sidecarEdits: Map<LspSidecarBase, Array<{ filePath: string; content: string | null }>>;
         sidecarWarnings: string[];
+        degradedLanguages: string[];
+        sidecarBaselines: Map<LspSidecarBase, ErrorBaseline>;
+        lspCoverage: LspDependentsCoverage[];
     }> {
         const sidecarEdits = new Map<LspSidecarBase, Array<{ filePath: string; content: string | null }>>();
+        // The same files at their content BEFORE this transaction (baseline input).
+        const preEdit = new Map<LspSidecarBase, Array<{ filePath: string; content: string | null }>>();
+        const sidecarBaselines = new Map<LspSidecarBase, ErrorBaseline>();
         const sidecarWarnings: string[] = [];
+        const degradedLanguages: string[] = [];
+        const lspCoverage: LspDependentsCoverage[] = [];
 
         for (const edit of edits) {
             const posixPath = this.toPosix(path.resolve(this.projectRoot, edit.targetFile));
@@ -958,6 +1205,16 @@ export class NrekiKernel {
             const list = sidecarEdits.get(sidecar) || [];
             list.push({ filePath: posixPath, content: edit.proposedContent });
             sidecarEdits.set(sidecar, list);
+            // A deletion is not opened just to be measured: it stays a no-op for
+            // a file the server never had open.
+            if (edit.proposedContent === null) continue;
+            const staged = rollbackState.get(posixPath)?.content;
+            const before = staged !== undefined ? staged
+                : edit.baseContent !== undefined ? edit.baseContent
+                : this.diskContentOrNull(posixPath);
+            const pre = preEdit.get(sidecar) || [];
+            pre.push({ filePath: posixPath, content: before });
+            preEdit.set(sidecar, pre);
         }
 
         for (const [sidecar, scEdits] of sidecarEdits) {
@@ -965,6 +1222,7 @@ export class NrekiKernel {
                 try {
                     await sidecar.boot();
                 } catch {
+                    degradedLanguages.push(sidecar.languageId);
                     sidecarWarnings.push(
                         `[⚠️ NREKI WARNING: '${sidecar.command[0]}' not found or crashed. ` +
                         `Layer 2 Semantic Shield OFFLINE for ${sidecar.languageId} files. ` +
@@ -974,17 +1232,97 @@ export class NrekiKernel {
                 }
             }
             try {
+                // The server reports the errors of EVERY open document. Those that
+                // exist before the edit are the baseline; only what the edit adds
+                // is fatal (as for TypeScript). Without it, one old error rejected
+                // each later edit in that language.
+                //
+                // The server reports OPEN documents only, so the files that can break
+                // because of this edit (same package, importers) are opened before
+                // the baseline is taken: an edit that changed `Greet` to return int
+                // was accepted while main.go, never opened, no longer compiled.
+                const watch = this.sidecarWatchList(sidecar, scEdits, lspDependents);
+                const baseline = countErrors(await sidecar.baselineErrors(
+                    [...(preEdit.get(sidecar) ?? []), ...watch.staged],
+                    watch.fromDisk,
+                ));
+                sidecarBaselines.set(sidecar, baseline);
+                lspCoverage.push({
+                    languageId: sidecar.languageId,
+                    // A dependent the graph still lists but that is gone from disk is not open.
+                    checked: watch.stagedDependents + watch.fromDisk.filter(p => sidecar.hasOpenDocument(p)).length,
+                    skipped: watch.skipped,
+                });
                 const sidecarErrors = await sidecar.validateEdits(scEdits);
-                originalFatalErrors.push(...sidecarErrors);
-            } catch {
+                originalFatalErrors.push(...errorsBeyondBaseline(sidecarErrors, baseline));
+            } catch (err) {
+                const reason = (err as Error)?.message ?? String(err);
+                degradedLanguages.push(sidecar.languageId);
                 sidecarWarnings.push(
-                    `[⚠️ NREKI WARNING: ${sidecar.languageId} validation timed out. ` +
+                    `[⚠️ NREKI WARNING: ${sidecar.languageId} validation failed (${reason.slice(0, 160)}). ` +
                     `Code passed without semantic check.]`,
                 );
             }
         }
 
-        return { sidecarEdits, sidecarWarnings };
+        return { sidecarEdits, sidecarWarnings, degradedLanguages, sidecarBaselines, lspCoverage };
+    }
+
+    /**
+     * The documents a sidecar must have open besides the edited ones:
+     *  - `fromDisk`: dependents of the edited files — files compiled with them
+     *    (sidecar.companionFiles) first, then the importers the caller found in
+     *    the dependency graph — capped at LSP_DEPENDENT_CAP. The sidecar opens
+     *    them from disk and keeps them equal to it.
+     *  - `staged`: files of this language still staged in the VFS (an earlier
+     *    uncommitted transaction), pinned at their staged content.
+     */
+    private sidecarWatchList(
+        sidecar: LspSidecarBase,
+        scEdits: ReadonlyArray<{ filePath: string }>,
+        lspDependents: readonly string[],
+    ): {
+        fromDisk: string[];
+        staged: Array<{ filePath: string; content: string | null }>;
+        /** How many entries of `staged` are dependents (the rest are only pinned). */
+        stagedDependents: number;
+        skipped: number;
+    } {
+        const fold = (p: string): string => (process.platform === "win32" ? p.toLowerCase() : p);
+        const rootPosix = this.toPosix(path.resolve(this.projectRoot));
+        const seen = new Set(scEdits.map(e => fold(e.filePath)));
+        const candidates: string[] = [];
+        const consider = (raw: string): void => {
+            const posixPath = this.toPosix(path.resolve(this.projectRoot, raw));
+            if (!posixPath.startsWith(rootPosix + "/") || seen.has(fold(posixPath))) return;
+            seen.add(fold(posixPath));
+            candidates.push(posixPath);
+        };
+        for (const edit of scEdits) {
+            for (const companion of sidecar.companionFiles(edit.filePath)) consider(companion);
+        }
+        for (const dep of lspDependents) {
+            if (this.lspSidecars.get(path.extname(dep).toLowerCase()) === sidecar) consider(dep);
+        }
+
+        const fromDisk: string[] = [];
+        const staged: Array<{ filePath: string; content: string | null }> = [];
+        let skipped = 0;
+        for (const posixPath of candidates) {
+            if (fromDisk.length + staged.length >= NrekiKernel.LSP_DEPENDENT_CAP) { skipped++; continue; }
+            if (!this.vfs.has(posixPath)) { fromDisk.push(posixPath); continue; }
+            const content = this.vfs.get(posixPath);
+            // A dependent pending deletion has nothing left to break.
+            if (content !== null && content !== undefined) staged.push({ filePath: posixPath, content });
+        }
+        const stagedDependents = staged.length;
+        // Not dependents, but staged: the sidecar must not reset them to the disk.
+        for (const [posixPath, content] of this.vfs) {
+            if (seen.has(fold(posixPath))) continue;
+            if (this.lspSidecars.get(path.extname(posixPath).toLowerCase()) !== sidecar) continue;
+            staged.push({ filePath: posixPath, content });
+        }
+        return { fromDisk, staged, stagedDependents, skipped };
     }
 
     private async phase4_healingCascade(
@@ -992,6 +1330,7 @@ export class NrekiKernel {
         explicitlyEditedFiles: Set<string>,
         filesToEvaluate: Set<string>,
         transactionMutated: Set<string>,
+        sidecarBaselines: ReadonlyMap<LspSidecarBase, ErrorBaseline>,
     ): Promise<{
         healed: boolean;
         appliedFixes: string[];
@@ -1017,15 +1356,25 @@ export class NrekiKernel {
                         const v = this.vfs.get(p);
                         return v ?? "";
                     }
+                    // INT-03: a collateral file is about to be patched from its disk state.
+                    this.captureDiskExpectation(p);
                     return this.tsBackend.host.readFile(p) ?? "";
                 },
-                getAutoFixes: (f, e) => this.tsBackend.getAutoFixes(f, e),
+                // SEC-02: drop any fix that would write outside the project, through a
+                // symlink, into a sensitive file, or under node_modules/.git/.nreki.
+                getAutoFixes: async (f, e) => {
+                    const fixes = await this.tsBackend.getAutoFixes(f, e);
+                    return fixes.filter(fix => fix.changes.every(c => this.isHealWritable(c.filePath)));
+                },
                 createSavepoint: (p) => ({
                     content: this.vfs.has(p) ? this.vfs.get(p) : undefined,
                     time: this.vfsClock.get(p),
                     wasInRoot: this.rootNames.has(p),
                 }),
                 applyMicroPatch: (p, content) => {
+                    if (!this.isHealWritable(p)) {
+                        throw new Error(`[NREKI] Security rejection: auto-heal may not write "${p}".`);
+                    }
                     this.vfs.set(p, content);
                     this.vfsClock.set(p, new Date(this.logicalTime));
                     if (this.isTypeScriptFile(p) && !this.rootNames.has(p)) {
@@ -1092,15 +1441,14 @@ export class NrekiKernel {
                     readContent: (p) => {
                         const v = this.vfs.get(p);
                         if (v !== undefined && v !== null) return v;
-                        return fs.readFileSync(p, "utf-8");
+                        this.captureDiskExpectation(p);
+                        // BOM-stripped like every other NREKI read (offsets stay aligned).
+                        return readSource(p);
                     },
+                    // SEC-02: lexical startsWith() let symlinks and sensitive files through.
                     resolvePath: (rawPath) => {
                         const resolved = this.toPosix(path.resolve(this.projectRoot, rawPath));
-                        const rootPosix = this.toPosix(path.resolve(this.projectRoot));
-                        if (!resolved.startsWith(rootPosix + "/") && resolved !== rootPosix) {
-                            return null;
-                        }
-                        return resolved;
+                        return this.isHealWritable(resolved) ? resolved : null;
                     },
                     getLspOffset: (content, line, character) =>
                         this.getLspOffset(content, line, character),
@@ -1113,13 +1461,21 @@ export class NrekiKernel {
                         const scEdits = Array.from(editedFiles).map(f => ({
                             filePath: f, content: this.vfs.get(f) ?? null,
                         }));
-                        return await sidecar.validateEdits(scEdits);
+                        // Same baseline as the verdict: a fix is judged on the
+                        // errors this transaction introduced, not on old ones.
+                        return errorsBeyondBaseline(
+                            await sidecar.validateEdits(scEdits),
+                            sidecarBaselines.get(sidecar),
+                        );
                     },
                     createSavepoint: (p) => ({
                         content: this.vfs.has(p) ? this.vfs.get(p) : undefined,
                         time: this.vfsClock.get(p),
                     }),
                     applyMicroPatch: (p, content) => {
+                        if (!this.isHealWritable(p)) {
+                            throw new Error(`[NREKI] Security rejection: auto-heal may not write "${p}".`);
+                        }
                         this.vfs.set(p, content);
                         this.vfsClock.set(p, new Date(this.logicalTime));
                     },
@@ -1130,7 +1486,13 @@ export class NrekiKernel {
                             else this.vfs.delete(p);
                             if (state.time) this.vfsClock.set(p, state.time);
                             else this.vfsClock.delete(p);
-                            rollbacks.push({ filePath: p, content: state.content ?? null });
+                            // undefined = not staged before the fix (a collateral file): the
+                            // LSP goes back to its DISK content. `?? null` tombstoned a real
+                            // file, leaving an empty overlay behind for every later edit.
+                            rollbacks.push({
+                                filePath: p,
+                                content: state.content !== undefined ? state.content : this.diskContentOrNull(p),
+                            });
                         }
                         if (isMacro) this.logicalTime += 1000;
                         if (rollbacks.length > 0) {
@@ -1191,8 +1553,19 @@ export class NrekiKernel {
         // Scope writes to files mutated in the current transaction only.
         // Prevents stale VFS entries from prior intercepts leaking into this commit.
         const filesToCommit = new Set(this.mutatedFiles);
+        // Per-process WAL: a concurrent NREKI instance in the same repo must never
+        // recover (or delete) a log that belongs to a commit still in flight.
+        const walPath = path.join(this.projectRoot, ".nreki", "transactions", `wal-${process.pid}.json`);
+        let walWritten = false;
 
         try {
+            // PHASE 0: Pre-flight. Every target must be a legitimate project file
+            // (defense in depth for SEC-02), and nothing may have changed on disk
+            // since the edit was computed (INT-03 — IDE save, formatter, 2nd agent).
+            for (const posixPath of filesToCommit) this.assertCommitTarget(path.normalize(posixPath));
+            const conflicts = this.findDiskConflicts(filesToCommit);
+            if (conflicts.length > 0) throw new NrekiConflictError(conflicts);
+
             // PHASE 1: Physical backup
             for (const posixPath of filesToCommit) {
                 const osPath = path.normalize(posixPath);
@@ -1210,24 +1583,23 @@ export class NrekiKernel {
             // WAL: Write intent log before destructive Phase 2.
             // If the process crashes between Phase 1 (backup) and Phase 2 (write),
             // boot() will find this WAL and automatically restore from backups.
-            const txDir = path.join(this.projectRoot, ".nreki", "transactions");
-            const walPath = path.join(txDir, "wal.json");
-            try {
+            // The WAL is mandatory: without it a crash mid-Phase-2 leaves a
+            // multi-file commit half-applied with no recovery path. A failure
+            // here aborts the commit before anything destructive happens.
+            if (physicalUndoLog.length > 0) {
+                const txDir = path.dirname(walPath);
                 if (!fs.existsSync(txDir)) fs.mkdirSync(txDir, { recursive: true });
                 // Atomic write via temp+rename. writeFileSync overwrites in-place
                 // and is NOT atomic — OOM/crash mid-write truncates the WAL.
-                // rename() is atomic on POSIX (single inode pointer swap).
                 const walTmpPath = `${walPath}.tmp`;
                 fs.writeFileSync(walTmpPath, JSON.stringify({
                     status: "pending",
+                    pid: process.pid, // lets a 2nd NREKI instance tell "crashed" from "mid-commit"
                     ts: new Date().toISOString(),
                     files: physicalUndoLog.map(l => ({ target: l.target, backup: l.backup })),
                 }), "utf-8");
                 fs.renameSync(walTmpPath, walPath);
-            } catch (walErr) {
-                // WAL write failure is non-fatal but must be logged — proceeding
-                // without crash safety means a power failure during Phase 2 is unrecoverable.
-                logger.warn(`WAL write failed: ${walErr}. Proceeding without crash recovery safety.`);
+                walWritten = true;
             }
 
             // PHASE 2: Destructive writes
@@ -1239,12 +1611,29 @@ export class NrekiKernel {
                 } else {
                     const dir = path.dirname(osPath);
                     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+                    // INT-07: keep the original BOM and permission bits (+x scripts).
+                    const traits = captureFileTraits(osPath);
                     const tmp = `${osPath}.nreki-${crypto.randomBytes(4).toString("hex")}.tmp`;
                     createdTmps.push(tmp); // Push BEFORE write so catch can clean up on ENOSPC
-                    fs.writeFileSync(tmp, content, "utf-8");
+                    fs.writeFileSync(tmp, withTraits(content, traits), "utf-8");
+                    applyModeTraits(tmp, traits);
                     fs.renameSync(tmp, osPath);
                     createdTmps.pop(); // Rename succeeded — no longer orphan
                 }
+                this.bumpDiskVersion(posixPath);
+            }
+
+            // INT-02: shadows (.d.ts served for pruned files) were generated from the
+            // PREVIOUS disk content. Drop them for every committed file, otherwise the
+            // next edit elsewhere type-checks against the stale signature.
+            if (this.mode === "hologram") {
+                let shadowsChanged = false;
+                for (const posixPath of filesToCommit) {
+                    this.jitClassifiedCache.delete(posixPath);
+                    if (this.shadowContent.delete(posixPath)) shadowsChanged = true;
+                    if (this.prunedFiles.delete(posixPath)) shadowsChanged = true;
+                }
+                if (shadowsChanged) this.buildShadowLookups();
             }
 
             // P18: VFS clear and rebuild
@@ -1292,23 +1681,30 @@ export class NrekiKernel {
             for (const log of physicalUndoLog) {
                 if (log.backup && fs.existsSync(log.backup)) fs.unlinkSync(log.backup);
             }
-            // WAL: Transaction complete — delete intent log
-            try { if (fs.existsSync(walPath)) fs.unlinkSync(walPath); } catch { /* best effort */ }
+            // WAL: Transaction complete — delete OUR intent log only
+            if (walWritten) {
+                try { fs.unlinkSync(walPath); } catch { /* best effort */ }
+            }
 
             // Release stale AST versions from DocumentRegistry
             this.tsBackend.releaseMutatedDocuments(this.mutatedFiles);
             this.mutatedFiles.clear();
+            this.diskExpectations.clear();
 
             logger.info("Atomic commit materialized. Disk synchronized.");
         } catch (error) {
             // PHYSICAL ROLLBACK
-            logger.error(`OS write failure! Physical rollback: ${error}`);
+            logger.error(error instanceof NrekiConflictError
+                ? `Commit aborted before any write: ${error.message}`
+                : `OS write failure! Physical rollback: ${error}`);
+            this.diskExpectations.clear();
 
             // AUDIT FIX: Clean orphan .tmp files written before the crash
             for (const tmpPath of createdTmps) {
                 try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath); } catch { /* best effort */ }
             }
 
+            let rollbackClean = true;
             for (const log of physicalUndoLog) {
                 try {
                     if (log.backup) {
@@ -1316,7 +1712,15 @@ export class NrekiKernel {
                     } else {
                         if (fs.existsSync(log.target)) fs.unlinkSync(log.target);
                     }
-                } catch { /* Cascade panic - best effort */ }
+                } catch {
+                    rollbackClean = false; // Cascade panic — keep the WAL for the next boot
+                }
+                this.bumpDiskVersion(this.toPosix(log.target));
+            }
+            // Fully rolled back: drop the WAL so a later boot does not "recover" a
+            // finished transaction (e.g. deleting a file the user re-created since).
+            if (rollbackClean && walWritten) {
+                try { fs.unlinkSync(walPath); } catch { /* best effort */ }
             }
 
             // VFS ZOMBIE FIX: Purge RAM state that never reached disk.
@@ -1342,6 +1746,14 @@ export class NrekiKernel {
                 this.tsBackend.purgeCache(true);
             }
 
+            // gopls/pyright still hold the APPROVED-but-uncommitted content as
+            // open-document overlays: without this they would keep validating
+            // later edits against code that never reached disk (I-01).
+            await this.resyncSidecarsFromDisk(filesToCommit);
+
+            // A conflict is not an OS failure: surface it as-is so handlers can
+            // tell the agent to re-read instead of reporting a kernel crash.
+            if (error instanceof NrekiConflictError) throw error;
             throw new Error(`[NREKI] Physical ACID commit failed. Repository and VFS restored. Reason: ${error}`);
         }
         });
@@ -1350,6 +1762,7 @@ export class NrekiKernel {
     /** Emergency rollback - purge all staged changes (P3). */
     public async rollbackAll(): Promise<void> {
         return this.mutex.withLock(async () => {
+            const touched = [...this.mutatedFiles];
             this.vfs.clear();
             this.vfsClock.clear();
             this.vfsDirectories.clear();
@@ -1357,6 +1770,7 @@ export class NrekiKernel {
             // in the next commitToDisk() call.
             this.tsBackend.releaseMutatedDocuments(new Set(this.mutatedFiles));
             this.mutatedFiles.clear();
+            this.diskExpectations.clear();
             this.initConfig(); // Re-sync rootNames from disk
             // BUG 1: In hologram mode, re-filter rootNames
             if (this.mode === "hologram") {
@@ -1396,6 +1810,8 @@ export class NrekiKernel {
                 // DR/LS synced via tsBackend
             // Release stale AST versions from DocumentRegistry
             this.tsBackend.releaseMutatedDocuments(this.mutatedFiles);
+            // LSP overlays of the discarded transaction go back to disk content (I-01).
+            await this.resyncSidecarsFromDisk(touched);
             logger.warn("Hard rollback executed. VFS purged.");
         });
     }
@@ -1555,6 +1971,82 @@ export class NrekiKernel {
     /** Resolve a file path to the kernel's internal POSIX format. */
     public resolvePosixPath(filePath: string): string {
         return this.toPosix(path.resolve(this.projectRoot, filePath));
+    }
+
+    /**
+     * Which semantic checker (if any) covers a file. Used to build an honest
+     * validation banner (NREKI-GAR-01): JS only counts as type-checked when
+     * allowJs AND checkJs are on — with allowJs alone TS reports no semantic
+     * diagnostics for .js files.
+     */
+    public getSemanticCoverage(filePath: string): { backend: "typescript" | "lsp" | null; languageId?: string; outsideProgram?: boolean } {
+        const posixPath = this.resolvePosixPath(filePath);
+        // Not selected by the tsconfig (excluded, or a solution-style root config
+        // with "files": [] + references): the file was checked, its importers were
+        // not, so the banner must not claim a project-wide check (G-01).
+        const outsideProgram = () => !this.tsBackend.isInConfiguredProgram(posixPath);
+        if (/\.(d\.ts|d\.mts|d\.cts|tsx?|mts|cts)$/i.test(posixPath)) return { backend: "typescript", outsideProgram: outsideProgram() };
+        if (/\.(jsx?|mjs|cjs)$/i.test(posixPath)) {
+            return this.compilerOptions?.allowJs && this.compilerOptions?.checkJs
+                ? { backend: "typescript", outsideProgram: outsideProgram() }
+                : { backend: null };
+        }
+        const sidecar = this.lspSidecars.get(path.extname(posixPath).toLowerCase());
+        if (sidecar) return { backend: "lsp", languageId: sidecar.languageId };
+        return { backend: null };
+    }
+
+    /**
+     * A file changed on disk outside interceptAtomicBatch/commitToDisk (e.g.
+     * nreki_code action:"undo"). Re-synchronize every cache that would
+     * otherwise keep validating against the old content (NREKI-INT-05):
+     * VFS entries, LanguageService version, hologram shadows, the project-mode
+     * baseline and the LSP sidecars' open-document overlays.
+     */
+    public async notifyExternalChange(filePaths: string[]): Promise<void> {
+        if (!this.booted || filePaths.length === 0) return;
+        return this.mutex.withLock(async () => {
+            const changed = filePaths.map(p => this.resolvePosixPath(p));
+            for (const p of changed) {
+                this.vfs.delete(p);
+                this.vfsClock.delete(p);
+                this.mutatedFiles.delete(p);
+                this.diskExpectations.delete(p);
+                this.bumpDiskVersion(p);
+                if (this.mode === "hologram") {
+                    this.jitClassifiedCache.delete(p);
+                    this.shadowContent.delete(p);
+                    this.prunedFiles.delete(p);
+                }
+            }
+            if (this.mode === "hologram") this.buildShadowLookups();
+            this.tsBackend.releaseMutatedDocuments(new Set(changed));
+            this.logicalTime += 1000;
+            this.tsBackend.updateProgram();
+            if (this.mode === "project") this.tsBackend.captureBaseline(undefined, this.mode);
+
+            await this.resyncSidecarsFromDisk(changed);
+        });
+    }
+
+    /**
+     * Push the DISK content of `paths` into every LSP sidecar that has them open.
+     * Caller must hold the mutex. A sidecar that cannot be resynced is marked
+     * dead (validation then reports "LSP offline") rather than left validating
+     * against content that never reached disk.
+     */
+    private async resyncSidecarsFromDisk(paths: Iterable<string>): Promise<void> {
+        for (const p of paths) {
+            const sidecar = this.lspSidecars.get(path.extname(p).toLowerCase());
+            if (!sidecar || !sidecar.isHealthy() || !sidecar.hasOpenDocument(p)) continue;
+            try { await sidecar.validateEdits([{ filePath: p, content: this.diskContentOrNull(p) }]); }
+            catch { sidecar.isDead = true; }
+        }
+    }
+
+    /** BOM-stripped disk content (LSP offsets stay aligned), or null when the file is absent. */
+    private diskContentOrNull(p: string): string | null {
+        try { return readSource(path.normalize(p)); } catch { return null; }
     }
 
     public getTypeShape(targetFile: string, symbolName: string): string | null {
@@ -1720,13 +2212,10 @@ export class NrekiKernel {
                 const posixPath = this.toPosix(path.resolve(this.projectRoot, edit.filePath));
                 const state = rollbackState.get(posixPath);
 
-                let originalContent: string | null = null;
-                if (state && state.content !== undefined) {
-                    originalContent = state.content;
-                } else {
-                    // File didn't exist in VFS, try reading from disk
-                    try { originalContent = fs.readFileSync(edit.filePath, "utf-8"); } catch { originalContent = null; }
-                }
+                // Not staged before the transaction: the disk content (null when absent).
+                const originalContent = state && state.content !== undefined
+                    ? state.content
+                    : this.diskContentOrNull(edit.filePath);
 
                 rollbacks.push({ filePath: edit.filePath, content: originalContent });
             }

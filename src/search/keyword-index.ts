@@ -30,7 +30,11 @@ export class KeywordIndex {
         "to", "of", "in", "for", "on", "with", "at", "by", "from",
         "as", "into", "through", "during", "before", "after", "above",
         "below", "and", "but", "or", "not", "no", "if", "then",
-        "else", "this", "that", "it", "its", "new", "old",
+        "else", "this", "that", "these", "those", "it", "its", "new", "old",
+        "what", "where", "when", "which", "who", "whom", "whose", "how", "why",
+        "each", "same", "some", "such", "than", "too", "very", "just", "also",
+        "only", "both", "about", "between", "under", "over", "again", "further",
+        "once", "here", "there", "out", "up", "down", "off", "two",
     ]);
 
     /** Tokenize text into normalized terms with code-aware splitting. */
@@ -48,7 +52,7 @@ export class KeywordIndex {
             if (subTokens.length > 0) {
                 for (const sub of subTokens) {
                     if (sub.length > 1 && !KeywordIndex.STOPWORDS.has(sub)) {
-                        allTerms.push(sub);
+                        allTerms.push(this.stem(sub));
                     }
                 }
             } else {
@@ -164,12 +168,14 @@ export class KeywordIndex {
         queryText: string,
         limit: number
     ): Array<{ rowid: number; score: number }> {
-        const queryTerms = this.tokenize(queryText);
-        if (queryTerms.length === 0) return [];
+        const rawQueryTerms = this.tokenize(queryText);
+        if (rawQueryTerms.length === 0) return [];
+        const queryTerms = [...new Set(rawQueryTerms)];
 
         const k1 = 1.8;
         const b = 0.35;
         const scores = new Map<number, number>();
+        const matchedTerms = new Map<number, number>();
 
         for (const term of queryTerms) {
             const docMap = this.invertedIndex.get(term);
@@ -194,19 +200,30 @@ export class KeywordIndex {
                 const score = idf * tfNorm;
 
                 scores.set(rowid, (scores.get(rowid) || 0) + score);
+                matchedTerms.set(rowid, (matchedTerms.get(rowid) || 0) + 1);
             }
         }
 
         // Bigram phrase boost for multi-word queries
-        if (queryTerms.length >= 2) {
+        if (rawQueryTerms.length >= 2) {
             const bigramWeight = 0.3;
-            for (let i = 0; i < queryTerms.length - 1; i++) {
-                const bigram = queryTerms[i] + "_" + queryTerms[i + 1];
+            for (let i = 0; i < rawQueryTerms.length - 1; i++) {
+                const bigram = rawQueryTerms[i] + "_" + rawQueryTerms[i + 1];
                 const docs = this.bigramIndex.get(bigram);
                 if (!docs) continue;
                 for (const rowid of docs) {
                     const existing = scores.get(rowid) || 0;
                     scores.set(rowid, existing + bigramWeight);
+                }
+            }
+        }
+
+        // Coordination factor: reward chunks matching multiple distinct query concepts
+        if (queryTerms.length >= 2) {
+            for (const [rowid, baseScore] of scores) {
+                const matched = matchedTerms.get(rowid) || 1;
+                if (matched > 1) {
+                    scores.set(rowid, baseScore * (1 + 0.25 * (matched - 1)));
                 }
             }
         }
