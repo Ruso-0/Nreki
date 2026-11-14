@@ -8,6 +8,7 @@ import fs from "fs";
 import path from "path";
 import { quarantineFile, signState, verifyState } from "../utils/trust.js";
 import { memberName } from "../utils/qualified-name.js";
+import { writeStateFile } from "../utils/path-jail.js";
 
 /**
  * Patch 7 (v10.6.1): superset of params the enforcer inspects across
@@ -98,9 +99,6 @@ export class CognitiveEnforcer {
 
     private saveState() {
         try {
-            const dir = path.dirname(this.stateFile);
-            if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-
             const data: EnforcerState = { files: {} };
             for (const [filePath, p] of this.passports.entries()) {
                 if (p.outlined || p.rawRead || p.focusedSymbols.size > 0) {
@@ -111,9 +109,10 @@ export class CognitiveEnforcer {
                     };
                 }
             }
-            const tmpFile = `${this.stateFile}.tmp`;
-            fs.writeFileSync(tmpFile, JSON.stringify({ ...data, tag: signState("enforcer", JSON.stringify(data)) }), "utf-8");
-            fs.renameSync(tmpFile, this.stateFile);
+            // A fixed temporary name could be planted as a link; never through a
+            // `.nreki` link shipped with the repository either (writeStateFile).
+            writeStateFile(this.projectRoot, this.stateFile,
+                JSON.stringify({ ...data, tag: signState("enforcer", JSON.stringify(data)) }));
         } catch {}
     }
 

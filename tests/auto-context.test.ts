@@ -16,8 +16,8 @@ describe("Auto-Context: extractDependencies", () => {
         const deps = extractDependencies(code, ".ts");
 
         expect(deps).toHaveLength(2);
-        expect(deps[0]).toEqual({ symbol: "foo", localName: "foo", pathHint: "math" });
-        expect(deps[1]).toEqual({ symbol: "bar", localName: "baz", pathHint: "math" });
+        expect(deps[0]).toEqual({ symbol: "foo", localName: "foo", pathHint: "math", source: "./utils/math" });
+        expect(deps[1]).toEqual({ symbol: "bar", localName: "baz", pathHint: "math", source: "./utils/math" });
     });
 
     it("handles CommonJS require with aliases", () => {
@@ -25,8 +25,8 @@ describe("Auto-Context: extractDependencies", () => {
         const deps = extractDependencies(code, ".js");
 
         expect(deps).toHaveLength(2);
-        expect(deps[0]).toEqual({ symbol: "hash", localName: "myHash", pathHint: "crypto" });
-        expect(deps[1]).toEqual({ symbol: "verify", localName: "verify", pathHint: "crypto" });
+        expect(deps[0]).toEqual({ symbol: "hash", localName: "myHash", pathHint: "crypto", source: "../core/crypto.js" });
+        expect(deps[1]).toEqual({ symbol: "verify", localName: "verify", pathHint: "crypto", source: "../core/crypto.js" });
     });
 
     it("ignores node_modules in TS/JS (non-local paths)", () => {
@@ -40,8 +40,8 @@ describe("Auto-Context: extractDependencies", () => {
         const deps = extractDependencies(code, ".py");
 
         expect(deps).toHaveLength(2);
-        expect(deps[0]).toEqual({ symbol: "validate", localName: "check_auth", pathHint: "auth" });
-        expect(deps[1]).toEqual({ symbol: "get_user", localName: "get_user", pathHint: "auth" });
+        expect(deps[0]).toEqual({ symbol: "validate", localName: "check_auth", pathHint: "auth", source: "app.core.auth" });
+        expect(deps[1]).toEqual({ symbol: "get_user", localName: "get_user", pathHint: "auth", source: "app.core.auth" });
     });
 
     it("infers symbols from Go namespace usage", () => {

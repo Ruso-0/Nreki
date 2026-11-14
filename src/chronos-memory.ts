@@ -6,9 +6,9 @@
  */
 import fs from "fs";
 import path from "path";
-import crypto from "crypto";
 import { logger } from "./utils/logger.js";
 import { quarantineFile, signState, verifyState } from "./utils/trust.js";
+import { writeStateFile } from "./utils/path-jail.js";
 
 export interface TypeDebtRecord {
     symbol: string;
@@ -39,6 +39,7 @@ export class ChronosMemory {
     private dbPath: string;
     private projectRoot: string;
     private persistTimer: NodeJS.Timeout | null = null;
+    private persistWarned = false;
     private uncompressedReads = new Set<string>();
     private lastKnownErrors: number | null = null;
 
@@ -89,16 +90,14 @@ export class ChronosMemory {
 
     public forcePersist(): void {
         if (this.persistTimer) { clearTimeout(this.persistTimer); this.persistTimer = null; }
-        const dir = path.dirname(this.dbPath);
-        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-
-        const tmp = `${this.dbPath}.${crypto.randomBytes(4).toString("hex")}.tmp`;
         const signed = { ...this.state, tag: signState("chronos", JSON.stringify(this.state)) };
-        fs.writeFileSync(tmp, JSON.stringify(signed, null, 2), "utf-8");
         try {
-            fs.renameSync(tmp, this.dbPath);
-        } catch {
-            try { fs.unlinkSync(tmp); } catch { /* best effort cleanup */ }
+            // Never through a `.nreki` link shipped with the repository (writeStateFile).
+            writeStateFile(this.projectRoot, this.dbPath, JSON.stringify(signed, null, 2));
+        } catch (err) {
+            // Runs from a timer: a throw here would be uncaught.
+            if (!this.persistWarned) logger.warn(`[NREKI] Chronos history not saved: ${(err as Error).message}`);
+            this.persistWarned = true;
         }
     }
 

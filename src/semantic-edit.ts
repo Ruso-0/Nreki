@@ -54,7 +54,7 @@ export interface EditResult {
 function atomicWritePreservingTraits(filePath: string, content: string): void {
     const traits = captureFileTraits(filePath);
     const tmpPath = `${filePath}.nreki-${crypto.randomBytes(4).toString("hex")}.tmp`;
-    fs.writeFileSync(tmpPath, withTraits(content, traits), "utf-8");
+    fs.writeFileSync(tmpPath, withTraits(content, traits), { encoding: "utf-8", flag: "wx" });
     applyModeTraits(tmpPath, traits);
     fs.renameSync(tmpPath, filePath);
 }
@@ -980,7 +980,7 @@ export async function batchSemanticEdit(
                     }
                 }
 
-                fs.writeFileSync(tmpPath, withTraits(virtualContent, traits), "utf-8");
+                fs.writeFileSync(tmpPath, withTraits(virtualContent, traits), { encoding: "utf-8", flag: "wx" });
                 applyModeTraits(tmpPath, traits);
                 tmpFiles.set(filePath, tmpPath);
             }

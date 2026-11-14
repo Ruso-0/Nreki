@@ -6,6 +6,7 @@
  * symlink escapes, and access to sensitive files.
  */
 
+import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 
@@ -81,6 +82,39 @@ export function unsafeWriteTarget(root: string, target: string): string | null {
         current = parent;
     }
     return null;
+}
+
+/**
+ * Writes one of NREKI's own files inside the project (.nreki/…: caches,
+ * history, backups, the transaction log) atomically: a temporary that cannot
+ * already exist (`wx`, so never through a planted link), renamed over the
+ * target. Throws, writing nothing, when `unsafeWriteTarget` objects: a
+ * repository can ship `.nreki` as a link to a folder outside the project, and
+ * the repo map and Chronos history were written through it.
+ */
+export function writeStateFile(root: string, target: string, data: string | Uint8Array): void {
+    const why = unsafeWriteTarget(root, target);
+    if (why) throw new Error(`not writing ${path.relative(root, target)}: ${why} (NREKI never writes its own files through one)`);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    const tmp = `${target}.${crypto.randomBytes(4).toString("hex")}.tmp`;
+    try {
+        fs.writeFileSync(tmp, data, { flag: "wx" });
+        fs.renameSync(tmp, target);
+    } catch (err) {
+        try { fs.unlinkSync(tmp); } catch { /* not created */ }
+        throw err;
+    }
+}
+
+/** Deletes one of NREKI's own files (see writeStateFile); false when refused or absent. */
+export function removeStateFile(root: string, target: string): boolean {
+    if (unsafeWriteTarget(root, target)) return false;
+    try {
+        fs.rmSync(target);
+        return true;
+    } catch {
+        return false;
+    }
 }
 
 /**

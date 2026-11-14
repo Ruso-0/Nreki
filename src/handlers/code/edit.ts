@@ -55,6 +55,14 @@ async function typeScriptImporters(
     return { inside, outside: found.size - inside.length };
 }
 
+/** Project mode, TypeScript: importers of `files` (dependency graph) the program does not check. */
+async function importersOutsideProgram(deps: RouterDependencies, files: string[]): Promise<number> {
+    const found = new Set<string>();
+    for (const f of files) for (const d of await deps.engine.findDependents(f)) found.add(d);
+    for (const f of files) found.delete(f.replace(/\\/g, "/"));
+    return [...found].filter(d => !inTypeScriptProgram(deps.kernel!, d)).length;
+}
+
 /** Files auto-heal patched beyond the ones edited: their importers were not checked. */
 function healedOthers(result: NrekiInterceptResult | undefined, edited: string[]): string[] {
     const norm = (p: string) => {
@@ -259,6 +267,12 @@ export async function handleEdit(
                 } catch {
                     dependentsToInject = [];
                 }
+            } else if (deps.nrekiMode === "project") {
+                // The program checks every file it has; the footer must not imply it
+                // checked tests under another tsconfig, or plain JS.
+                try {
+                    depScope.notInProgram = await importersOutsideProgram(deps, [relPath]);
+                } catch { /* graph unavailable: none known */ }
             }
             depScope.checked = dependentsToInject.length;
 
@@ -626,6 +640,11 @@ export async function handleBatchEdit(
                             };
                         }
                     }
+                } else if (deps.nrekiMode === "project") {
+                    // As in handleEdit: importers the program never checks are reported.
+                    try {
+                        batchDepScope.notInProgram = await importersOutsideProgram(deps, [...batchFiles].filter(fp => !isLspFile(fp)));
+                    } catch { /* graph unavailable: none known */ }
                 }
                 batchDepScope.checked = batchDependents.length;
                 batchInjected = [...batchDependents, ...lspDependents];

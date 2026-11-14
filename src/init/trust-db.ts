@@ -16,7 +16,7 @@ import readline from "readline";
 import initSqlJs from "sql.js";
 import { NrekiDB } from "../database.js";
 import { adoptPins, type PinnedRule } from "../pin-memory.js";
-import { safePath } from "../utils/path-jail.js";
+import { safePath, unsafeWriteTarget } from "../utils/path-jail.js";
 import { ENGRAM_MAX_CHARS } from "../utils/engram-identity.js";
 
 export interface QuarantinedEngram { path: string; symbol: string; astHash: string; insight: string }
@@ -39,6 +39,8 @@ function newest(dir: string, prefix: string): string | null {
 export async function inspectQuarantine(projectRoot: string): Promise<QuarantineReport> {
     const report: QuarantineReport = {};
     const dir = quarantineDir(projectRoot);
+    // A quarantine reached through a link is not this project's: nothing to offer.
+    if (unsafeWriteTarget(projectRoot, path.join(dir, "x"))) return report;
 
     const dbFile = newest(dir, ".nreki.db.");
     if (dbFile) {
@@ -160,11 +162,13 @@ export async function adoptQuarantine(
         result.rejected.push(...r.rejected.map(reason => `pin: ${reason}`));
     }
 
-    // Adopted files leave the quarantine so they are not offered again.
+    // Adopted files leave the quarantine so they are not offered again (never through a link).
     const adopted = path.join(quarantineDir(projectRoot), "adopted");
-    fs.mkdirSync(adopted, { recursive: true });
-    for (const f of [report.db?.file, report.pins?.file]) {
-        if (f) try { fs.renameSync(f, path.join(adopted, path.basename(f))); } catch { /* best effort */ }
+    if (!unsafeWriteTarget(projectRoot, path.join(adopted, "x"))) {
+        fs.mkdirSync(adopted, { recursive: true });
+        for (const f of [report.db?.file, report.pins?.file]) {
+            if (f) try { fs.renameSync(f, path.join(adopted, path.basename(f))); } catch { /* best effort */ }
+        }
     }
     return result;
 }

@@ -8,9 +8,9 @@
 
 import fs from "fs";
 import path from "path";
-import crypto from "crypto";
 import { logger } from "./utils/logger.js";
 import { quarantineFile, signState, verifyState } from "./utils/trust.js";
+import { writeStateFile } from "./utils/path-jail.js";
 
 // ─── Types ───────────────────────────────────────────────────────────
 
@@ -71,14 +71,9 @@ function loadPins(projectRoot: string): PinnedRule[] {
 }
 
 function savePins(projectRoot: string, pins: PinnedRule[]): void {
-    const dir = path.join(projectRoot, ".nreki");
-    if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-    }
-    const pinsPath = getPinsPath(projectRoot);
-    const tmp = `${pinsPath}.${crypto.randomBytes(4).toString("hex")}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify({ version: 2, pins, tag: signState("pins", JSON.stringify(pins)) }, null, 2));
-    fs.renameSync(tmp, pinsPath);
+    // Never through a `.nreki` link shipped with the repository (writeStateFile).
+    writeStateFile(projectRoot, getPinsPath(projectRoot),
+        JSON.stringify({ version: 2, pins, tag: signState("pins", JSON.stringify(pins)) }, null, 2));
 }
 
 /**

@@ -14,7 +14,8 @@ import { shouldProcess } from "./utils/file-filter.js";
 import { readSource } from "./utils/read-source.js";
 import { escapeRegExp } from "./utils/imports.js";
 import { signState, verifyState } from "./utils/trust.js";
-import { isSensitivePath } from "./utils/path-jail.js";
+import { isSensitivePath, writeStateFile } from "./utils/path-jail.js";
+import { logger } from "./utils/logger.js";
 
 // ─── Types ───────────────────────────────────────────────────────────
 
@@ -1158,8 +1159,7 @@ export async function getOrGenerateRepoMap(
     parser: ASTParser,
     forceRefresh: boolean = false
 ): Promise<{ map: RepoMap; text: string; fromCache: boolean }> {
-    const cacheDir = path.join(projectRoot, ".nreki");
-    const cachePath = path.join(cacheDir, "repo-map.json");
+    const cachePath = path.join(projectRoot, ".nreki", "repo-map.json");
 
     const currentDigest = computeFileDigest(projectRoot);
 
@@ -1191,14 +1191,16 @@ export async function getOrGenerateRepoMap(
     const text = repoMapToText(map);
 
     // Save to cache (serialize graph for JSON storage)
-    if (!fs.existsSync(cacheDir)) {
-        fs.mkdirSync(cacheDir, { recursive: true });
-    }
     const graphData = map.graph ? serializeGraph(map.graph) : undefined;
     // Strip non-serializable graph from the map for JSON storage
     const mapForCache = { ...map, graph: undefined };
     const cacheData: CachedRepoMap = { formatVersion: CACHE_FORMAT_VERSION, digest: currentDigest, map: mapForCache, text, graph: graphData };
-    fs.writeFileSync(cachePath, JSON.stringify({ ...cacheData, tag: signState("repo-map", JSON.stringify(cacheData)) }));
+    try {
+        // Never through a `.nreki` link shipped with the repository (writeStateFile).
+        writeStateFile(projectRoot, cachePath, JSON.stringify({ ...cacheData, tag: signState("repo-map", JSON.stringify(cacheData)) }));
+    } catch (err) {
+        logger.warn(`[NREKI] repo map not cached: ${(err as Error).message}`);
+    }
 
     return { map, text, fromCache: false };
 }

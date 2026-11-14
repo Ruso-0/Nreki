@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// nreki-enforcer:v3 — Claude Code PreToolUse hook installed by `nreki init`.
+// nreki-enforcer:v4 — Claude Code PreToolUse hook installed by `nreki init`.
+// v4: like v3, but its state file is never written through a link.
 //
 // Workflow nudge, NOT a sandbox (it cannot stop Bash). v3 follows token
 // economics: a PreToolUse hook runs AFTER the model generated the tool call,
@@ -107,8 +108,11 @@ function writeState(state) {
     for (const [key, at] of Object.entries(state.blockedReads)) {
         if (!(typeof at === "number" && now - at < REPEAT_WINDOW_MS)) delete state.blockedReads[key];
     }
-    const tmp = `${STATE_FILE}.${process.pid}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(state));
+    // Never through a link: a repository can ship `.nreki` as one (lstat: a link
+    // is not a directory), or plant one at a predictable temporary name (`wx`).
+    if (!fs.lstatSync(path.dirname(STATE_FILE)).isDirectory()) throw new Error(".nreki is not a plain folder");
+    const tmp = `${STATE_FILE}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(state), { flag: "wx" });
     fs.renameSync(tmp, STATE_FILE);
 }
 

@@ -35,6 +35,7 @@ import { isSecondaryPath } from "../utils/file-filter.js";
 import { readSource } from "../utils/read-source.js";
 import { isSensitivePath, safePath } from "../utils/path-jail.js";
 import { escapeRegExp, extractDependencies, isSensitiveSignature } from "../utils/imports.js";
+import { goPackageHolds, jsDeclarationSite, jsImportBindings, pythonModuleHolds } from "../utils/import-origin.js";
 
 /** Default size of the package (estimated tokens). */
 export const CONTEXT_DEFAULT_BUDGET = 2000;
@@ -272,19 +273,54 @@ function readFileText(root: string, file: string): string | null {
     }
 }
 
+const JS_EXTS = new Set([".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"]);
+
+/** One import the shown code uses, and how to tell the file that declares it. */
+interface UsedImport {
+    localName: string;
+    /** The name looked up in the index (the declared one for TS/JS). */
+    symbol: string;
+    /** Is `defRel` (project-relative POSIX) the declaring file? */
+    holds: (defRel: string) => boolean;
+}
+
+/** The imports of `fileText` that `code` uses; TS/JS ones resolved to their declaration (unresolved ones dropped). */
+function usedImports(root: string, file: string, fileText: string, code: string): UsedImport[] {
+    const uses = (name: string): boolean => new RegExp(`(^|[^\\w$])${escapeRegExp(name)}(?![\\w$])`).test(code);
+    const ext = path.extname(file).toLowerCase();
+    const same = (a: string, b: string): boolean => (process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b);
+    if (JS_EXTS.has(ext)) {
+        const out: UsedImport[] = [];
+        for (const b of jsImportBindings(path.join(root, file), fileText)) {
+            if (!uses(b.local)) continue;
+            const site = jsDeclarationSite(root, path.join(root, file), b.source, b.imported);
+            if (!site) continue; // a package, an unresolved alias: never a homonym from elsewhere
+            const siteRel = relOf(root, site.file);
+            out.push({ localName: b.local, symbol: site.name, holds: rel => same(rel, siteRel) });
+        }
+        return out;
+    }
+    return extractDependencies(fileText, ext).filter(d => d.source !== undefined && uses(d.localName)).map(d => ({
+        localName: d.localName,
+        symbol: d.symbol,
+        holds: ext === ".go"
+            ? (rel: string) => goPackageHolds(root, d.source!, rel)
+            : (rel: string) => pythonModuleHolds(d.source!, file, rel),
+    }));
+}
+
 /**
  * Short definitions (≤ HELPER_MAX_LINES) of what `code` uses from the imports
- * of `fileText` — the helpers an agent opened next in the A/B. One definition
- * per name (the import's file decides between homonyms); none that looks like
- * a credential; none from a file already shown whole.
+ * of `fileText` — the helpers an agent opened next in the A/B. Only from the
+ * file that declares the import (see utils/import-origin.ts); none that looks
+ * like a credential; none from a file already shown whole.
  */
 async function importedHelpers(
     engine: NrekiEngine, root: string, file: string, fileText: string, code: string,
     skipFiles: Set<string>, seen: Set<string>,
 ): Promise<string[]> {
     const out: string[] = [];
-    const used = extractDependencies(fileText, path.extname(file).toLowerCase()).filter(d =>
-        new RegExp(`(^|[^\\w$])${escapeRegExp(d.localName)}(?![\\w$])`).test(code));
+    const used = usedImports(root, file, fileText, code);
     // Functions the code calls first, in the order it calls them; types and
     // constants after. Import order put the 3-line function holding a bug last.
     const firstUse = (name: string): number => {
@@ -297,14 +333,15 @@ async function importedHelpers(
     for (const dep of used) {
         const symbol = dep.symbol.replace(/^type\s+/, "");
         if (seen.has(symbol)) continue;
-        let defs = (await engine.getChunksBySymbolExact(symbol, true)).filter(c => c.symbol_name === symbol && !skipFiles.has(relOf(root, c.path)));
-        if (defs.length > 1) defs = defs.filter(c => path.basename(c.path).replace(/\.[^.]+$/, "") === dep.pathHint);
+        const defs = (await engine.getChunksBySymbolExact(symbol, true)).filter(c =>
+            c.symbol_name === symbol && !skipFiles.has(relOf(root, c.path)) && dep.holds(relOf(root, c.path)));
         if (defs.length !== 1) continue;
         const def = defs[0];
         if (def.end_line - def.start_line + 1 > HELPER_MAX_LINES) continue;
         if (isSensitivePath(def.path) || isSensitiveSignature(def.raw_code)) continue;
         seen.add(symbol);
-        out.push(`// ${relOf(root, def.path)}:L${def.start_line}-L${def.end_line}\n${def.raw_code.replace(/\r\n/g, "\n")}`);
+        const alias = dep.localName !== symbol && !dep.localName.endsWith(`.${symbol}`) ? ` (imported as ${dep.localName})` : "";
+        out.push(`// ${relOf(root, def.path)}:L${def.start_line}-L${def.end_line}${alias}\n${def.raw_code.replace(/\r\n/g, "\n")}`);
     }
     return out;
 }

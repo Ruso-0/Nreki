@@ -52,28 +52,149 @@ export interface DeclarationSurface {
     globalScope: boolean;
 }
 
+/** The name a declaration gives its scope ("Class", "method", "CONFIG"), or null. */
+function declarationName(node: ts.Node): string | null {
+    const name = (node as ts.NamedDeclaration).name;
+    if (!name || !(ts.isIdentifier(name) || ts.isPrivateIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name))) return null;
+    return ts.isFunctionLike(node) || ts.isClassLike(node) || ts.isVariableDeclaration(node)
+        || ts.isPropertyDeclaration(node) || ts.isPropertyAssignment(node) || ts.isInterfaceDeclaration(node)
+        || ts.isTypeAliasDeclaration(node) || ts.isEnumDeclaration(node) || ts.isModuleDeclaration(node)
+        ? name.text : null;
+}
+
+/** A function or class value with no name of its own: arrow functions, function and class expressions, constructors, static blocks, computed-name methods. */
+function isAnonymousScope(node: ts.Node): boolean {
+    if (ts.isArrowFunction(node) || ts.isConstructorDeclaration(node) || ts.isClassStaticBlockDeclaration(node)) return true;
+    if (ts.isFunctionExpression(node) || ts.isClassExpression(node) || ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node)) {
+        return node.name === undefined;
+    }
+    return (ts.isMethodDeclaration(node) || ts.isGetAccessorDeclaration(node) || ts.isSetAccessorDeclaration(node))
+        && declarationName(node) === null;
+}
+
+/**
+ * How an anonymous scope is told from its siblings: `it("lists")`, `then()`,
+ * `[1]` (array element), `onClick`, `default`, `constructor`. null when the
+ * declaration holding it names it (`const f = () => …`, `{ key: () => … }`).
+ * `ancestors` ends with its parent (syntactic diagnostics come from files the
+ * binder may not have given parent pointers yet).
+ */
+function anonymousLabel(node: ts.Node, ancestors: readonly ts.Node[], sf: ts.SourceFile): string | null {
+    if (ts.isConstructorDeclaration(node)) return "constructor";
+    if (ts.isClassStaticBlockDeclaration(node)) return "static";
+    if (ts.isMethodDeclaration(node) || ts.isGetAccessorDeclaration(node) || ts.isSetAccessorDeclaration(node)) {
+        return `[${node.name.getText(sf).slice(0, 60)}]`;
+    }
+    if (ts.canHaveModifiers(node) && (ts.getModifiers(node) ?? []).some(m => m.kind === ts.SyntaxKind.DefaultKeyword)) return "default";
+    let child: ts.Node = node;
+    let i = ancestors.length - 1;
+    // Look through (…), `as T`, `satisfies T`, `<T>x`, `x!`.
+    while (i >= 0 && (ts.isParenthesizedExpression(ancestors[i]) || ts.isAsExpression(ancestors[i]) || ts.isSatisfiesExpression(ancestors[i])
+        || ts.isTypeAssertionExpression(ancestors[i]) || ts.isNonNullExpression(ancestors[i]))) {
+        child = ancestors[i--];
+    }
+    const parent = ancestors[i];
+    if (!parent) return "fn";
+    if (declarationName(parent) !== null) return null;
+    if (ts.isExportAssignment(parent)) return "default";
+    if (ts.isCallExpression(parent) || ts.isNewExpression(parent)) {
+        const args = parent.arguments ?? [];
+        if (!args.some(a => a === child)) return "fn"; // the callee: an IIFE
+        const callee = ts.isPropertyAccessExpression(parent.expression) ? parent.expression.name.text
+            : ts.isIdentifier(parent.expression) ? parent.expression.text : "call";
+        const first = args[0];
+        const tag = first && first !== child && (ts.isStringLiteral(first) || ts.isNoSubstitutionTemplateLiteral(first))
+            ? JSON.stringify(first.text.slice(0, 60)) : "";
+        return `${callee}(${tag})`;
+    }
+    if (ts.isArrayLiteralExpression(parent)) return `[${parent.elements.findIndex(e => e === child)}]`;
+    if (ts.isBinaryExpression(parent) && parent.operatorToken.kind === ts.SyntaxKind.EqualsToken && parent.right === child) {
+        return ts.isPropertyAccessExpression(parent.left) ? parent.left.name.text
+            : ts.isIdentifier(parent.left) ? parent.left.text : "fn";
+    }
+    const attribute = ancestors[i - 1];
+    if (ts.isJsxExpression(parent) && attribute && ts.isJsxAttribute(attribute)) return attribute.name.getText(sf);
+    return "fn";
+}
+
+/** What a position belongs to, for the error baseline (see baselineEntry). */
+interface DiagnosticSite {
+    /** "Class.method", "CONFIG", "handlers.[1]#1.count", `describe("api")#1.it("lists")#1`. */
+    owners: string;
+    /**
+     * The same chain without what an insertion shifts (`#k`, an array index):
+     * "handlers.[].count", `describe("api").it("lists")`. A test's name stays:
+     * the body of `it("adds")` moved into `it("subtracts")` is a new error.
+     */
+    shape: string;
+    /** Source of the innermost anonymous scope in `owners`, or null. */
+    anonymousText: string | null;
+}
+
 /**
  * "Class.method", "fn", "CONFIG": the declarations that hold a position. A
  * baseline error is tied to its declaration, not to its line (lines move with
  * every edit above them). Keyed by file + code + message only, fixing an old
  * error in one function and adding the same one in another function of the
  * file kept the count, and the new error was accepted.
+ *
+ * Anonymous scopes (callbacks, array elements) count too, as their label and
+ * place among same-label siblings of their scope: two callbacks of a
+ * `handlers` array that each declared `count` both read "handlers.count", and
+ * moving an error from the first to the second was accepted (audit of 0d48ca4).
  */
-function enclosingDeclarationName(sf: ts.SourceFile, pos: number): string {
-    const names: string[] = [];
-    const visit = (node: ts.Node): void => {
-        if (pos < node.pos || pos >= node.end) return;
-        const name = (node as ts.NamedDeclaration).name;
-        if (name && (ts.isIdentifier(name) || ts.isPrivateIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name))
-            && (ts.isFunctionLike(node) || ts.isClassLike(node) || ts.isVariableDeclaration(node)
-                || ts.isPropertyDeclaration(node) || ts.isPropertyAssignment(node) || ts.isInterfaceDeclaration(node)
-                || ts.isTypeAliasDeclaration(node) || ts.isEnumDeclaration(node) || ts.isModuleDeclaration(node))) {
-            names.push(name.text);
+function diagnosticSite(sf: ts.SourceFile, pos: number): DiagnosticSite {
+    const owners: string[] = [];
+    const shape: string[] = [];
+    let anonymousText: string | null = null;
+    const ancestors: ts.Node[] = [];
+    /** Anonymous scopes of each label seen before `pos` in the current scope. */
+    let before = new Map<string, number>();
+    const countBefore = (node: ts.Node): void => {
+        if (isAnonymousScope(node)) {
+            const label = anonymousLabel(node, ancestors, sf);
+            if (label !== null) before.set(label, (before.get(label) ?? 0) + 1);
+            return;
         }
-        ts.forEachChild(node, visit);
+        if (declarationName(node) !== null) return; // a scope of its own
+        ancestors.push(node);
+        ts.forEachChild(node, countBefore);
+        ancestors.pop();
     };
-    ts.forEachChild(sf, visit);
-    return names.join(".");
+    let node: ts.Node = sf;
+    for (;;) {
+        ancestors.push(node);
+        // The child holding `pos`; the ones before it are counted on the way.
+        const next = ts.forEachChild(node, (child): ts.Node | undefined => {
+            if (child.end <= pos) { countBefore(child); return undefined; }
+            return pos >= child.pos ? child : undefined;
+        });
+        if (!next) break;
+        const name = declarationName(next);
+        if (name !== null) {
+            owners.push(name);
+            shape.push(name);
+            before = new Map();
+        } else if (isAnonymousScope(next)) {
+            const label = anonymousLabel(next, ancestors, sf);
+            if (label !== null) {
+                owners.push(`${label}#${(before.get(label) ?? 0) + 1}`);
+                shape.push(/^\[\d+\]$/.test(label) ? "[]" : label);
+                anonymousText = sf.text.slice(next.getStart(sf), next.end);
+            }
+            before = new Map();
+        }
+        node = next;
+    }
+    return { owners: owners.join("."), shape: shape.join("."), anonymousText };
+}
+
+/** One error of the baseline, findable by either key (see getDiagnostics). */
+interface BaselineEntry {
+    /** File, owner chain (anonymous scopes by label and place), code, message. */
+    fine: string;
+    /** File, shape (owner chain minus what an insertion shifts), code, message and the innermost anonymous scope's source; null outside one. */
+    content: string | null;
 }
 
 /** A script's top-level declarations are global; `declare global` and `declare module "x"` reach files that never import this one. */
@@ -183,13 +304,14 @@ export class TsCompilerWrapper {
     private programGeneration = 0;
 
     // ─── Diagnostic State (moved from kernel) ───
-    private baselineFrequencies = new Map<string, number>();
+    /** The errors before the edit, by each of their keys (see BaselineEntry). */
+    private baseline = { byFine: new Map<string, BaselineEntry[]>(), byContent: new Map<string, BaselineEntry[]>(), size: 0 };
     private lastRawDiagnostics: ts.Diagnostic[] = [];
 
     // POSIX normalization — delegates to shared utility
     private toPosix(p: string): string { return toPosixUtil(p); }
 
-    // Pre-compiled regexes for getFingerprint (avoids 3 RegExp per diagnostic)
+    // Pre-compiled regexes for baselineEntry (avoids 3 RegExp per diagnostic)
     private rootRegex?: RegExp;
     private nativeRootRegex?: RegExp;
     private nativePosixRegex?: RegExp;
@@ -516,7 +638,7 @@ export class TsCompilerWrapper {
 
     // ─── Diagnostic Methods (moved from kernel) ───
 
-    private getFingerprint(diag: ts.Diagnostic): string {
+    private baselineEntry(diag: ts.Diagnostic): BaselineEntry {
         const file = diag.file
             ? this.toPosix(path.resolve(this.projectRoot, diag.file.fileName))
             : "GLOBAL";
@@ -532,8 +654,13 @@ export class TsCompilerWrapper {
         msg = msg.replace(this.rootRegex, "<ROOT>");
         msg = msg.replace(this.nativeRootRegex!, "<ROOT>");
         msg = msg.replace(this.nativePosixRegex!, "<ROOT>");
-        const where = diag.file && diag.start !== undefined ? enclosingDeclarationName(diag.file, diag.start) : "";
-        return crypto.createHash("sha256").update(`${file}|${where}|TS${diag.code}|${msg}`).digest("hex");
+        const site = diag.file && diag.start !== undefined ? diagnosticSite(diag.file, diag.start) : null;
+        const hash = (s: string): string => crypto.createHash("sha256").update(s).digest("hex");
+        const tail = `TS${diag.code}|${msg}`;
+        return {
+            fine: hash(`${file}|${site?.owners ?? ""}|${tail}`),
+            content: site && site.anonymousText !== null ? hash(`${file}|${site.shape}|${tail}|${site.anonymousText}`) : null,
+        };
     }
 
     private toStructured(diag: ts.Diagnostic): NrekiStructuredError {
@@ -552,12 +679,19 @@ export class TsCompilerWrapper {
     }
 
     public captureBaseline(targetFiles: Set<string> | undefined, mode: string): void {
-        this.baselineFrequencies.clear();
+        const baseline = { byFine: new Map<string, BaselineEntry[]>(), byContent: new Map<string, BaselineEntry[]>(), size: 0 };
+        this.baseline = baseline;
         if (!this.builderProgram) return;
         const program = this.builderProgram.getProgram();
+        const add = (map: Map<string, BaselineEntry[]>, key: string, entry: BaselineEntry): void => {
+            const list = map.get(key);
+            if (list) list.push(entry); else map.set(key, [entry]);
+        };
         const processDiag = (diag: ts.Diagnostic) => {
-            const hash = this.getFingerprint(diag);
-            this.baselineFrequencies.set(hash, (this.baselineFrequencies.get(hash) || 0) + 1);
+            const entry = this.baselineEntry(diag);
+            add(baseline.byFine, entry.fine, entry);
+            if (entry.content !== null) add(baseline.byContent, entry.content, entry);
+            baseline.size++;
         };
 
         if (mode === "project") {
@@ -590,9 +724,7 @@ export class TsCompilerWrapper {
     }
 
     public getBaselineErrorCount(): number {
-        let total = 0;
-        for (const count of this.baselineFrequencies.values()) total += count;
-        return total;
+        return this.baseline.size;
     }
 
     // ─── TTRD Methods (moved from kernel) ───
@@ -860,7 +992,7 @@ export class TsCompilerWrapper {
     }
 
     get baselineCount(): number {
-        return this.baselineFrequencies.size;
+        return this.baseline.byFine.size;
     }
 
 
@@ -875,43 +1007,48 @@ export class TsCompilerWrapper {
         const editedFiles = explicitlyEditedFiles || filesToEvaluate;
         const currentMode = mode || "project";
 
-        const currentFrequencies = new Map<string, number>();
         const fatalErrors: ts.Diagnostic[] = [];
         const program = this.builderProgram.getProgram();
 
         const errorThreshold = Math.min(500, 50 + (editedFiles.size * 20));
         const touchedEnvironment = Array.from(editedFiles).some(isEnvironmentFile);
 
-        /** true when the diagnostic is new (beyond the baseline) and became fatal. */
-        const processDiag = (diag: ts.Diagnostic): boolean => {
-            if (!diag.file && !touchedEnvironment) return false;
-            if (isThirdPartyDiagnostic(diag)) return false;
-            const hash = this.getFingerprint(diag);
-            const count = (currentFrequencies.get(hash) || 0) + 1;
-            currentFrequencies.set(hash, count);
-            if (count > (this.baselineFrequencies.get(hash) || 0)) {
-                fatalErrors.push(diag);
-                return true;
-            }
-            return false;
+        /** Baseline errors already matched by a diagnostic of this check. */
+        const used = new Set<BaselineEntry>();
+        const free = (list: BaselineEntry[] | undefined): BaselineEntry | undefined => list?.find(b => !used.has(b));
+        /**
+         * The diagnostics of one file (or the global ones) the baseline does not
+         * account for: each old error accounts for one. Matched first by the source
+         * of their anonymous scope (a callback that only moved, or got a sibling
+         * inserted before it, keeps its old error), then by their owner chain.
+         */
+        const newDiagnostics = (diags: readonly ts.Diagnostic[]): ts.Diagnostic[] => {
+            const keyed = diags
+                .filter(d => (d.file !== undefined || touchedEnvironment) && !isThirdPartyDiagnostic(d))
+                .map(d => ({ d, entry: this.baselineEntry(d) }));
+            const take = (hit: BaselineEntry | undefined): boolean => {
+                if (hit) used.add(hit);
+                return hit !== undefined;
+            };
+            return keyed
+                .filter(x => !(x.entry.content !== null && take(free(this.baseline.byContent.get(x.entry.content)))))
+                .filter(x => !take(free(this.baseline.byFine.get(x.entry.fine))))
+                .map(x => x.d);
         };
 
         // Shield 1: Global diagnostics
         if (touchedEnvironment) {
-            for (const diag of program.getGlobalDiagnostics()) processDiag(diag);
-            for (const diag of program.getOptionsDiagnostics()) processDiag(diag);
+            fatalErrors.push(...newDiagnostics([...program.getGlobalDiagnostics(), ...program.getOptionsDiagnostics()]));
         }
 
         // Shield 2: Syntactic + Semantic
         for (const posixPath of filesToEvaluate) {
             const sf = program.getSourceFile(posixPath);
             if (sf) {
-                if (editedFiles.has(posixPath)) {
-                    for (const diag of program.getSyntacticDiagnostics(sf)) processDiag(diag);
-                }
-                if (currentMode === "file" || currentMode === "hologram") {
-                    for (const diag of program.getSemanticDiagnostics(sf)) processDiag(diag);
-                }
+                const diags: ts.Diagnostic[] = [];
+                if (editedFiles.has(posixPath)) diags.push(...program.getSyntacticDiagnostics(sf));
+                if (currentMode === "file" || currentMode === "hologram") diags.push(...program.getSemanticDiagnostics(sf));
+                fatalErrors.push(...newDiagnostics(diags));
             }
         }
 
@@ -921,14 +1058,12 @@ export class TsCompilerWrapper {
             let nextAffected: ts.AffectedFileResult<readonly ts.Diagnostic[]>;
 
             while ((nextAffected = this.builderProgram!.getSemanticDiagnosticsOfNextAffectedFile())) {
-                for (const diag of nextAffected.result as ts.Diagnostic[]) {
-                    if (isThirdPartyDiagnostic(diag)) continue;
-                    // Only errors the edit added: the first pass after boot visits
-                    // every file, and 71 errors already in the project used to trip
-                    // this limit on a valid edit (then "auto-healed" with no fix).
-                    if (processDiag(diag) && diag.file && !editedFiles.has(this.toPosix(diag.file.fileName))) {
-                        cascadeCount++;
-                    }
+                // Only errors the edit added: the first pass after boot visits
+                // every file, and 71 errors already in the project used to trip
+                // this limit on a valid edit (then "auto-healed" with no fix).
+                for (const diag of newDiagnostics(nextAffected.result as ts.Diagnostic[])) {
+                    fatalErrors.push(diag);
+                    if (diag.file && !editedFiles.has(this.toPosix(diag.file.fileName))) cascadeCount++;
                 }
                 if (cascadeCount > errorThreshold) {
                     this.isStateCorrupted = true;

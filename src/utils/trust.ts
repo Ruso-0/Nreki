@@ -17,6 +17,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { logger } from "./logger.js";
+import { unsafeWriteTarget } from "./path-jail.js";
 
 const KEY_HEX = /^[0-9a-f]{64}$/;
 const TAG_HEX = /^[0-9a-f]{64}$/;
@@ -83,6 +84,10 @@ export function quarantinePathFor(file: string): string {
  */
 export function quarantineFile(file: string): string | null {
     const target = quarantinePathFor(file);
+    // <root>/.nreki/quarantine/<name>: never move or copy through a link (a
+    // `.nreki` shipped as one; the copy fallback read a linked file's target).
+    const root = path.dirname(path.dirname(path.dirname(target)));
+    if (unsafeWriteTarget(root, target) || unsafeWriteTarget(root, file)) return null;
     try {
         fs.mkdirSync(path.dirname(target), { recursive: true });
     } catch {

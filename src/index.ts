@@ -41,7 +41,7 @@ import { CognitiveEnforcer } from "./hooks/cognitive-enforcer.js";
 import { NrekiKernel } from "./kernel/nreki-kernel.js";
 import { ChronosMemory } from "./chronos-memory.js";
 import { logger } from "./utils/logger.js";
-import { unsafeWriteTarget } from "./utils/path-jail.js";
+import { unsafeWriteTarget, writeStateFile } from "./utils/path-jail.js";
 import { upgradeEnforcerHook } from "./init/hook-upgrade.js";
 import { detectMode as detectModePure } from "./detect-mode.js";
 
@@ -597,12 +597,12 @@ async function main(): Promise<void> {
     // project; without a live marker it fails open (NREKI-SEC-04).
     const sessionMarker = path.join(process.cwd(), ".nreki", "sessions", String(process.pid));
     try {
-        fs.mkdirSync(path.dirname(sessionMarker), { recursive: true });
-        fs.writeFileSync(sessionMarker, new Date().toISOString(), "utf-8");
+        // Never through a `.nreki` link shipped with the repository (writeStateFile).
+        writeStateFile(process.cwd(), sessionMarker, new Date().toISOString());
         process.on("exit", () => {
             try { fs.unlinkSync(sessionMarker); } catch { /* already gone */ }
         });
-    } catch { /* read-only checkout: hook simply fails open */ }
+    } catch { /* read-only checkout or a linked .nreki: the hook simply fails open */ }
 
     // ─── AUTO-PATCH SECURITY HOOK (v10.x) ───
     // v11.3.0: enforcer template now lives at templates/hooks/nreki-enforcer.mjs

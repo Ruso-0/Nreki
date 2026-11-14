@@ -12,6 +12,7 @@ import fs from "fs";
 import path from "path";
 import crypto from "crypto";
 import { captureFileTraits, applyModeTraits } from "./utils/file-traits.js";
+import { removeStateFile, unsafeWriteTarget, writeStateFile } from "./utils/path-jail.js";
 
 // ─── Helpers ────────────────────────────────────────────────────────
 
@@ -46,7 +47,7 @@ export function saveBackup(projectRoot: string, filePath: string): void {
     // earlier edit must not survive: undo would silently restore a version from
     // two edits ago while claiming "state before the last edit".
     const dropStaleBackup = (): void => {
-        try { fs.unlinkSync(getBackupPath(projectRoot, filePath)); } catch { /* none */ }
+        removeStateFile(projectRoot, getBackupPath(projectRoot, filePath));
     };
 
     // AUDIT FIX (Patch 3): Binary check + size cap BEFORE full-file load (OOM guard).
@@ -95,15 +96,9 @@ export function saveBackup(projectRoot: string, filePath: string): void {
         return;
     }
 
-    const dir = getBackupsDir(projectRoot);
-    if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-    }
-
-    const backupDest = getBackupPath(projectRoot, filePath);
-    const tmpPath = `${backupDest}.${crypto.randomBytes(4).toString("hex")}.tmp`;
-    fs.writeFileSync(tmpPath, content, "utf-8");
-    fs.renameSync(tmpPath, backupDest);
+    // Throws, writing nothing, through a `.nreki` link shipped with the repository:
+    // a batch then aborts before any rename (writeStateFile).
+    writeStateFile(projectRoot, getBackupPath(projectRoot, filePath), content);
 }
 
 /**
@@ -123,8 +118,8 @@ export function snapshotBackups(projectRoot: string, filePaths: ReadonlyArray<st
         restore: () => {
             for (const { backup, content } of saved) {
                 try {
-                    if (content === null) fs.rmSync(backup, { force: true });
-                    else fs.writeFileSync(backup, content);
+                    if (content === null) removeStateFile(projectRoot, backup);
+                    else writeStateFile(projectRoot, backup, content);
                 } catch { /* best effort: undo then reports the newer backup */ }
             }
         },
@@ -149,6 +144,8 @@ export function restoreBackup(projectRoot: string, filePath: string): string {
  */
 export function restoreBackupWithContent(projectRoot: string, filePath: string): { message: string; content: string } {
     const backupPath = getBackupPath(projectRoot, filePath);
+    const unsafe = unsafeWriteTarget(projectRoot, backupPath);
+    if (unsafe) throw new Error(`The backup folder .nreki/backups is ${unsafe}: NREKI does not restore from it.`);
 
     if (!fs.existsSync(backupPath)) {
         throw new Error(
@@ -162,7 +159,7 @@ export function restoreBackupWithContent(projectRoot: string, filePath: string):
     const traits = captureFileTraits(resolved);
     const tmpPath = `${resolved}.nreki-undo-${crypto.randomBytes(4).toString("hex")}.tmp`;
     try {
-        fs.writeFileSync(tmpPath, content, "utf-8");
+        fs.writeFileSync(tmpPath, content, { encoding: "utf-8", flag: "wx" });
         applyModeTraits(tmpPath, traits);
         fs.renameSync(tmpPath, resolved);
     } catch (err) {

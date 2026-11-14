@@ -1,6 +1,6 @@
 # NREKI — Architecture Guide
 
-> **Version:** 12.1.1 (module tables refreshed; line counts are approximate)
+> **Version:** 12.1.2 (module tables refreshed; line counts are approximate)
 > **Author:** Jherson Eddie Tintaya Holguin (Ruso-0)  
 > **Purpose:** MCP server that validates AI agent code edits in RAM before they touch disk.
 
@@ -209,6 +209,8 @@ ON FAILURE:
   Clean orphan .tmp files
 ```
 
+A linked `.nreki/transactions` aborts the commit before anything is written. The error baseline ties each error to its chain of declarations, anonymous callbacks included (`it("adds")`, `[1]`, `then()`). A callback's source is a second key, so a callback that only moved keeps its old error.
+
 ---
 
 ## Security Model
@@ -221,6 +223,7 @@ Defense-in-depth with 5 independent layers:
 - **Symlink resolution:** Detects symlinks that escape the workspace boundary
 - **Parent chain walk:** For new files, validates the existing parent directory chain
 - **Workspace root guard:** Cannot operate on the root directory itself
+- **NREKI's own files** (`.nreki/…`: caches, history, pins, backups, the transaction log) go through `writeStateFile`. It never writes through a link or a linked folder, because a repository can ship `.nreki` as one. Its temporary cannot already exist (`wx`).
 
 ### 2. Sensitive File Blocklist
 22 patterns blocking access to:
@@ -294,7 +297,7 @@ This reduces compiler load from O(N) to O(M) where M = edited files + direct dep
 
 There is no local embedding model: ONNX embeddings were removed in v11.0.0, and `hybrid_search` in v12.0.0.
 
-`context` (`src/handlers/context-pack.ts`) builds on these: it returns the symbols the task names, and runs one search per issue that names no code.
+`context` (`src/handlers/context-pack.ts`) builds on these: it returns the symbols the task names, and runs one search per issue that names no code. The short definitions of what that code imports come only from the file that declares them. TS/JS imports are resolved as the compiler resolves them, re-exports followed (`src/utils/import-origin.ts`).
 
 ---
 

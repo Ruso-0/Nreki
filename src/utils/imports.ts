@@ -11,6 +11,8 @@ export interface ImportDependency {
     localName: string;
     /** Last segment of the import path - used for homonym disambiguation */
     pathHint: string;
+    /** The module as written: "./fees.js", "app.billing", "example.com/demo/util". */
+    source?: string;
 }
 
 // Security: exact auth-related tokens only. "tokenize", "TokenStream" pass through.
@@ -32,16 +34,26 @@ const PRIVATE_KEY_BLOCK = /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END
 const AUTH_HEADER_LITERAL = /(["'`])(Bearer|Basic|Token)\s+[A-Za-z0-9._~+/-]{12,}=*\1/g;
 const STRING_LITERAL = /(["'`])(?:\\.|(?!\1)[^\\])*\1/g;
 /**
- * A name that holds a secret, then what assigns it: `apiKey:`, `STRIPE_SECRET =`,
- * `"client_secret":`, `apiKey :=` (Go), `setPassword(`. `\s*` crosses line breaks,
- * so a value on the next line is found too.
+ * A name that holds a secret: `apiKey`, `STRIPE_SECRET`, `client_secret`,
+ * `dbPassword`, `x-api-key`, `$apiKey`, `accessToken`. `tokens = tokenize("…")`
+ * (lexer or model tokens) is not one: its argument was blanked.
  */
-const SECRET_ASSIGNMENT = /["']?[\w$-]*(?:passw(?:or)?d|pwd|secret|private.?key|api.?key|credential|master.?key|token)[\w$-]*["']?\s*(?::=|:|\?\?=|\|\|=|=(?![=>])|\()\s*/gi;
+const SECRET_NAME = /[\w$-]*(?:passw(?:or)?d|pwd|secret|private.?key|api.?key|credential|master.?key|token(?!i[sz]|s(?![\w$])))[\w$-]*/gi;
+/** How far the value of one secret name is read. */
+const VALUE_SCAN_LIMIT = 10_000;
+/** A line ending in one of these continues the expression on the next line... */
+const CONTINUES_AFTER = new Set(["=", "+", "-", "*", "/", "%", "?", ":", "|", "&", ".", "<", ">", "!", "~", "^"]);
+/** ...and so does a next line that starts with one of these. */
+const CONTINUES_BEFORE = new Set(["+", "-", "*", "/", "%", "?", ":", "|", "&", ".", "=", "<", ">", "^"]);
 
-/** End (exclusive) of the string literal that opens at `start`, or -1. Only a template literal spans lines. */
+/** End (exclusive) of the string literal that opens at `start`, or -1. Only a template or triple-quoted literal spans lines. */
 function literalEnd(text: string, start: number): number {
     const quote = text[start];
     if (quote !== "\"" && quote !== "'" && quote !== "`") return -1;
+    if (quote !== "`" && text.startsWith(quote.repeat(3), start)) {
+        const close = text.indexOf(quote.repeat(3), start + 3);
+        return close < 0 ? -1 : close + 3;
+    }
     for (let i = start + 1; i < text.length; i++) {
         const ch = text[i];
         if (ch === "\\") { i++; continue; }
@@ -51,29 +63,107 @@ function literalEnd(text: string, start: number): number {
     return -1;
 }
 
-/** The literal values assigned to secret names, across line breaks and `"…" + "…"` continuations. */
+/** Index after the comment that starts at `i` (`//`, `/* … *\/`, `#` after a space or `(`, `,`, `=`), or -1 if none does. */
+function commentEnd(text: string, i: number, limit: number): number {
+    const ch = text[i];
+    const line = ch === "/" && text[i + 1] === "/" || ch === "#" && (i === 0 || /[\s(,=]/.test(text[i - 1]));
+    if (line) {
+        const nl = text.indexOf("\n", i);
+        return nl < 0 || nl > limit ? limit : nl;
+    }
+    if (ch === "/" && text[i + 1] === "*") {
+        const close = text.indexOf("*/", i + 2);
+        return close < 0 || close + 2 > limit ? limit : close + 2;
+    }
+    return -1;
+}
+
+/** The first character at or after `i` that is not white space or a comment ("" at the end). */
+function nextSignificant(text: string, i: number, limit: number): string {
+    while (i < limit) {
+        if (/\s/.test(text[i])) { i++; continue; }
+        const end = commentEnd(text, i, limit);
+        if (end < 0) return text[i];
+        i = end;
+    }
+    return "";
+}
+
+/**
+ * Where the value of the secret name that ends at `i` starts, or -1. After
+ * `=`, `:`, `:=`, `??=`, `||=`, `=>` or `(`: a type annotation (`apiKey: string =`)
+ * is part of the value expression read next, as is Go's `var apiKey string =`.
+ */
+function valueStart(text: string, i: number): number {
+    if (text[i] === "\"" || text[i] === "'") i++;            // a quoted key: "client_secret": …
+    if (text[i] === "]") i++;                               // headers["x-api-key"] = …
+    const typed = /^[ \t]+[\w.*[\]]+[ \t]*(?::=|=(?![=>]))/.exec(text.slice(i, i + 120));
+    if (typed && !/^[ \t]+(?:in|of|instanceof|as|is|and|or|not)\b/.test(typed[0])) return i + typed[0].length;
+    while (i < text.length && /\s/.test(text[i])) i++;
+    if ((text[i] === "?" || text[i] === "!") && text[i + 1] === ":") i++; // apiKey?: string
+    if (text.startsWith(":=", i)) return i + 2;
+    if (text.startsWith("??=", i) || text.startsWith("||=", i) || text.startsWith("&&=", i)) return i + 3;
+    if (text.startsWith("=>", i)) return i + 2;
+    if (text[i] === "=" && text[i + 1] !== "=") return i + 1;
+    if (text[i] === ":" || text[i] === "(") return i + 1;
+    return -1;
+}
+
+/**
+ * The string literals of the value expression that starts at `start`, comments
+ * skipped: up to a `;` or `,` outside brackets, a bracket it did not open, or
+ * the end of a line once a value was read, unless an operator carries the
+ * expression on (`"a" +⏎ "b"`, `vault⏎ .get("k")`, `prod⏎ ? "a"⏎ : "b"`).
+ * Reading only the literal right after the operator, `apiKey: string =⏎ "…"`,
+ * `= // note⏎ "…"` and `"a" + // note⏎ "b"` were sent as is.
+ */
+function valueLiterals(text: string, start: number, ranges: Array<[number, number]>): void {
+    const limit = Math.min(text.length, start + VALUE_SCAN_LIMIT);
+    let depth = 0;
+    let last = ""; // last significant character; "" until the value starts
+    for (let i = start; i < limit;) {
+        const ch = text[i];
+        if (ch === "\n") {
+            if (depth === 0 && last !== "" && !CONTINUES_AFTER.has(last)
+                && !CONTINUES_BEFORE.has(nextSignificant(text, i + 1, limit))) return;
+            i++;
+            continue;
+        }
+        if (/\s/.test(ch)) { i++; continue; }
+        const comment = commentEnd(text, i, limit);
+        if (comment >= 0) { i = comment; continue; }
+        if (ch === "\"" || ch === "'" || ch === "`") {
+            const end = literalEnd(text, i);
+            if (end < 0) return;
+            ranges.push([i, end]);
+            last = ch;
+            i = end;
+            continue;
+        }
+        if (ch === "(" || ch === "[" || ch === "{") depth++;
+        else if (ch === ")" || ch === "]" || ch === "}") {
+            if (depth === 0) return;
+            depth--;
+        } else if ((ch === ";" || ch === ",") && depth === 0) return;
+        last = ch;
+        i++;
+    }
+}
+
+/** The literals in the value of every secret name: initializer, type annotation and comments included. */
 function redactSecretAssignments(text: string): string {
     const ranges: Array<[number, number]> = [];
-    for (const m of text.matchAll(SECRET_ASSIGNMENT)) {
-        let at = (m.index ?? 0) + m[0].length;
-        for (;;) {
-            const end = literalEnd(text, at);
-            if (end < 0) break;
-            ranges.push([at, end]);
-            let next = end;
-            while (next < text.length && /\s/.test(text[next])) next++;
-            if (text[next] !== "+") break;
-            next++;
-            while (next < text.length && /\s/.test(text[next])) next++;
-            at = next;
-        }
+    for (const m of text.matchAll(SECRET_NAME)) {
+        const at = valueStart(text, (m.index ?? 0) + m[0].length);
+        if (at >= 0) valueLiterals(text, at, ranges);
     }
     if (ranges.length === 0) return text;
     ranges.sort((a, b) => a[0] - b[0]);
     let out = "";
     let cursor = 0;
     for (const [start, end] of ranges) {
-        if (start < cursor) continue; // inside a range already blanked
+        if (end <= cursor) continue;                      // inside a range already blanked
+        if (start < cursor) { cursor = end; continue; }   // overlaps it: blank up to the later end
         out += `${text.slice(cursor, start)}"<redacted>"`;
         cursor = end;
     }
@@ -87,9 +177,10 @@ function redactSecretAssignments(text: string): string {
  * Blanked:
  *   - private key blocks and well-known token shapes, anywhere;
  *   - "Bearer …" / "Basic …" literals;
- *   - the literal assigned to a secret name, even on the next line, as a
- *     multi-line template or a concatenation (line by line, `apiKey:\n "…"`
- *     and a multi-line template password were sent as is);
+ *   - every literal in the value of a secret name: on the next line, after a
+ *     type annotation or a comment, as a multi-line template, a concatenation
+ *     or a ternary (line by line, `apiKey:\n "…"` and a multi-line template
+ *     password were sent as is; then `apiKey: string =\n "…"`);
  *   - the string literals of any line that names a secret.
  */
 export function redactSecrets(text: string): string {
@@ -158,7 +249,7 @@ export function extractDependencies(code: string, ext: string): ImportDependency
                 const parts = s.trim().split(/\s+as\s+/);
                 const symbol = parts[0].trim();
                 const localName = (parts[1] || parts[0]).trim();
-                if (symbol.length > 2) deps.push({ symbol, localName, pathHint });
+                if (symbol.length > 2) deps.push({ symbol, localName, pathHint, source: match[2] });
             }
         }
 
@@ -172,7 +263,7 @@ export function extractDependencies(code: string, ext: string): ImportDependency
                 match[2].split("/").pop()?.replace(/\.(ts|js)x?$/, "") || match[2];
             const symbol = match[1].trim();
             if (symbol !== "type" && symbol.length > 2) {
-                deps.push({ symbol, localName: symbol, pathHint });
+                deps.push({ symbol, localName: symbol, pathHint, source: match[2] });
             }
         }
 
@@ -188,7 +279,7 @@ export function extractDependencies(code: string, ext: string): ImportDependency
                 const parts = s.trim().split(/\s*:\s*/);
                 const symbol = parts[0].trim();
                 const localName = (parts[1] || parts[0]).trim();
-                if (symbol.length > 2) deps.push({ symbol, localName, pathHint });
+                if (symbol.length > 2) deps.push({ symbol, localName, pathHint, source: match[2] });
             }
         }
     } else if (ext === ".py") {
@@ -203,7 +294,7 @@ export function extractDependencies(code: string, ext: string): ImportDependency
                 const parts = s.trim().split(/\s+as\s+/);
                 const symbol = parts[0].trim();
                 const localName = (parts[1] || parts[0]).trim();
-                if (symbol.length > 2) deps.push({ symbol, localName, pathHint });
+                if (symbol.length > 2) deps.push({ symbol, localName, pathHint, source: match[1] });
             }
         }
 
@@ -213,7 +304,7 @@ export function extractDependencies(code: string, ext: string): ImportDependency
         // aliases, then scan body for `alias.Symbol` usage — same
         // pattern as the Go branch below.
         const pyImportRe = /^import\s+([^#\n]+)/gm;
-        const pyPkgMap = new Map<string, string>(); // localName -> pathHint
+        const pyPkgMap = new Map<string, { pathHint: string; source: string }>(); // localName -> module
 
         // Token-budget shield: skip Python stdlib — LLMs already know it
         // and auto-context injection wastes tokens.
@@ -233,12 +324,12 @@ export function extractDependencies(code: string, ext: string): ImportDependency
                 const localName = (parts[1] || fullModule).trim();
                 const pathHint = fullModule.split(".").pop() || fullModule;
                 if (pyStdlib.has(pathHint)) continue;
-                pyPkgMap.set(localName, pathHint);
+                pyPkgMap.set(localName, { pathHint, source: fullModule });
             }
         }
 
         // Scan body for Package.Symbol usage
-        for (const [localName, pathHint] of pyPkgMap.entries()) {
+        for (const [localName, { pathHint, source }] of pyPkgMap.entries()) {
             const usageRe = new RegExp(
                 `\\b${escapeRegExp(localName)}\\.([a-zA-Z_]\\w*)`,
                 "g",
@@ -251,6 +342,7 @@ export function extractDependencies(code: string, ext: string): ImportDependency
                         symbol,
                         localName: `${localName}.${symbol}`,
                         pathHint,
+                        source,
                     });
                 }
             }
@@ -258,7 +350,7 @@ export function extractDependencies(code: string, ext: string): ImportDependency
     } else if (ext === ".go") {
         // ── Go: Namespace-to-Symbol Inference Engine ──
         // Go imports packages, not symbols. We scan the code for Package.ExportedSymbol usage.
-        const pkgMap = new Map<string, string>();
+        const pkgMap = new Map<string, { pathHint: string; source: string }>();
         const importBlocks = code.match(
             /import\s*\([\s\S]*?\)|import\s+(?:[a-zA-Z0-9_.]+\s+)?["'][^"']+["']/g,
         );
@@ -281,14 +373,14 @@ export function extractDependencies(code: string, ext: string): ImportDependency
                     const pathHint = fullPath.split("/").pop() || fullPath;
                     const localName = alias || pathHint;
                     if (localName !== "_" && localName !== ".") {
-                        pkgMap.set(localName, pathHint);
+                        pkgMap.set(localName, { pathHint, source: fullPath });
                     }
                 }
             }
         }
 
         // Scan body for Package.ExportedSymbol (Go exports start with uppercase)
-        for (const [localName, pathHint] of pkgMap.entries()) {
+        for (const [localName, { pathHint, source }] of pkgMap.entries()) {
             const usageRe = new RegExp(
                 `\\b${escapeRegExp(localName)}\\.([A-Z]\\w*)`,
                 "g",
@@ -299,6 +391,7 @@ export function extractDependencies(code: string, ext: string): ImportDependency
                     symbol: uMatch[1],
                     localName: `${localName}.${uMatch[1]}`,
                     pathHint,
+                    source,
                 });
             }
         }

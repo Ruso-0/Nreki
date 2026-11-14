@@ -3,7 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
 import type Parser from "web-tree-sitter";
-import { isSensitivePath, safePath } from "../utils/path-jail.js";
+import { isSensitivePath, safePath, unsafeWriteTarget, writeStateFile } from "../utils/path-jail.js";
 import { readSource } from "../utils/read-source.js";
 import { captureFileTraits, withTraits, applyModeTraits, contentDigest, readSourceForEdit } from "../utils/file-traits.js";
 import { toPosix as toPosixUtil } from "../utils/to-posix.js";
@@ -272,6 +272,13 @@ export class NrekiKernel {
     private recoverFromWal(): void {
         const txDir = path.join(this.projectRoot, ".nreki", "transactions");
         if (!fs.existsSync(txDir)) return;
+        // `.nreki` (or transactions/) shipped as a link: recovery would read a
+        // foreign log and the cleanup below deleted the folder it points to.
+        const linked = unsafeWriteTarget(this.projectRoot, txDir);
+        if (linked) {
+            logger.warn(`.nreki/transactions is ${linked}: WAL recovery skipped, nothing deleted.`);
+            return;
+        }
         let keepTxDir = false;
 
         // One WAL per committing process (wal-<pid>.json) so concurrent NREKI
@@ -365,6 +372,8 @@ export class NrekiKernel {
         const versionFile = path.join(path.dirname(this.tsBuildInfoPath), "ts-version");
         try {
             if (!fs.existsSync(this.tsBuildInfoPath)) return false;
+            // Shipped through a `.nreki` link: neither trusted nor deleted.
+            if (unsafeWriteTarget(this.projectRoot, path.normalize(this.tsBuildInfoPath))) return false;
             if (!fs.existsSync(versionFile)) {
                 fs.unlinkSync(this.tsBuildInfoPath);
                 return false;
@@ -383,12 +392,10 @@ export class NrekiKernel {
 
     /** Write TS version guard file alongside the cache. */
     private writeTsVersionGuard(): void {
-        const dir = path.dirname(this.tsBuildInfoPath);
-        const versionFile = path.join(dir, "ts-version");
+        const versionFile = path.join(path.normalize(path.dirname(this.tsBuildInfoPath)), "ts-version");
         try {
-            if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-            fs.writeFileSync(versionFile, ts.version, "utf-8");
-        } catch { /* Non-fatal */ }
+            writeStateFile(this.projectRoot, versionFile, ts.version);
+        } catch { /* Non-fatal (and never through a link) */ }
     }
 
     /**
@@ -1597,15 +1604,22 @@ export class NrekiKernel {
             for (const posixPath of filesToCommit) this.assertCommitTarget(path.normalize(posixPath));
             const conflicts = this.findDiskConflicts(filesToCommit);
             if (conflicts.length > 0) throw new NrekiConflictError(conflicts);
+            // The backups and the WAL live in .nreki/transactions: never written
+            // through a `.nreki` link shipped with the repository.
+            const txDir = path.dirname(walPath);
+            const linkedTx = unsafeWriteTarget(this.projectRoot, walPath);
+            if (linkedTx) {
+                throw new Error(`.nreki/transactions is ${linkedTx}: NREKI keeps its crash-recovery log there and ` +
+                    `does not write through links. Nothing was written; remove the link and retry.`);
+            }
 
             // PHASE 1: Physical backup
             for (const posixPath of filesToCommit) {
                 const osPath = path.normalize(posixPath);
                 if (fs.existsSync(osPath)) {
-                    const txDir = path.join(this.projectRoot, ".nreki", "transactions");
                     if (!fs.existsSync(txDir)) fs.mkdirSync(txDir, { recursive: true });
                     const bak = path.join(txDir, `${crypto.randomBytes(4).toString("hex")}.bak`);
-                    fs.copyFileSync(osPath, bak);
+                    fs.copyFileSync(osPath, bak, fs.constants.COPYFILE_EXCL);
                     physicalUndoLog.push({ target: osPath, backup: bak });
                 } else {
                     physicalUndoLog.push({ target: osPath, backup: null });
@@ -1619,18 +1633,14 @@ export class NrekiKernel {
             // multi-file commit half-applied with no recovery path. A failure
             // here aborts the commit before anything destructive happens.
             if (physicalUndoLog.length > 0) {
-                const txDir = path.dirname(walPath);
-                if (!fs.existsSync(txDir)) fs.mkdirSync(txDir, { recursive: true });
-                // Atomic write via temp+rename. writeFileSync overwrites in-place
-                // and is NOT atomic — OOM/crash mid-write truncates the WAL.
-                const walTmpPath = `${walPath}.tmp`;
-                fs.writeFileSync(walTmpPath, JSON.stringify({
+                // Atomic write via temp+rename (writeStateFile). writeFileSync overwrites
+                // in-place and is NOT atomic — OOM/crash mid-write truncates the WAL.
+                writeStateFile(this.projectRoot, walPath, JSON.stringify({
                     status: "pending",
                     pid: process.pid, // lets a 2nd NREKI instance tell "crashed" from "mid-commit"
                     ts: new Date().toISOString(),
                     files: physicalUndoLog.map(l => ({ target: l.target, backup: l.backup })),
-                }), "utf-8");
-                fs.renameSync(walTmpPath, walPath);
+                }));
                 walWritten = true;
             }
 
@@ -1647,7 +1657,7 @@ export class NrekiKernel {
                     const traits = captureFileTraits(osPath);
                     const tmp = `${osPath}.nreki-${crypto.randomBytes(4).toString("hex")}.tmp`;
                     createdTmps.push(tmp); // Push BEFORE write so catch can clean up on ENOSPC
-                    fs.writeFileSync(tmp, withTraits(content, traits), "utf-8");
+                    fs.writeFileSync(tmp, withTraits(content, traits), { encoding: "utf-8", flag: "wx" });
                     applyModeTraits(tmp, traits);
                     fs.renameSync(tmp, osPath);
                     createdTmps.pop(); // Rename succeeded — no longer orphan
@@ -1696,12 +1706,8 @@ export class NrekiKernel {
                 this.tsBackend.tsBuilder!.emit(
                     undefined,
                     (fileName, text) => {
-                        // Only write .tsbuildinfo, not .js/.d.ts
-                        if (fileName.endsWith(".tsbuildinfo")) {
-                            const dir = path.dirname(fileName);
-                            if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-                            fs.writeFileSync(fileName, text, "utf-8");
-                        }
+                        // Only write .tsbuildinfo, not .js/.d.ts; never through a link.
+                        if (fileName.endsWith(".tsbuildinfo")) writeStateFile(this.projectRoot, path.normalize(fileName), text);
                     },
                     undefined,
                     true, // emitOnlyDtsFiles - suppresses .js output
@@ -1726,8 +1732,8 @@ export class NrekiKernel {
             logger.info("Atomic commit materialized. Disk synchronized.");
         } catch (error) {
             // PHYSICAL ROLLBACK
-            logger.error(error instanceof NrekiConflictError
-                ? `Commit aborted before any write: ${error.message}`
+            logger.error(error instanceof NrekiConflictError || (physicalUndoLog.length === 0 && createdTmps.length === 0)
+                ? `Commit aborted before any write: ${(error as Error).message}`
                 : `OS write failure! Physical rollback: ${error}`);
             this.diskExpectations.clear();
 
@@ -2113,7 +2119,7 @@ export class NrekiKernel {
      *
      * Between tool calls the VFS is empty (each intercept ends in
      * commit → captureBaseline() or rollback → VFS clean).
-     * Therefore baselineFrequencies reflects the current disk state.
+     * Therefore the baseline reflects the current disk state.
      *
      * Cost: O(1) - no compiler invocation needed.
      */

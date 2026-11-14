@@ -813,7 +813,9 @@ export class NrekiDB {
         // Random suffix prevents collision between concurrent
         // MCP processes (Cursor + Claude Code terminal) writing the same DB.
         const tmpDb = `${this.dbPath}.${crypto.randomBytes(4).toString("hex")}.tmp`;
-        fs.writeFileSync(tmpDb, buffer);
+        // `wx`: never through a link planted at the temporary's name. The rename
+        // replaces a link at .nreki.db itself; it does not follow it.
+        fs.writeFileSync(tmpDb, buffer, { flag: "wx" });
         fs.renameSync(tmpDb, this.dbPath);
         this.diskStamp = this.stampOnDisk();
         this.dirtyEngrams.clear();

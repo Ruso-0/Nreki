@@ -110,9 +110,10 @@ function planForAgent(agent: DetectedAgent): FileAction[] {
                     content: readTemplate(path.join("hooks", "nreki-enforcer.mjs")),
                     // v12.1.0: marker bumped to the v3 enforcer (token-aware: only large
                     // reads are steered, offset/limit honored, edits allowed, symlink-aware,
-                    // fail-open when NREKI is not running). Older enforcers on disk are
-                    // upgraded; a current one is left alone.
-                    marker: "nreki-enforcer:v3",
+                    // fail-open when NREKI is not running). v4: its state file is never
+                    // written through a link. Older enforcers on disk are upgraded; a
+                    // current one is left alone.
+                    marker: "nreki-enforcer:v4",
                     mode: "write",
                     executable: true,
                 },

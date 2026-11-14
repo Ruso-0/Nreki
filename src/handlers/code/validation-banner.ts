@@ -19,7 +19,7 @@ export type CoverageFn = (filePath: string) => {
     outsideProgram?: boolean;
 };
 
-/** What the handler did about importers of the edited files (file/hologram mode). */
+/** What the handler did about importers of the edited files (file/hologram mode; project mode: notInProgram only). */
 export interface DependentsScope {
     /** The dependency graph was queried successfully. */
     lookedUp: boolean;
@@ -110,7 +110,13 @@ export function buildValidationBanner(scope: ValidationScope): string {
             caveat = " Importers NOT checked — run your build (e.g. tsc -b) before finishing.";
         } else if (scope.mode === "project") {
             checked.push("TypeScript types, cross-file (project mode)");
-            complete = true;
+            const outside = scope.dependents?.notInProgram ?? 0;
+            if (outside > 0) {
+                // Tests under another tsconfig, plain JS: the program never sees them.
+                caveat = ` ${outside} importer(s) outside the tsconfig program (another tsconfig, plain JS) NOT checked — run their build/tests before finishing.`;
+            } else {
+                complete = true;
+            }
         } else {
             const mode = scope.mode ?? "file";
             const d = scope.dependents;
@@ -118,8 +124,14 @@ export function buildValidationBanner(scope: ValidationScope): string {
                 ? ` + ${d.checked < d.total ? `${d.checked} of ${d.total}` : d.checked} direct importer(s)`
                 : "";
             const healedOthers = scope.healedOthers ?? [];
-            if (scope.exportedApiUnchanged === true && healedOthers.length === 0) {
-                // Same .d.ts, same program files: no other file can type-check differently.
+            if (scope.exportedApiUnchanged === true && healedOthers.length === 0 && d?.notInProgram) {
+                // The same .d.ts under THIS tsconfig's options: an importer compiled by another
+                // one (strict where this one is not) still broke, and the footer said
+                // "no other file affected" (audit of 0d48ca4).
+                checked.push(`TypeScript types on edited file(s)${importers} (${mode} mode; exported API unchanged under this tsconfig's options)`);
+                caveat = ` ${d.notInProgram} importer(s) outside the tsconfig program (another tsconfig, plain JS) NOT checked — they may compile with other options: run their build/tests before finishing.`;
+            } else if (scope.exportedApiUnchanged === true && healedOthers.length === 0) {
+                // Same .d.ts, same program files: no other file of the program can type-check differently.
                 checked.push(`TypeScript types on edited file(s)${importers} (${mode} mode; exported API unchanged, no other file affected)`);
                 complete = true;
             } else if (scope.declaresGlobals) {

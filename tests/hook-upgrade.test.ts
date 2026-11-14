@@ -32,7 +32,7 @@ function linkedClaudeDir(): { project: string; outside: string } {
 }
 
 const STOCK_V1 = "#!/usr/bin/env node\nif (/^(Write|Edit|Replace)(File)?$/i.test(tool)) {}\n";
-const UPSTREAM = "// nreki-enforcer:v3 — upgraded\n";
+const UPSTREAM = "// nreki-enforcer:v4 — upgraded\n";
 
 describe("hook upgrade at server start", () => {
     it("upgrades the stock hooks, and only those", () => {
@@ -46,6 +46,11 @@ describe("hook upgrade at server start", () => {
 
         fs.writeFileSync(hook, "// nreki-enforcer:v2\n");
         expect(upgradeEnforcerHook(project, () => UPSTREAM)).toBe("upgraded");
+
+        // v3 wrote its state file through a `.nreki` link (audit of 0d48ca4).
+        fs.writeFileSync(hook, "// nreki-enforcer:v3 — Claude Code PreToolUse hook\n");
+        expect(upgradeEnforcerHook(project, () => UPSTREAM)).toBe("upgraded");
+        expect(upgradeEnforcerHook(project, () => UPSTREAM)).toBe("current");
 
         // A hook the user wrote (no stock matcher): left alone. It lacked "cwdPosix"
         // and used to be overwritten.

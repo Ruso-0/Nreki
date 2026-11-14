@@ -2,7 +2,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/npm/v/@ruso-0/nreki?style=for-the-badge&color=blue" alt="npm version">
-  <img src="https://img.shields.io/badge/Tests-1699-brightgreen?style=for-the-badge" alt="1699 Tests">
+  <img src="https://img.shields.io/badge/Tests-1727-brightgreen?style=for-the-badge" alt="1727 Tests">
   <img src="https://img.shields.io/badge/AHI-9.7%2F10-brightgreen?style=for-the-badge" alt="AHI 9.7/10">
   <img src="https://img.shields.io/badge/Languages-TS%20%7C%20JS%20%7C%20Go%20%7C%20Python%20%7C%20Kotlin%20%7C%20Java%20%7C%20C%2B%2B-blue?style=for-the-badge" alt="Multi-language">
   <img src="https://img.shields.io/badge/Cloud-Zero-orange?style=for-the-badge" alt="Zero Cloud by default">
@@ -10,6 +10,14 @@
 </p>
 
 **MCP plugin that validates AI agent edits in RAM before they touch disk.** When Claude Code, Cursor, or Copilot changes a function signature in one file and breaks 30 others, NREKI catches it in milliseconds - the file is never written. If the error is structural (missing import, forgotten `await`), NREKI auto-fixes it in RAM. Zero tokens wasted on fix-retry doom loops.
+
+**v12.1.2 — fixes from an external audit of 12.1.1.**
+- Secrets are blanked across a typed or commented initializer before code is sent to the optional Voyage index.
+- NREKI never writes its own files (`.nreki/…`) through a link; the installed hook is v4.
+- `context` shows an imported helper only from the file that declares it.
+- The footer reports importers compiled by another tsconfig, in project mode too.
+- Sibling anonymous callbacks keep their own errors in the error baseline.
+- See [CHANGELOG.md](CHANGELOG.md#1212---2026-11-14).
 
 **v12.1.1 — context finds every issue, safer by default.**
 - `context` searches every issue that names no code: a named type or a capitalized word no longer cancels that search. `path` scopes it.

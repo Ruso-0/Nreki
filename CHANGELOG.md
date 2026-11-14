@@ -2,6 +2,46 @@
 
 All notable changes to NREKI will be documented in this file.
 
+## [12.1.2] - 2026-11-14
+
+Fixes from an external audit of 12.1.1: two security findings (secrets in typed or commented initializers reached the Voyage index; NREKI's own files were written through a `.nreki` link), and three about what NREKI shows or accepts (helpers from another module, a footer that hid importers under another tsconfig, sibling callbacks in the error baseline).
+
+### External audit of 12.1.1 at 0d48ca4
+
+Five findings, each reproduced first with the auditor's own scripts (run against this tree's build, never against the auditor's evidence). Tests are in `tests/audit-0d48ca4-fixes.test.ts`.
+- It has 28 tests; 27 of them can run on 0d48ca4. The other one tests a function new in this release (the Python/Go import origin).
+- On 0d48ca4, 26 of those 27 fail. The one that passes is a control that must pass on both: inserting a callback before an old error does not block the edit.
+
+Security:
+- **The whole value of a secret name is blanked before it leaves for Voyage (P1).**
+  - Only the literal right after `=`/`:` was read. `apiKey: string =⏎ "…"` (a type annotation), `= // note⏎ "…"`, `=⏎ /* note */⏎ "…"` and `"a" + // note⏎ "b"` were sent as is; known token shapes already were not.
+  - Now the value expression of a secret name is read whole: type annotation, comments, line breaks, concatenations, ternaries, `??` fallbacks, Python parenthesized and triple-quoted strings, Go `var apiKey string =`, PHP `'api_key' =>`, `headers["x-api-key"] =`.
+  - It stops at the end of the value: the next statement, the next member, the next argument. `tokens = tokenize("…")` (lexer or model tokens) is not a secret any more; its argument was blanked.
+- **NREKI's own files are never written through a link (P1).**
+  - With `.nreki` a link (a directory junction on Windows) to a folder outside the project, `map refresh` rewrote `repo-map.json` there and Chronos rewrote `chronos-history.json`.
+  - The same held for pins, `undo` backups, the enforcer state, the transaction log, the `tsbuildinfo` cache, the session marker and the quarantine.
+  - Worse: at boot, WAL recovery deleted `.nreki/transactions` recursively, so the folder of that name the link pointed at was deleted.
+  - Now every write of NREKI's own files goes through `writeStateFile`. It refuses a linked target or folder, and writes a temporary that cannot already exist (`wx`), then renames it. Caches and history log the refusal. Pins, backups and commits fail with the reason, before writing anything.
+  - WAL recovery skips a linked folder and deletes nothing. The quarantine moves and copies nothing through a link (its copy fallback read the target of a linked file).
+  - The installed hook is now v4: its state file is never written through a link. Stock v1–v3 hooks are upgraded at server start.
+
+Retrieval:
+- **`context` shows an imported helper only from the file that declares it (P2).**
+  - Helpers were looked up by name in the whole index, and a single match was accepted whatever its file. `import { calculateFee } from "./public.js"`, a barrel re-exporting `realFee as calculateFee`, or from the package `@vendor/billing`, showed an unrelated `calculateFee` that multiplied by 999.
+  - TS/JS specifiers are now resolved as the compiler resolves them (tsconfig `paths`, `.js` → `.ts`, index files), and re-exports are followed. The barrel shows `realFee` "(imported as calculateFee)"; a package shows nothing.
+  - Python: the module's file, its package `__init__`, or a module of that package. Go: the package directory under the go.mod module path. Unresolved means no helper (`src/utils/import-origin.ts`).
+
+Footers and edit validation:
+- **"Exported API unchanged" no longer hides importers under another tsconfig (P2).**
+  - In file mode, with `strict: false`, returning `string | undefined` instead of `string` emits the same `.d.ts`. A consumer compiled by a strict tsconfig broke (TS2322), and NREKI knew it was there, yet the footer said "no other file affected" and "Re-running tsc is redundant".
+  - Now the footer names those importers as NOT checked. Project mode now reports them too (tests under another tsconfig, plain JS); it used to say "cross-file" without looking them up.
+- **Sibling anonymous callbacks keep their own errors (P2).**
+  - The baseline tied an error to its named declarations only. Two callbacks of a `handlers` array that each declared `count` both read `handlers.count`: fixing the first one's error and adding it to the second was accepted.
+  - An anonymous scope now counts as its label and its place among same-label siblings: `it("adds")`, `then()`, `[1]`, `onClick`, `default`.
+  - An old error is matched first by the source of its callback, so a callback that only moved, or got a sibling inserted before it, keeps its old error. Moving the body of `it("adds")` into `it("subtracts")`, or copying a broken callback, is a new error.
+
+Known and unchanged: the Go/Python (LSP) baseline is still keyed by file + code + message, as its header documents.
+
 ## [12.1.1] - 2026-11-14
 
 `context` finds the code of every issue. Importers are resolved as the compiler resolves them, so footers stay honest. This release also carries the fixes from an external audit: no writes through symbolic links, more sensitive files blocked, and secrets blanked before code is sent to the optional Voyage index.
