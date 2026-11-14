@@ -25,6 +25,84 @@ export function isSensitiveSignature(sig: string): boolean {
     return SENSITIVE_PATTERNS.some(p => p.test(sig));
 }
 
+/** Well-known token shapes: Stripe, OpenAI-style, GitHub, AWS, Slack, Voyage, Google. */
+const TOKEN_SHAPES = /\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{10,}|\bsk-[A-Za-z0-9_-]{20,}|\bgh[pousr]_[A-Za-z0-9]{30,}|\bgithub_pat_[A-Za-z0-9_]{30,}|\bAKIA[0-9A-Z]{16}\b|\bxox[abprs]-[A-Za-z0-9-]{10,}|\bpa-[A-Za-z0-9_-]{30,}|\bAIza[0-9A-Za-z_-]{35}/g;
+const PRIVATE_KEY_BLOCK = /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g;
+/** Authorization header values written as literals: "Bearer eyJ…", "Basic dXNlcjpwYXNz". */
+const AUTH_HEADER_LITERAL = /(["'`])(Bearer|Basic|Token)\s+[A-Za-z0-9._~+/-]{12,}=*\1/g;
+const STRING_LITERAL = /(["'`])(?:\\.|(?!\1)[^\\])*\1/g;
+/**
+ * A name that holds a secret, then what assigns it: `apiKey:`, `STRIPE_SECRET =`,
+ * `"client_secret":`, `apiKey :=` (Go), `setPassword(`. `\s*` crosses line breaks,
+ * so a value on the next line is found too.
+ */
+const SECRET_ASSIGNMENT = /["']?[\w$-]*(?:passw(?:or)?d|pwd|secret|private.?key|api.?key|credential|master.?key|token)[\w$-]*["']?\s*(?::=|:|\?\?=|\|\|=|=(?![=>])|\()\s*/gi;
+
+/** End (exclusive) of the string literal that opens at `start`, or -1. Only a template literal spans lines. */
+function literalEnd(text: string, start: number): number {
+    const quote = text[start];
+    if (quote !== "\"" && quote !== "'" && quote !== "`") return -1;
+    for (let i = start + 1; i < text.length; i++) {
+        const ch = text[i];
+        if (ch === "\\") { i++; continue; }
+        if (ch === quote) return i + 1;
+        if (ch === "\n" && quote !== "`") return -1;
+    }
+    return -1;
+}
+
+/** The literal values assigned to secret names, across line breaks and `"…" + "…"` continuations. */
+function redactSecretAssignments(text: string): string {
+    const ranges: Array<[number, number]> = [];
+    for (const m of text.matchAll(SECRET_ASSIGNMENT)) {
+        let at = (m.index ?? 0) + m[0].length;
+        for (;;) {
+            const end = literalEnd(text, at);
+            if (end < 0) break;
+            ranges.push([at, end]);
+            let next = end;
+            while (next < text.length && /\s/.test(text[next])) next++;
+            if (text[next] !== "+") break;
+            next++;
+            while (next < text.length && /\s/.test(text[next])) next++;
+            at = next;
+        }
+    }
+    if (ranges.length === 0) return text;
+    ranges.sort((a, b) => a[0] - b[0]);
+    let out = "";
+    let cursor = 0;
+    for (const [start, end] of ranges) {
+        if (start < cursor) continue; // inside a range already blanked
+        out += `${text.slice(cursor, start)}"<redacted>"`;
+        cursor = end;
+    }
+    return out + text.slice(cursor);
+}
+
+/**
+ * Secrets written in ordinary code, blanked before the text leaves the machine
+ * (the optional Voyage index). Sensitive paths were already skipped, but a
+ * `STRIPE_SECRET = "sk_live_…"` in src/config/payments.ts was sent as is.
+ * Blanked:
+ *   - private key blocks and well-known token shapes, anywhere;
+ *   - "Bearer …" / "Basic …" literals;
+ *   - the literal assigned to a secret name, even on the next line, as a
+ *     multi-line template or a concatenation (line by line, `apiKey:\n "…"`
+ *     and a multi-line template password were sent as is);
+ *   - the string literals of any line that names a secret.
+ */
+export function redactSecrets(text: string): string {
+    const withoutShapes = text
+        .replace(PRIVATE_KEY_BLOCK, "<redacted key>")
+        .replace(TOKEN_SHAPES, "<redacted>")
+        .replace(AUTH_HEADER_LITERAL, "$1$2 <redacted>$1");
+    return redactSecretAssignments(withoutShapes)
+        .split("\n")
+        .map(line => (isSensitiveSignature(line) ? line.replace(STRING_LITERAL, "\"<redacted>\"") : line))
+        .join("\n");
+}
+
 /** Escape special regex characters - prevents ReDoS with symbols like $store */
 export function escapeRegExp(str: string): string {
     return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");

@@ -2,6 +2,79 @@
 
 All notable changes to NREKI will be documented in this file.
 
+## [12.1.1] - 2026-11-14
+
+`context` finds the code of every issue. Importers are resolved as the compiler resolves them, so footers stay honest. This release also carries the fixes from an external audit: no writes through symbolic links, more sensitive files blocked, and secrets blanked before code is sent to the optional Voyage index.
+
+### `context` picks the code of every issue
+
+A third Codex holdout measured the published 12.1.0 on another new project (42 files, three pairs, NREKI + Voyage): 360,210 vs 353,730 tokens (+1.83 %), 19 vs 19 turns, all 6 correct, NREKI ahead in 2 of 3 pairs. In two sessions `context` returned none of the 3 files to fix and said "no further read is needed"; the agents then read 5 and 7 files. Causes, from the session logs:
+- **A capitalized word counted as a code name.** "Station settings …" matched a `Station` type, and one code name cancelled the search of every issue.
+- **A paragraph was cut at a `;`.** The three issues were one sentence each; a `;` inside the third split the task in two, so one search covered most of it.
+- **`path:"src"` was ignored.** All three agents passed it, and a plain word ("settings") matched a method of the verifier at the project root.
+
+Fixed:
+- **Explicit names only.** A capitalized single word is still looked up, but it no longer names the code of an issue: it stays only when search lands in its file. Backticks, `camelCase`, calls `f()` and `Class.method` are still names.
+- **Every issue that names no code is searched** (top 3 each), even when another issue names its code. A task whose every issue names its code still gets exactly that code, without search.
+- **Sentences before `;`** when a task is split into issues. A negative imperative ("Do not read …", "No leas …") is an instruction, not an issue.
+- **`path` scopes `context`** to a folder or file. An unknown path says the whole project was used.
+- **An issue with no hit is listed:** "no code found for: …".
+- Tests in `tests/context-selection.test.ts`, on a different project (a clinic). Five of the six tests fail on 12.1.0; the sixth checks the unchanged path for named code.
+- **Replay without a model, BM25 only, of the five recorded `context` calls of that holdout:** the 3 target files now in 4 of 5 (before: 1 of 5), 1.7–2.4k tokens each. The Spanish probe still finds 2 of 3: Spanish words against English code remain weak. This was checked on the project that showed the bug; a saving needs a new project.
+
+### External audit of 12.1.1
+
+Every finding was checked against the code before it was fixed. One of them (F-06) was reproduced, and it showed a different symptom and a deeper defect. Tests are in `tests/audit-12-1-1-fixes.test.ts` and `tests/hook-upgrade.test.ts`. On 12.1.0 they fail, except the one on the new hook-upgrade function, which did not exist then.
+
+Security:
+- **No writes through symbolic links (F-01).**
+  - At start, the server rewrote `.claude/hooks/nreki-enforcer.mjs` whenever it lacked "cwdPosix". That matched any file, including a hook the user wrote. Through a link shipped in a cloned repository (`-> ~/.bashrc`), it also rewrote a file outside the project.
+  - Now only a stock NREKI hook (v1 or v2) is upgraded, and never through a link or a linked folder.
+  - `nreki init` and `deinit` skip such targets and say so (`unsafeWriteTarget`).
+- **More files are sensitive (F-02).**
+  - Editor configs that start processes: `.vscode`, `.cursor` and `.windsurf` `mcp.json`, `tasks.json` and `launch.json`.
+  - Token and key files: `.yarnrc(.yml)`, `id_ecdsa`/`id_dsa`, `.pfx`/`.p12`/`.jks`/`.kdbx`.
+  - The patterns now match relative paths (`.npmrc`) too. The compiler host checks the resolved path.
+- **Secrets in ordinary code are blanked before they leave for Voyage (F-12).** That covers private key blocks, well-known token shapes, and the string literals of a line that names a secret. Sensitive paths were already skipped.
+
+Footers and edit validation:
+- **Importers come from the compiler (F-03).** In file mode the importers of an edited TypeScript file now include the ones the compiler resolves: tsconfig `paths` aliases, `.mjs`→`.mts`, index files. The import graph only resolved relative paths and `@/`. An importer through an alias was neither type-checked with the edit nor counted, and the footer said "no importers … Re-running tsc is redundant".
+- **Importers outside the program are reported (F-04).** These are importers the tsconfig program does not include, such as tests under another tsconfig or plain JS. The kernel skipped them, yet they were counted as checked. The footer now lists them as NOT checked.
+- **Two more cases never read as fully checked.** An edit that adds or removes files of the program now asks for tsc. So does an edit where auto-heal also patched files outside the edit.
+- **Auto-heal no longer reports a fix it did not make.** An error that neither TypeScript nor an LSP server can fix was dropped, and the edit was reported as "auto-healed" with no fix applied. Examples are a global diagnostic and the cascade limit. Options diagnostics already in the project are now part of the baseline.
+- **The cascade limit counts only errors the edit added (F-06).** In project mode, more than 70 errors already in the project crossed it on any valid edit. The audit said every such edit was then rejected. Reproduced, the edit was accepted with a false "your code had structural errors, NREKI applied fixes" message, and the next edit rebuilt the program from scratch.
+- **A baseline error is tied to its declaration (F-05).** Before, it was keyed by file, code and message only. Fixing an old error in one function and adding the same error in another function of the same file was accepted.
+- **`A.m` and `B.m` of one file in the same batch (F-09).** They now keep separate signature checks; their keys collided. Reading one no longer unlocks a blind replace of the other.
+
+`context`:
+- **A named interface or type does not cover its issue (F-07).** The issue is still searched for the code that uses it. A symbol cut to its first line no longer counts as read.
+- **Spanish (F-08).** Negative imperatives are a list of verbs: "No todas las facturas…" was dropped as an instruction. Accents and ñ are folded in task words and in the search index: "Configuración" was cut into "Configuraci" + "n".
+
+Turns NREKI cost:
+- **The circuit breaker keeps the compiler error that tripped it (F-11).** For `batch_edit` it now names the batch's first file and symbol instead of "the current file".
+- **Chronos lets a patch through (F-13).** It no longer blocks a `mode:"patch"` edit, which is matched against the current source. The full read it demands no longer costs karma.
+- **Smaller `outline` expansion (F-13).** It shows at most 2,000 tokens of high-risk bodies (was 6,000), and no longer says "MUST run".
+- **Token estimates use `o200k_base` (F-13).** It is the tokenizer of current models and of the token tests.
+- **`definition`, `references` and `prepare_refactor` use the index (F-14).** They no longer re-read the tree. `definition` shows 3 bodies and lists the other locations.
+- **`orphan_oracle` no longer suggests `new_code: null` (F-10).** The schema rejects it.
+
+Docs: ARCHITECTURE.md described local ONNX embeddings and RRF with k = 10. Both had been removed in v11/v12; the search section is rewritten.
+
+### Measured pair of 2026-11-14 (local 12.1.1)
+
+- **Result.** One pair, run by Codex on another new project (ParcelForge, 36 files), with this working tree: plain 760,190 vs NREKI + Voyage 449,645 tokens (−40.85 %), 36 vs 21 turns (subagents included), both correct (22 visible tests and 627 external checks).
+  - It is one run per arm, and the agents delegated differently: three subagents in plain, two with NREKI.
+  - Voyage made no query. `context` was called with three identifiers, so the saving cannot be attributed to Voyage.
+- **Secrets split across lines reached the text sent to Voyage.** Found by that run's audit. `redactSecrets` worked line by line, so a value on the next line (`apiKey:\n  "…"`) or inside a multi-line template password was sent as is. Now:
+  - the literal assigned to a secret name is followed across line breaks and `"…" + "…"`;
+  - Go `:=`, quoted JSON keys and `"Bearer …"` literals are covered too.
+  - Their offline reproduction passes; the previous build leaked 4 of the 6 regression cases.
+- **The short imported definitions are shared among the symbols shown.** `context` returned the three named functions, but the cap of 10 definitions went file by file. The first two files' types took it all, so `coveredGrams` (3 lines, the third bug) was not shown and the agent read it natively. Now:
+  - the definitions are handed out one round at a time across symbols, called functions first, in call order;
+  - the cap is 12.
+  - Replayed on that project, the definition is shown. That replay is on the measured project, so it is a check, not a measurement.
+- **Real-gopls tests skip when `go` cannot run.** A Windows application-control policy blocked `go.exe` on this machine while it still resolved on PATH. NREKI itself reported it correctly: "go validation failed (no views)", and a syntax-only footer.
+
 ## [12.1.0] - 2026-11-13
 
 Security and integrity fixes from the external audits of v12.0.0. Go/Python edits are now checked against their importers. The token cost was reworked and measured with Codex: the `context` action, smaller tool definitions and results, `Class.method` names, an optional Voyage index, and a footer that says when re-running tsc is redundant. **v11.4.2 (`latest`) shares the SEC-01, SEC-02 and SEC-03 code paths and needs the same backport.**

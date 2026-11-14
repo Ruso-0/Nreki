@@ -39,8 +39,12 @@ export class KeywordIndex {
 
     /** Tokenize text into normalized terms with code-aware splitting. */
     private tokenize(text: string): string[] {
-        // FIX 5: Apply code-aware tokenizer before stemming
+        // FIX 5: Apply code-aware tokenizer before stemming.
+        // Accents and ñ are folded first: "configuración" was split into
+        // "configuraci" + "n" and matched neither Spanish comments nor ASCII names.
         const rawTokens = text
+            .normalize("NFD")
+            .replace(/\p{M}/gu, "")
             .replace(/[^a-zA-Z0-9_.]/g, " ")
             .split(/\s+/)
             .filter((t) => t.length > 1);

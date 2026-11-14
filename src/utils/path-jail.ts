@@ -11,34 +11,40 @@ import path from "path";
 
 // ─── Sensitive File Blocklist ───────────────────────────────────────
 
+// `(?:^|[/\\])`: a relative path (".npmrc") matches like an absolute one.
 const SENSITIVE_PATTERNS: RegExp[] = [
     /\.env($|\.)/i,                     // .env, .env.local, .env.production
     /\.envrc($|\.)/i,                   // direnv RCE vector — executes on cd
-    /[/\\]\.git[/\\]hooks[/\\]/i,       // Git hooks — CRITICAL RCE vector (pre-commit, post-merge, etc.)
-    /[/\\]\.claude[/\\]hooks[/\\]/i,    // Claude hooks — CRITICAL RCE vector (PreToolUse injection)
-    /[/\\]\.claude[/\\]settings.*?\.json$/i, // Claude settings (settings.json + settings.local.json) — RCE vector via PreToolUse
+    /(?:^|[/\\])\.git[/\\]hooks[/\\]/i,       // Git hooks — CRITICAL RCE vector (pre-commit, post-merge, etc.)
+    /(?:^|[/\\])\.claude[/\\]hooks[/\\]/i,    // Claude hooks — CRITICAL RCE vector (PreToolUse injection)
+    /(?:^|[/\\])\.claude[/\\]settings.*?\.json$/i, // Claude settings (settings.json + settings.local.json) — RCE vector via PreToolUse
     /(?:^|[/\\])\.mcp\.json$/i,         // MCP config — CRITICAL RCE vector via rogue server injection
-    /[/\\]\.ssh[/\\]/i,                 // .ssh/*
-    /[/\\]\.gnupg[/\\]/i,              // .gnupg/*
-    /[/\\]\.aws[/\\]/i,                // .aws/*
+    // Editor configs that start processes: MCP servers, tasks (runOn: folderOpen), debug launches.
+    /(?:^|[/\\])\.(?:vscode|cursor|windsurf)[/\\](?:mcp|tasks|launch)\.json$/i,
+    /(?:^|[/\\])\.ssh[/\\]/i,                 // .ssh/*
+    /(?:^|[/\\])\.gnupg[/\\]/i,              // .gnupg/*
+    /(?:^|[/\\])\.aws[/\\]/i,                // .aws/*
     /id_rsa/i,                          // SSH RSA keys
     /id_ed25519/i,                      // SSH Ed25519 keys
+    /(?:^|[/\\])id_(?:ec)?dsa(?:\.pub)?$/i, // SSH (EC)DSA keys
     /\.pem$/i,                          // PEM certificates/keys
     /\.key$/i,                          // Private key files
-    /[/\\]\.npmrc$/i,                   // npm auth tokens
-    /[/\\]\.pypirc$/i,                  // PyPI auth tokens
-    /[/\\]\.git[/\\]credentials$/i,     // Git credential store
-    /[/\\]\.git[/\\]config$/i,          // Git config (may contain tokens)
-    /[/\\]\.docker[/\\]config\.json$/i, // Docker auth
-    /[/\\]credentials\.json$/i,         // GCP / generic credentials
-    /[/\\]\.netrc$/i,                   // FTP/HTTP auth tokens
-    /[/\\]\.htpasswd$/i,               // Apache password file
-    /[/\\]\.git-credentials$/i,         // Git credential file
-    /[/\\]\.kube[/\\]config$/i,         // Kubernetes config
+    /\.(?:pfx|p12|jks|keystore|kdbx)$/i, // key stores, password databases
+    /(?:^|[/\\])\.npmrc$/i,                   // npm auth tokens
+    /(?:^|[/\\])\.yarnrc(?:\.ya?ml)?$/i,      // yarn auth tokens (npmAuthToken)
+    /(?:^|[/\\])\.pypirc$/i,                  // PyPI auth tokens
+    /(?:^|[/\\])\.git[/\\]credentials$/i,     // Git credential store
+    /(?:^|[/\\])\.git[/\\]config$/i,          // Git config (may contain tokens)
+    /(?:^|[/\\])\.docker[/\\]config\.json$/i, // Docker auth
+    /(?:^|[/\\])credentials\.json$/i,         // GCP / generic credentials
+    /(?:^|[/\\])\.netrc$/i,                   // FTP/HTTP auth tokens
+    /(?:^|[/\\])\.htpasswd$/i,               // Apache password file
+    /(?:^|[/\\])\.git-credentials$/i,         // Git credential file
+    /(?:^|[/\\])\.kube[/\\]config$/i,         // Kubernetes config
     /\.age$/i,                          // age encryption keys
-    /[/\\]\.age[/\\]/i,                // age key directories (recipients, identities)
-    /[/\\]vault-token$/i,               // HashiCorp Vault token
-    /[/\\]\.terraform[/\\]/i,           // Terraform state (may contain secrets)
+    /(?:^|[/\\])\.age[/\\]/i,                // age key directories (recipients, identities)
+    /(?:^|[/\\])vault-token$/i,               // HashiCorp Vault token
+    /(?:^|[/\\])\.terraform[/\\]/i,           // Terraform state (may contain secrets)
 ];
 
 function normalizeForRootCheck(filePath: string): string {
@@ -49,6 +55,32 @@ function isInsideRoot(candidatePath: string, rootPath: string): boolean {
     const candidate = normalizeForRootCheck(candidatePath);
     const root = normalizeForRootCheck(rootPath);
     return candidate.startsWith(root + path.sep) || candidate === root;
+}
+
+/**
+ * Why NREKI must not write or delete `target` on its own (`nreki init`,
+ * `deinit`, the hook upgrade at server start), or null. It must be inside
+ * `root`, and neither it nor a folder between it and `root` may be a symbolic
+ * link: a cloned repository can ship `.claude/hooks/nreki-enforcer.mjs ->
+ * ~/.bashrc`, and writing through that link rewrote the target.
+ */
+export function unsafeWriteTarget(root: string, target: string): string | null {
+    const absRoot = path.resolve(root);
+    let current = path.resolve(absRoot, target);
+    if (!isInsideRoot(current, absRoot) || normalizeForRootCheck(current) === normalizeForRootCheck(absRoot)) {
+        return "outside the project";
+    }
+    while (normalizeForRootCheck(current) !== normalizeForRootCheck(absRoot)) {
+        try {
+            if (fs.lstatSync(current).isSymbolicLink()) return "a symbolic link";
+        } catch (err) {
+            if ((err as NodeJS.ErrnoException).code !== "ENOENT") return "not readable";
+        }
+        const parent = path.dirname(current);
+        if (parent === current) return "outside the project";
+        current = parent;
+    }
+    return null;
 }
 
 /**

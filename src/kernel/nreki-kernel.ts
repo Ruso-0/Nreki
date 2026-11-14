@@ -479,7 +479,7 @@ export class NrekiKernel {
                     const content = self.vfs.get(posixPath);
                     return content === null ? undefined : content;
                 }
-                if (isSensitivePath(fileName)) {
+                if (isSensitivePath(posixPath)) {
                     return undefined;
                 }
                 // Fallback to disk via backend's original readFile
@@ -489,7 +489,7 @@ export class NrekiKernel {
             fileExists(fileName: string): boolean {
                 const posixPath = self.toPosix(path.resolve(self.projectRoot, fileName));
                 // Consistent with readFile(): sensitive files do not exist for the compiler.
-                if (isSensitivePath(fileName)) return false;
+                if (isSensitivePath(posixPath)) return false;
 
                 if (self.mode === "hologram") {
                     if (self.currentEditTargets.has(posixPath)) {
@@ -561,7 +561,7 @@ export class NrekiKernel {
                     return ts.ScriptSnapshot.fromString(content);
                 }
                 // NREKI-SEC-05: the LanguageService reads through here, not readFile().
-                if (isSensitivePath(fileName)) return undefined;
+                if (isSensitivePath(posixPath)) return undefined;
                 if (!self.tsBackend.originalFileExists.call(self.tsBackend.host, fileName)) return undefined;
                 const content = self.tsBackend.originalReadFile.call(self.tsBackend.host, fileName);
                 if (!content) return undefined;
@@ -621,6 +621,24 @@ export class NrekiKernel {
 
     public isBooted(): boolean {
         return this.booted;
+    }
+
+    /**
+     * Project-relative POSIX paths of the program's files that import `files`,
+     * resolved by the compiler (aliases included). null: not available.
+     */
+    public async findTypeScriptImporters(files: string[]): Promise<string[] | null> {
+        if (!this.booted || files.length === 0) return null;
+        return this.mutex.withLock(async () => {
+            try {
+                this.tsBackend.updateProgram();
+                const targets = new Set(files.map(f => this.toPosix(path.resolve(this.projectRoot, f))));
+                const found = this.tsBackend.importersOf(targets);
+                return found ? found.map(f => this.toPosix(path.relative(this.projectRoot, f))) : null;
+            } catch {
+                return null;
+            }
+        });
     }
 
     // ─── TTRD: Temporal Type Regression Detection ─────────────────────
@@ -797,16 +815,18 @@ export class NrekiKernel {
                 && surfaceFiles.size > 0 && edits.every(e => e.proposedContent !== null)
                 ? this.tsBackend.declarationSurface(surfaceFiles, this.mode === "file")
                 : null;
-            const compareSurface = (): { exportedApiUnchanged?: boolean; declaresGlobals?: boolean } => {
+            const compareSurface = (): { exportedApiUnchanged?: boolean; declaresGlobals?: boolean; programChanged?: boolean } => {
                 const post = preSurface ? this.tsBackend.declarationSurface(surfaceFiles, this.mode === "file") : null;
                 if (!preSurface || !post) return {};
+                // A file entering or leaving the program (an import added or removed)
+                // can change what every other file sees: nothing can be claimed.
+                const programChanged = this.mode === "file" && preSurface.programFiles !== post.programFiles;
                 let exportedApiUnchanged: boolean | undefined;
-                if (preSurface.declarations !== null && post.declarations !== null
-                    && preSurface.programFiles === post.programFiles) {
+                if (preSurface.declarations !== null && post.declarations !== null && !programChanged) {
                     exportedApiUnchanged = preSurface.declarations === post.declarations;
                 }
                 const declaresGlobals = exportedApiUnchanged !== true && (preSurface.globalScope || post.globalScope);
-                return { exportedApiUnchanged, declaresGlobals: declaresGlobals || undefined };
+                return { exportedApiUnchanged, declaresGlobals: declaresGlobals || undefined, programChanged: programChanged || undefined };
             };
 
             // TTRD SINTÁCTICO PRE-SCAN: Python/Go
@@ -968,7 +988,7 @@ export class NrekiKernel {
                     const postContracts = await this.tsBackend.extractCanonicalTypes(finalEditedFiles);
                     const regressions = this.tsBackend.computeTypeRegressions(preContracts, postContracts);
                     // The healer also edited other files: never claim an unchanged API here.
-                    const { declaresGlobals } = compareSurface();
+                    const { declaresGlobals, programChanged } = compareSurface();
 
                     this.restoreHologramVeil(temporarilyUnveiled);
 
@@ -995,6 +1015,7 @@ export class NrekiKernel {
                         degradedLanguages,
                         lspCoverage,
                         declaresGlobals,
+                        programChanged,
                     };
                 }
                 // ─── END Auto-Healing ────────────────────────────────────
@@ -1424,6 +1445,10 @@ export class NrekiKernel {
         let remainingLspErrors: NrekiStructuredError[] = lspOnlyErrors;
         if (isFullyHealed && lspOnlyErrors.length > 0) {
             const errorsBySidecar = new Map<LspSidecarBase, NrekiStructuredError[]>();
+            // An error no backend can fix (a global TypeScript diagnostic, the cascade
+            // limit) stays an error. It used to be dropped here, and the edit was
+            // reported as auto-healed with no fix applied.
+            const unhealable: NrekiStructuredError[] = [];
             for (const err of lspOnlyErrors) {
                 const ext = path.extname(err.file).toLowerCase();
                 const sidecar = this.lspSidecars.get(ext);
@@ -1431,9 +1456,16 @@ export class NrekiKernel {
                     const arr = errorsBySidecar.get(sidecar) || [];
                     arr.push(err);
                     errorsBySidecar.set(sidecar, arr);
+                } else {
+                    unhealable.push(err);
                 }
             }
-            remainingLspErrors = [];
+            remainingLspErrors = [...unhealable];
+            if (unhealable.length > 0) {
+                isFullyHealed = false;
+                for (const errors of errorsBySidecar.values()) remainingLspErrors.push(...errors);
+                errorsBySidecar.clear(); // the edit is rejected anyway: no LSP fix is tried
+            }
             for (const [sidecar, errors] of errorsBySidecar.entries()) {
                 const lspContext: LspHealingContext = {
                     languageId: sidecar.languageId,

@@ -41,6 +41,8 @@ import { CognitiveEnforcer } from "./hooks/cognitive-enforcer.js";
 import { NrekiKernel } from "./kernel/nreki-kernel.js";
 import { ChronosMemory } from "./chronos-memory.js";
 import { logger } from "./utils/logger.js";
+import { unsafeWriteTarget } from "./utils/path-jail.js";
+import { upgradeEnforcerHook } from "./init/hook-upgrade.js";
 import { detectMode as detectModePure } from "./detect-mode.js";
 
 // Patch 7 (v10.6.1): shape of .claude/settings.json. Kept loose on unknown
@@ -110,10 +112,16 @@ if (args[0] === "deinit") {
     logger.info("Uninstalling NREKI hooks and configuration...");
     const cwd = process.cwd();
     let modified = false;
+    // Never through a symbolic link, never outside the project (unsafeWriteTarget).
+    const touchable = (p: string): boolean => {
+        const why = unsafeWriteTarget(cwd, p);
+        if (why) logger.warn(`${path.relative(cwd, p)} is ${why}: not touched.`);
+        return why === null;
+    };
 
     // 1. Clean settings.json — remove PreToolUse entries referencing nreki-enforcer
     const claudeSettingsPath = path.join(cwd, ".claude", "settings.json");
-    if (fs.existsSync(claudeSettingsPath)) {
+    if (fs.existsSync(claudeSettingsPath) && touchable(claudeSettingsPath)) {
         try {
             const raw = fs.readFileSync(claudeSettingsPath, "utf-8").replace(/^\uFEFF/, "");
             const settings = JSON.parse(raw) as ClaudeSettings;
@@ -143,7 +151,7 @@ if (args[0] === "deinit") {
 
     // 2. Delete enforcer hook script
     const hookPath = path.join(cwd, ".claude", "hooks", "nreki-enforcer.mjs");
-    if (fs.existsSync(hookPath)) {
+    if (fs.existsSync(hookPath) && touchable(hookPath)) {
         try {
             fs.unlinkSync(hookPath);
             logger.info("Deleted .claude/hooks/nreki-enforcer.mjs");
@@ -155,7 +163,7 @@ if (args[0] === "deinit") {
 
     // 3. Clean CLAUDE.md — strip only NREKI block, preserve user's own rules
     const claudeMdPath = path.join(cwd, "CLAUDE.md");
-    if (fs.existsSync(claudeMdPath)) {
+    if (fs.existsSync(claudeMdPath) && touchable(claudeMdPath)) {
         try {
             const content = fs.readFileSync(claudeMdPath, "utf-8").replace(/^\uFEFF/, "");
             const markerIndex = content.indexOf("# NREKI ACTIVE");
@@ -177,7 +185,7 @@ if (args[0] === "deinit") {
 
     // 4. Clean AGENTS.md — strip only NREKI block, preserve user own rules
     const agentsMdPath = path.join(cwd, "AGENTS.md");
-    if (fs.existsSync(agentsMdPath)) {
+    if (fs.existsSync(agentsMdPath) && touchable(agentsMdPath)) {
         try {
             const content = fs.readFileSync(agentsMdPath, "utf-8").replace(/^\uFEFF/, "");
             const nrekiMarker = "# Instructions for AI coding agents consuming NREKI via MCP";
@@ -206,7 +214,7 @@ if (args[0] === "deinit") {
 
     // 5. Clean SKILL.md — strip only NREKI block, preserve user own rules
     const skillMdPath = path.join(cwd, "SKILL.md");
-    if (fs.existsSync(skillMdPath)) {
+    if (fs.existsSync(skillMdPath) && touchable(skillMdPath)) {
         try {
             const content = fs.readFileSync(skillMdPath, "utf-8").replace(/^\uFEFF/, "");
             const nrekiMarker = "name: nreki-optimizer";
@@ -468,8 +476,10 @@ server.registerTool(
             "nreki_code",
             args.action,
             () => handleCode(args.action, params, deps),
-            args.path,
-            args.symbol,
+            // batch_edit names its targets in edits: without them the breaker told
+            // the agent to rewrite "the failing symbol" in "the current file".
+            args.path ?? args.edits?.[0]?.path,
+            args.symbol ?? args.edits?.[0]?.symbol,
             chronos,
         );
     },
@@ -600,24 +610,13 @@ async function main(): Promise<void> {
     // v12.1.0: also upgrade the unmodified v1 enforcer (MultiEdit bypass, symlinks,
     // hard block when NREKI is down) and the unreleased v2 (blocked edits and
     // partial reads, costing turns) to v3. Hooks the user customized are left alone.
+    // Only a stock NREKI hook, never through a symbolic link (see hook-upgrade.ts).
     try {
-        const hookScriptPath = path.join(process.cwd(), ".claude", "hooks", "nreki-enforcer.mjs");
-        if (fs.existsSync(hookScriptPath)) {
-            const currentHook = fs.readFileSync(hookScriptPath, "utf-8");
-            const isCurrent = currentHook.includes("nreki-enforcer:v3");
-            const isLegacy = !currentHook.includes("cwdPosix");
-            const isStockV1 = !currentHook.includes("nreki-enforcer:v") &&
-                currentHook.includes("/^(Write|Edit|Replace)(File)?$/i");
-            const isV2 = currentHook.includes("nreki-enforcer:v2");
-            if (!isCurrent && (isLegacy || isStockV1 || isV2)) {
-                const upstreamHook = fs.readFileSync(
-                    new URL("../templates/hooks/nreki-enforcer.mjs", import.meta.url),
-                    "utf-8",
-                );
-                fs.writeFileSync(hookScriptPath, upstreamHook, "utf-8");
-                logger.info("Auto-patched legacy nreki-enforcer hook for security.");
-            }
-        }
+        const upgrade = upgradeEnforcerHook(process.cwd(), () => fs.readFileSync(
+            new URL("../templates/hooks/nreki-enforcer.mjs", import.meta.url), "utf-8",
+        ));
+        if (upgrade === "upgraded") logger.info("Auto-patched legacy nreki-enforcer hook for security.");
+        if (upgrade === "unsafe-path") logger.warn(".claude/hooks/nreki-enforcer.mjs is a symbolic link or leaves the project: not upgraded.");
     } catch { /* Fail silently, never block boot */ }
 
     // Connect and serve

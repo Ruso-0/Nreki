@@ -39,9 +39,18 @@ interface FilePassport {
     focusedSymbols: Set<string>;
 }
 
-/** Read `redeem`, edit `RecoveryCodes.redeem` (or the other way round): the same symbol. */
+/**
+ * Was `symbol` read? Read `redeem`, edit `RecoveryCodes.redeem`: yes, the bare
+ * read showed it. Read `RecoveryCodes.redeem`, edit `redeem`: yes (the edit
+ * refuses a bare name that two classes define). Read `RecoveryCodes.redeem`,
+ * edit `InviteCodes.redeem`: no — a read used to register the bare member too,
+ * which unlocked every class's `redeem`.
+ */
 function sawSymbol(pass: FilePassport, symbol: string): boolean {
-    return pass.focusedSymbols.has(symbol) || pass.focusedSymbols.has(memberName(symbol));
+    if (pass.focusedSymbols.has(symbol)) return true;
+    if (memberName(symbol) !== symbol) return pass.focusedSymbols.has(memberName(symbol));
+    for (const seen of pass.focusedSymbols) if (memberName(seen) === symbol) return true;
+    return false;
 }
 
 interface EnforcerState {
@@ -279,10 +288,7 @@ export class CognitiveEnforcer {
                     // v10.13.1: parse CSV — "A, B, C" registra los tres símbolos separados.
                     for (const raw of params.focus.split(",")) {
                         const clean = raw.trim();
-                        if (clean) {
-                            this.getPassport(p).focusedSymbols.add(clean);
-                            this.getPassport(p).focusedSymbols.add(memberName(clean));
-                        }
+                        if (clean) this.getPassport(p).focusedSymbols.add(clean);
                     }
                     this.getPassport(p).outlined = true;
                     changed = true;

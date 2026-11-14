@@ -227,9 +227,13 @@ export function wrapWithCircuitBreaker(
             if (loopCheck.tripped) {
                 if (chronos && filePath) chronos.recordTrip(filePath, loopCheck.reason);
                 if (loopCheck.level < 3) cb.softReset();
-                return generateBreakerResponse(
+                const breaker = generateBreakerResponse(
                     loopCheck.level, symbolName ?? null, filePath ?? null, loopCheck.reason,
                 );
+                // Keep the error that tripped it: it was replaced by the redirect,
+                // and the agent lost the compiler's message it needed to change course.
+                const redirect = breaker.content.map(c => c.text ?? "").join("\n");
+                return { content: [{ type: "text" as const, text: `${responseText}\n\n${redirect}` }], isError: true };
             }
         } else {
             cb.recordToolCall(toolAction, "", filePath, symbolName);

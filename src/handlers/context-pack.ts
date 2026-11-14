@@ -9,11 +9,13 @@
  *   1. every symbol the task names, verbatim, with path and line range;
  *   2. where the identifiers that are not symbols (fields, properties) occur,
  *      and, when the task names no symbol, the code that holds them;
- *   3. for a task that names neither, the best `search` hits (BM25, fused
- *      with the Voyage index when it is enabled), one search per issue when
- *      the task lists several, and a small file found that way shown whole;
+ *   3. for every issue of the task that names no code, the best `search` hits
+ *      (BM25, fused with the Voyage index when it is enabled), one search per
+ *      issue, and a small file found that way shown whole; an issue with no
+ *      hit is listed as such;
  *   4. per file, who imports it (what an API change can break);
  *   5. the short definitions (≤ 6 lines) of what the shown code imports.
+ * `path` narrows all of it to a folder or file of the project.
  *
  * 3 and 5 come from the pre-registered A/B of 2026-11-13 (tasks that name no
  * code): after `context` the agents still spent 2 turns reading — the third
@@ -22,6 +24,7 @@
  * (money.ts, clock.ts) before editing.
  */
 
+import fs from "fs";
 import path from "path";
 import type { McpToolResponse, NavigateParams, RouterDependencies } from "../router.js";
 import type { ChunkRecord } from "../database.js";
@@ -50,7 +53,7 @@ const WHOLE_FILE_LINES = 80;
 const WHOLE_FILE_TOKENS = 900;
 /** Imported definitions shown under the code: short ones only, and few. */
 const HELPER_MAX_LINES = 6;
-const HELPERS_MAX = 10;
+const HELPERS_MAX = 12;
 /** Parts of a task searched one by one, and the hits kept per part. */
 const ISSUES_MAX = 6;
 const HITS_PER_ISSUE = 3;
@@ -65,7 +68,21 @@ const TASK_WORDS = new Set([
     "resuelve", "resolver", "incidencia", "incidencias", "corrige", "corregir", "arregla", "arreglar", "modifica",
     "modificar", "solo", "debe", "deben", "dos", "tres", "cuatro", "cinco", "código", "archivo", "archivos",
     "cambia", "cambies", "conserva", "resto", "sigue", "ejecuta", "verifica", "prueba", "pruebas", "leas",
+    "preserve", "preserving", "conservar", "conservando", "mantener", "manteniendo",
 ]);
+
+/**
+ * "Do not read the checker", "No leas el checker", "Nunca toques…": an
+ * instruction, not an issue. Spanish verbs are listed: "no" + any word ending
+ * in -as/-es also dropped issues such as "No todas las facturas…".
+ */
+const NEGATIVE_IMPERATIVE = new RegExp(
+    "^(?:do\\s+not|don['’]t|never|nunca|jam[aá]s|no\\s+(?:" +
+    "leas?|lean|modifiques?|modifiquen|toques?|toquen|cambies?|cambien|uses?|usen|ejecutes?|ejecuten|" +
+    "abras?|abran|inspecciones?|inspeccionen|busques?|busquen|edites?|editen|borres?|borren|elimines?|eliminen|" +
+    "delegues?|deleguen|instales?|instalen|accedas?|accedan|consultes?|consulten|mires?|miren))(?=[\\s,.;:]|$)",
+    "iu",
+);
 
 /** Words that are symbol names in many codebases and plain words in a task. */
 const GENERIC_WORDS = new Set([
@@ -86,22 +103,36 @@ interface Picked {
     rank: number;
 }
 
-/** Identifiers in the task: code-shaped ones are strong, plain words are weak. */
-export function extractTaskIdentifiers(task: string): { strong: string[]; weak: string[]; pathHints: string[] } {
+/**
+ * Identifiers in the task: code-shaped ones are strong, plain words are weak.
+ * `capitalized` lists the strong ones that are only a capitalized word
+ * ("Station", "Fix", "Percentiles"): a type name, or the first word of a
+ * sentence. They are looked up, but never stand for the code of an issue. In
+ * the third Codex holdout "Station settings …" matched the `Station` type and
+ * no issue was searched: 0 of 3 files, then 5 and 7 reads.
+ */
+export function extractTaskIdentifiers(rawTask: string): { strong: string[]; weak: string[]; pathHints: string[]; capitalized: string[] } {
+    // "Configuración" was cut at the accent into "Configuraci" + "n".
+    const task = rawTask.normalize("NFD").replace(/\p{M}/gu, "");
     const strong = new Set<string>();
     const weak = new Set<string>();
-    // `inBackticks` and call-like `name(` are written as code.
+    const capitalized = new Set<string>();
+    // `inBackticks`, call-like `name(` and `Class.method` are written as code.
     for (const m of task.matchAll(/`([^`\n]{1,80})`/g)) {
         for (const w of m[1].match(/[A-Za-z_$][\w$]*/g) ?? []) if (w.length >= 3) strong.add(w);
     }
     for (const m of task.matchAll(/([A-Za-z_$][\w$]*)\s*\(/g)) if (m[1].length >= 3) strong.add(m[1]);
+    for (const m of task.matchAll(/\b[A-Z][\w$]*(?:\.|::|#|->)[A-Za-z_$][\w$]*/g)) {
+        for (const w of m[0].split(/\.|::|#|->/)) if (w.length >= 3) strong.add(w);
+    }
     for (const w of task.match(/[A-Za-z_$][\w$]*/g) ?? []) {
         if (w.length < 3 || strong.has(w)) continue;
         // camelCase, PascalCase with an inner capital, snake_case, digits, $: written as code.
         if (/[a-z][A-Z]/.test(w) || /^[A-Z][a-z0-9]+[A-Z]/.test(w) || /_/.test(w) || /\d/.test(w) || w.includes("$")) {
             strong.add(w);
         } else if (/^[A-Z][a-z0-9]+$/.test(w)) {
-            strong.add(w); // a capitalized single word: a type or class name more often than not
+            strong.add(w);
+            capitalized.add(w);
         } else if (!GENERIC_WORDS.has(w.toLowerCase())) {
             weak.add(w);
         }
@@ -109,24 +140,26 @@ export function extractTaskIdentifiers(task: string): { strong: string[]; weak: 
     const pathHints = [...new Set((task.match(/[\w.-]*[/\\-][\w./\\-]*/g) ?? [])
         .map(h => h.replace(/\\/g, "/").replace(/^[./]+|[./]+$/g, "").toLowerCase())
         .filter(h => h.length >= 3))];
-    return { strong: [...strong], weak: [...weak], pathHints };
+    return { strong: [...strong], weak: [...weak], pathHints, capitalized: [...capitalized] };
 }
 
 /**
  * The issues of a task that lists several, each with at least 3 words that can
  * point at code. The coarsest split that gives two or more wins: list items
- * (`1.`, `-`), else lines, else `;`, else sentences — so an item is not cut at
- * its own `;`, and the instructions around a list are not issues. One part: [].
+ * (`1.`, `-`), else lines, else sentences, else `;` — so an item is not cut at
+ * its own `;`, nor a sentence (a paragraph with one issue per sentence and a
+ * `;` inside one was cut in two). Instructions are not issues: parts with no
+ * words that point at code, and negative imperatives ("Do not read …"). One part: [].
  */
 export function splitTaskIssues(task: string): string[] {
     const contentWords = (part: string): number => (part.match(/[\p{L}_$][\p{L}\p{N}_$]*/gu) ?? [])
         .filter(w => w.length >= 3 && !GENERIC_WORDS.has(w.toLowerCase()) && !TASK_WORDS.has(w.toLowerCase())).length;
     const keep = (parts: string[]): string[] => parts
         .map(p => p.replace(/^\s*(?:\d+[.)]|[-*•])\s*/, "").trim())
-        .filter(p => contentWords(p) >= 3);
+        .filter(p => contentWords(p) >= 3 && !NEGATIVE_IMPERATIVE.test(p));
     const lines = task.split(/\r?\n/);
     const items = lines.filter(l => /^\s*(?:\d+[.)]|[-*•])\s+/.test(l));
-    for (const parts of [items, lines, task.split(";"), task.split(/(?<=[.!?])\s+/)]) {
+    for (const parts of [items, lines, task.split(/(?<=[.!?])\s+/), task.split(";")]) {
         const issues = keep(parts);
         if (issues.length >= 2) return issues.slice(0, ISSUES_MAX);
     }
@@ -139,17 +172,23 @@ export function splitTaskIssues(task: string): string[] {
  * whole task gave all its hits to the first two issues). After each issue's
  * hits, the file where they meet (see meetingFile).
  */
-async function searchTask(engine: NrekiEngine, root: string, task: string): Promise<{ hits: ChunkRecord[]; files: Set<string>; issues: number }> {
-    const issues = splitTaskIssues(task);
-    if (issues.length === 0) {
-        const all = await engine.search(task, 6);
+async function searchTask(
+    engine: NrekiEngine, root: string, issues: string[], scope: Scope,
+): Promise<{ hits: ChunkRecord[]; files: Set<string>; empty: string[] }> {
+    // A scope drops hits: ask for more, keep the first k inside it.
+    const find = async (query: string, k: number): Promise<SearchResult[]> => {
+        const found = await engine.search(query, scope ? k * 3 : k);
+        return (scope ? found.filter(r => scope(r.path)) : found).slice(0, k);
+    };
+    if (issues.length === 1) {
+        const all = await find(issues[0], 6);
         const hits = all.slice(0, 4).map(fromSearch);
-        const meeting = await meetingFile(engine, root, all.slice(0, 4));
+        const meeting = await meetingFile(engine, root, all.slice(0, 4), scope);
         if (meeting) hits.push(meeting);
-        return { hits, files: new Set(all.map(r => r.path)), issues: 1 };
+        return { hits, files: new Set(all.map(r => r.path)), empty: all.length === 0 ? issues : [] };
     }
     const lists: SearchResult[][] = [];
-    for (const issue of issues) lists.push(await engine.search(issue, 4)); // sequential: Voyage rate limits
+    for (const issue of issues) lists.push(await find(issue, 4)); // sequential: Voyage rate limits
     // 3 per issue: the code to edit was 3rd in 2 of the 6 A/B issues (BM25 and
     // Voyage alike). A small file more is ~250 tokens; a missed one, a read turn.
     const hits: ChunkRecord[] = [];
@@ -157,10 +196,28 @@ async function searchTask(engine: NrekiEngine, root: string, task: string): Prom
         for (const list of lists) if (list[rank]) hits.push(fromSearch(list[rank]));
     }
     for (const list of lists) {
-        const meeting = await meetingFile(engine, root, list);
+        const meeting = await meetingFile(engine, root, list, scope);
         if (meeting) hits.push(meeting);
     }
-    return { hits, files: new Set(lists.flat().map(r => r.path)), issues: issues.length };
+    return { hits, files: new Set(lists.flat().map(r => r.path)), empty: issues.filter((_, i) => lists[i].length === 0) };
+}
+
+/** `path` passed to context: only code under it is shown (agents pass path:"src"). Takes absolute paths. */
+type Scope = ((file: string) => boolean) | null;
+
+function resolveScope(root: string, requested: string | undefined): { scope: Scope; note: string } {
+    const p = requested?.trim();
+    if (!p || p === ".") return { scope: null, note: "" };
+    let prefix: string;
+    try {
+        const abs = safePath(root, p);
+        if (!fs.existsSync(abs)) return { scope: null, note: `path "${p}" not found: the whole project was used` };
+        prefix = relOf(root, abs);
+    } catch {
+        return { scope: null, note: `path "${p}" is not inside the project: the whole project was used` };
+    }
+    if (prefix === "") return { scope: null, note: "" };
+    return { scope: (file: string) => { const rel = relOf(root, file); return rel === prefix || rel.startsWith(prefix + "/"); }, note: "" };
 }
 
 /**
@@ -170,7 +227,7 @@ async function searchTask(engine: NrekiEngine, root: string, task: string): Prom
  * leaves; the bug was in invoice-builder.ts, which imports two of them.
  * Tests and barrels (files that only import/re-export) are not candidates.
  */
-async function meetingFile(engine: NrekiEngine, root: string, list: SearchResult[]): Promise<ChunkRecord | null> {
+async function meetingFile(engine: NrekiEngine, root: string, list: SearchResult[], scope: Scope): Promise<ChunkRecord | null> {
     const hitRels = [...new Set(list.map(r => relOf(root, r.path)))];
     if (hitRels.length < 2) return null;
     const count = new Map<string, number>();
@@ -179,7 +236,7 @@ async function meetingFile(engine: NrekiEngine, root: string, list: SearchResult
         try { importers = await engine.findDependents(rel); } catch { return null; }
         for (const imp of new Set(importers.map(i => i.replace(/\\/g, "/")))) count.set(imp, (count.get(imp) ?? 0) + 1);
     }
-    const ranked = [...count].filter(([rel, n]) => n >= 2 && !isSecondaryPath(rel))
+    const ranked = [...count].filter(([rel, n]) => n >= 2 && !isSecondaryPath(rel) && (!scope || scope(path.resolve(root, rel))))
         .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
     for (const [rel] of ranked) {
         const text = readFileText(root, rel);
@@ -228,6 +285,15 @@ async function importedHelpers(
     const out: string[] = [];
     const used = extractDependencies(fileText, path.extname(file).toLowerCase()).filter(d =>
         new RegExp(`(^|[^\\w$])${escapeRegExp(d.localName)}(?![\\w$])`).test(code));
+    // Functions the code calls first, in the order it calls them; types and
+    // constants after. Import order put the 3-line function holding a bug last.
+    const firstUse = (name: string): number => {
+        const call = new RegExp(`(^|[^\\w$.])${escapeRegExp(name)}\\s*\\(`).exec(code);
+        if (call) return call.index;
+        const any = new RegExp(`(^|[^\\w$])${escapeRegExp(name)}(?![\\w$])`).exec(code);
+        return code.length + (any?.index ?? code.length);
+    };
+    used.sort((a, b) => firstUse(a.localName) - firstUse(b.localName));
     for (const dep of used) {
         const symbol = dep.symbol.replace(/^type\s+/, "");
         if (seen.has(symbol)) continue;
@@ -266,8 +332,10 @@ export async function handleContext(params: NavigateParams, deps: RouterDependen
         return { content: [{ type: "text" as const, text: `Error: context needs query:"<the task or question>".` }], isError: true };
     }
     const root = engine.getProjectRoot();
-    const { strong, weak, pathHints } = extractTaskIdentifiers(task);
+    const { strong, weak, pathHints, capitalized } = extractTaskIdentifiers(task);
     const order = definitionOrder(root, pathHints);
+    const { scope, note: scopeNote } = resolveScope(root, params.path);
+    const inScope = (file: string): boolean => !scope || scope(file);
 
     const picked: Picked[] = [];
     const seen = new Set<string>();
@@ -279,12 +347,15 @@ export async function handleContext(params: NavigateParams, deps: RouterDependen
         picked.push({ chunk: c, via, rank });
     };
 
-    // 1. Symbols the task names.
+    // 1. Symbols the task names. A code-shaped name, or a plain word defined
+    // under a path the task gives, names the code of its issue (rank 2). A
+    // capitalized word or another plain word may only be a word (rank 1).
     const notSymbols: string[] = [];
-    let strongMatched = false;
+    const naming = new Set<string>();
+    const isCapitalized = new Set(capitalized);
     for (const [words, strength] of [[strong.slice(0, STRONG_LOOKUPS), 2], [weak.slice(0, WEAK_LOOKUPS), 1]] as const) {
         for (const word of words) {
-            const defs = (await engine.getChunksBySymbolExact(word, true)).filter(c => c.symbol_name === word);
+            const defs = (await engine.getChunksBySymbolExact(word, true)).filter(c => c.symbol_name === word && inScope(c.path));
             if (defs.length === 0) {
                 if (strength === 2) notSymbols.push(word);
                 continue;
@@ -293,23 +364,37 @@ export async function handleContext(params: NavigateParams, deps: RouterDependen
             // A plain word defined in many places is a word, not a reference.
             const hinted = defs.filter(c => pathHints.some(h => relOf(root, c.path).toLowerCase().includes(h)));
             if (strength === 1 && defs.length > 2 && hinted.length === 0) continue;
-            if (strength === 2) strongMatched = true;
-            for (const c of (hinted.length > 0 ? hinted : defs).slice(0, DEFINITIONS_PER_NAME)) take(c, word, strength);
+            const kept = (hinted.length > 0 ? hinted : defs).slice(0, DEFINITIONS_PER_NAME);
+            const explicit = strength === 2 ? !isCapitalized.has(word) : hinted.length > 0;
+            // A named interface or type is shown, but the behaviour to fix lives in
+            // the code that uses it: "OrderItem discounts round each line" must
+            // still be searched, or context returns the 4-line interface only.
+            const typeOnly = kept.every(c => c.node_type === "interface" || c.node_type === "type");
+            if (explicit && !typeOnly) naming.add(word);
+            for (const c of kept) take(c, word, explicit ? 2 : 1);
         }
     }
 
-    // 1b. Only plain words matched symbols: the task describes behaviour, it does
-    // not name code. A plain word that happens to be a method name ("size",
-    // "missing", "server") used to win over search and returned an unrelated
-    // method (5 of 20 conceptual questions on NREKI's own code). Search leads;
-    // a plain-word match stays only when search also lands in its file.
+    // 1b. Every issue that names no code is searched (top 3 each). A plain word
+    // that is also a method name ("size", "missing", "server") used to win over
+    // search (5 of 20 conceptual questions on NREKI's own code), and one named
+    // type used to stand for a whole three-issue task (third Codex holdout). A
+    // rank-1 match stays only when search lands in its file.
+    const taskIssues = splitTaskIssues(task);
+    const issueTexts = taskIssues.length > 0 ? taskIssues : [task];
+    const issueCount = issueTexts.length;
+    const mentions = (text: string, word: string): boolean =>
+        new RegExp(`(^|[^\\w$])${escapeRegExp(word)}(?![\\w$])`).test(text);
+    const unnamed = issueTexts.filter(t => ![...naming].some(w => mentions(t, w)));
     let conceptual = false;
-    let issueCount = 1;
-    if (!strongMatched && picked.length > 0) {
+    let searched: string[] = [];
+    let unfound: string[] = [];
+    if (picked.length > 0 && unnamed.length > 0) {
         conceptual = true;
-        const { hits, files, issues } = await searchTask(engine, root, task);
-        issueCount = issues;
-        const kept = picked.filter(p => files.has(p.chunk.path));
+        searched = unnamed;
+        const { hits, files, empty } = await searchTask(engine, root, unnamed, scope);
+        unfound = empty;
+        const kept = picked.filter(p => p.rank === 2 || files.has(p.chunk.path));
         picked.length = 0;
         seen.clear();
         for (const p of kept) take(p.chunk, p.via, p.rank);
@@ -328,6 +413,7 @@ export async function handleContext(params: NavigateParams, deps: RouterDependen
         const at: string[] = [];
         const lines = new Set<string>();
         for (const h of hits) {
+            if (!inScope(h.path)) continue;
             const rel = relOf(root, h.path);
             const rows = h.raw_code.split("\n");
             let inChunk = false;
@@ -363,8 +449,9 @@ export async function handleContext(params: NavigateParams, deps: RouterDependen
     let viaSearch = false;
     if (picked.length === 0) {
         viaSearch = true;
-        const { hits, issues } = await searchTask(engine, root, task);
-        issueCount = issues;
+        searched = issueTexts;
+        const { hits, empty } = await searchTask(engine, root, issueTexts, scope);
+        unfound = empty;
         for (const r of hits) take(r, "search", 0);
     }
 
@@ -377,7 +464,7 @@ export async function handleContext(params: NavigateParams, deps: RouterDependen
     // 5. Render: most relevant first, then by file. Over budget → one-line pointers.
     // The default grows with the issues of the task (up to 3): one issue's worth each.
     const budget = Math.min(CONTEXT_MAX_BUDGET, Math.max(300, Math.floor(
-        params.token_budget ?? CONTEXT_DEFAULT_BUDGET * Math.min(3, issueCount))));
+        params.token_budget ?? CONTEXT_DEFAULT_BUDGET * Math.min(3, searched.length > 0 ? issueCount : 1))));
     kept.sort((a, b) => b.rank - a.rank || order(a.chunk, b.chunk));
     const byFile = new Map<string, Picked[]>();
     for (const p of kept) {
@@ -437,7 +524,8 @@ export async function handleContext(params: NavigateParams, deps: RouterDependen
             used += cost;
             blocks.push(`${header}\n${body}`);
             const names = shownByFile.get(file) ?? [];
-            if (c.symbol_name) names.push(c.symbol_name);
+            // A symbol cut to its first line was not read: it must not unlock a blind replace.
+            if (c.symbol_name && lineCount <= VERBATIM_MAX_LINES) names.push(c.symbol_name);
             shownByFile.set(file, names);
             if (fileText !== null && lineCount <= VERBATIM_MAX_LINES) shownCode.push({ file, text: fileText, code: c.raw_code });
         }
@@ -445,14 +533,22 @@ export async function handleContext(params: NavigateParams, deps: RouterDependen
 
     // What the shown code imports, when it is short: in the A/B the agents
     // opened money.ts and clock.ts for a 3-line percentOf and a constant.
-    const helpers: string[] = [];
+    // Shared among the symbols shown, one round at a time: given file by file,
+    // the first two symbols' types took the whole cap, and the 3-line function
+    // holding the third bug was never shown (measured pair of 2026-11-14).
     const helperSeen = new Set(kept.map(p => p.chunk.symbol_name).filter(Boolean));
+    const perSymbol: string[][] = [];
     for (const { file, text, code } of shownCode) {
-        if (helpers.length >= HELPERS_MAX) break;
         const uses = code.split("\n").filter(l => !/^\s*(?:import|from)\s/.test(l)).join("\n");
-        for (const h of await importedHelpers(engine, root, file, text, uses, wholeShown, helperSeen)) {
+        perSymbol.push(await importedHelpers(engine, root, file, text, uses, wholeShown, helperSeen));
+    }
+    const helpers: string[] = [];
+    for (let round = 0; helpers.length < HELPERS_MAX && perSymbol.some(list => list.length > round); round++) {
+        for (const list of perSymbol) {
+            const h = list[round];
+            if (!h || helpers.length >= HELPERS_MAX) continue;
             const cost = estimateTokens(h) + 1;
-            if (helpers.length >= HELPERS_MAX || used + cost > budget) break;
+            if (used + cost > budget) continue;
             used += cost;
             helpers.push(h);
         }
@@ -462,7 +558,8 @@ export async function handleContext(params: NavigateParams, deps: RouterDependen
         return {
             content: [{
                 type: "text" as const,
-                text: `context: nothing in the index matches this task. Try fast_grep with an exact string, or search with other words.`,
+                text: `context: nothing in the index matches this task. Try fast_grep with an exact string, or search with other words.` +
+                    (scopeNote ? ` (${scopeNote})` : ""),
             }],
         };
     }
@@ -479,15 +576,22 @@ export async function handleContext(params: NavigateParams, deps: RouterDependen
         ? "current and complete code; edit it with batch_edit by these symbol names, no further read is needed"
         : "current code; the ones marked with a line count or listed below were not shown whole";
     const wholeNote = wholeShown.size > 0 ? ` — a "whole file" block is the complete current file: no further read of it is needed` : "";
-    parts.push(viaSearch || conceptual
-        ? `context (no symbol named in the task; best search hits${issueCount > 1 ? `, each of its ${issueCount} issues searched` : ""}): ${nSymbols} block(s)${wholeNote}`
-        : viaOccurrence
-            ? `context (no symbol named in the task; code holding the names it mentions): ${nSymbols} block(s) — ${holding}`
-            : `context: ${nSymbols} symbol(s) the task names — ${holding}`);
+    parts.push(conceptual && naming.size > 0
+        ? `context (the symbols the task names, plus best search hits for the ${searched.length} of its ${issueCount} issues that name no code): ${nSymbols} block(s)${wholeNote}`
+        : viaSearch || conceptual
+            ? `context (no symbol named in the task; best search hits${issueCount > 1 ? `, each of its ${issueCount} issues searched` : ""}): ${nSymbols} block(s)${wholeNote}`
+            : viaOccurrence
+                ? `context (no symbol named in the task; code holding the names it mentions): ${nSymbols} block(s) — ${holding}`
+                : `context: ${nSymbols} symbol(s) the task names — ${holding}`);
     if (blocks.length > 0) parts.push("```\n" + blocks.join("\n\n") + "\n```");
     if (helpers.length > 0) parts.push("what that code imports (short definitions):\n```\n" + helpers.join("\n") + "\n```");
     if (occurrences.length > 0) parts.push(occurrences.join("\n"));
     if (pointers.length > 0) parts.push(`over budget, not shown: ${pointers.join("; ")}`);
+    // Say which issues have no evidence, instead of a package that reads as complete.
+    if (unfound.length > 0) {
+        parts.push(`no code found for: ${unfound.map(i => `"${i.length > 70 ? `${i.slice(0, 70)}…` : i}"`).join("; ")}`);
+    }
+    if (scopeNote) parts.push(scopeNote);
     // In the Codex A/Bs agents sent batch_edit alone and ran the checker on the
     // next turn (~20k tokens re-sent); with apply_patch they did both in one cell.
     // Tool descriptions are not sent in code mode, so this result is where it can be said.

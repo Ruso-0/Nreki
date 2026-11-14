@@ -27,6 +27,8 @@ export interface DependentsScope {
     checked: number;
     /** Importers known to exist (≥ checked). */
     total: number;
+    /** Importers this TypeScript program cannot check (another tsconfig, such as tests; plain JS). */
+    notInProgram?: number;
 }
 
 export interface ValidationScope {
@@ -50,6 +52,10 @@ export interface ValidationScope {
     exportedApiUnchanged?: boolean;
     /** The edit touched global declarations: files that never import the edited ones see it. */
     declaresGlobals?: boolean;
+    /** File mode: the edit added or removed files of the program (NrekiInterceptResult). */
+    programChanged?: boolean;
+    /** Files outside the edit that auto-heal patched: their importers were not checked. */
+    healedOthers?: string[];
 }
 
 /** Reason string when Layer 2 is unavailable. */
@@ -111,7 +117,8 @@ export function buildValidationBanner(scope: ValidationScope): string {
             const importers = d?.lookedUp && d.checked > 0
                 ? ` + ${d.checked < d.total ? `${d.checked} of ${d.total}` : d.checked} direct importer(s)`
                 : "";
-            if (scope.exportedApiUnchanged === true) {
+            const healedOthers = scope.healedOthers ?? [];
+            if (scope.exportedApiUnchanged === true && healedOthers.length === 0) {
                 // Same .d.ts, same program files: no other file can type-check differently.
                 checked.push(`TypeScript types on edited file(s)${importers} (${mode} mode; exported API unchanged, no other file affected)`);
                 complete = true;
@@ -119,6 +126,15 @@ export function buildValidationBanner(scope: ValidationScope): string {
                 // Files that use a global never import it: no importer count covers them.
                 checked.push(`TypeScript types on edited file(s)${importers} (${mode} mode)`);
                 caveat = " It changes global declarations: files using them were NOT checked — run tsc before finishing.";
+            } else if (scope.programChanged) {
+                checked.push(`TypeScript types on edited file(s)${importers} (${mode} mode)`);
+                caveat = " It adds or removes files of the program: the other files were NOT checked against it — run tsc before finishing.";
+            } else if (healedOthers.length > 0) {
+                checked.push(`TypeScript types on edited file(s)${importers} (${mode} mode)`);
+                caveat = ` NREKI also auto-fixed ${names(healedOthers)}: their importers were NOT checked — run tsc before finishing.`;
+            } else if (d?.notInProgram) {
+                checked.push(`TypeScript types on edited file(s)${importers} (${mode} mode)`);
+                caveat = ` ${d.notInProgram} importer(s) outside the tsconfig program (another tsconfig, plain JS) NOT checked — run their build/tests before finishing.`;
             } else if (!d || !d.lookedUp) {
                 checked.push(`TypeScript types on edited file(s) only (${mode} mode; dependency graph unavailable)`);
                 caveat = " Importers NOT checked — run tsc before finishing.";

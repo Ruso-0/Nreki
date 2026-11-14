@@ -1,6 +1,6 @@
 # NREKI — Architecture Guide
 
-> **Version:** 12.1.0 (module tables refreshed; line counts are approximate)
+> **Version:** 12.1.1 (module tables refreshed; line counts are approximate)
 > **Author:** Jherson Eddie Tintaya Holguin (Ruso-0)  
 > **Purpose:** MCP server that validates AI agent code edits in RAM before they touch disk.
 
@@ -284,18 +284,17 @@ This reduces compiler load from O(N) to O(M) where M = edited files + direct dep
 
 ---
 
-## Search: T-RAG (Topology-Aware RAG)
+## Search
 
-Nreki's search combines three signals:
+`search` ranks code chunks with three signals:
 
-1. **Vector similarity** — cosine distance on local embeddings (Xenova/transformers)
-2. **BM25 keyword** — code-aware tokenization with Porter stemming
-3. **Topological re-ranking** — boosts results by dependency graph metrics:
-   - `inDegree`: How many files import this symbol
-   - `blastRadius`: How many files would break if this symbol changes
-   - `pageRank`: Structural importance in the dependency DAG
+1. **BM25 keywords** (`src/search/keyword-index.ts`). Tokenization is code-aware: camelCase and snake_case are split, accents are folded, and words are Porter-stemmed. It covers each chunk's code, its file path segments and its leading comments.
+2. **Topology** (`src/engine/searcher.ts`). Results are boosted by dependency-graph gravity and blast radius, with diminishing returns per file.
+3. **Optional Voyage index.** It is bring-your-own-key and off by default (`NREKI_SEMANTIC=voyage`). The dense ranking is fused with BM25 by Reciprocal Rank Fusion (k = 60). Secrets written in ordinary code are blanked before chunks are sent.
 
-Results are fused via **Reciprocal Rank Fusion (RRF)** with k=10.
+There is no local embedding model: ONNX embeddings were removed in v11.0.0, and `hybrid_search` in v12.0.0.
+
+`context` (`src/handlers/context-pack.ts`) builds on these: it returns the symbols the task names, and runs one search per issue that names no code.
 
 ---
 
@@ -306,10 +305,9 @@ Results are fused via **Reciprocal Rank Fusion (RRF)** with k=10.
 - Stores: file metadata, Merkle hashes, chunk text, search indexes
 - Deep-copy isolation between WASM memory and Node.js to prevent SharedArrayBuffer corruption
 
-### Custom Indexes (in-memory)
-- **VectorIndex:** Float32 cosine similarity with binary `.vec` serialization
-- **KeywordIndex:** BM25 with code-aware tokenization (camelCase/snake_case splitting, stopword filtering)
-- Both serialize to SQLite BLOBs for persistence across sessions
+### Indexes
+- **KeywordIndex:** BM25. It is rebuilt in memory from the stored chunk text on the first search of a session.
+- **VectorIndex** (only with Voyage enabled): int8 vectors stored in `.nreki.db`, keyed by the hash of each chunk's text. Restarts and unchanged chunks cost no API call.
 
 ---
 
@@ -319,7 +317,7 @@ Results are fused via **Reciprocal Rank Fusion (RRF)** with k=10.
 All heavy computation uses WASM:
 - `sql.js` instead of `better-sqlite3` (no node-gyp)
 - `web-tree-sitter` instead of native tree-sitter bindings
-- `@xenova/transformers` for local embeddings (ONNX runtime)
+- `tiktoken` (WASM) for token counts
 
 **Why:** npm install with zero compilation. Works on Windows, macOS, Linux without toolchain setup.
 

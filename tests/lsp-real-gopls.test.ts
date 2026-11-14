@@ -13,9 +13,21 @@ import os from "os";
 import path from "path";
 import { NrekiKernel } from "../src/kernel/nreki-kernel.js";
 import { GoLspSidecar } from "../src/kernel/backends/go-sidecar.js";
+import { spawnSync } from "child_process";
 import { resolveExecutable } from "../src/utils/safe-exec.js";
 
-const goplsAvailable = resolveExecutable("gopls") !== null && resolveExecutable("go") !== null;
+/** Found AND runnable: an application-control policy can block go.exe while it still resolves on PATH. */
+function goRuns(): boolean {
+    const go = resolveExecutable("go");
+    if (!go) return false;
+    try {
+        return spawnSync(go, ["version"], { timeout: 15_000, windowsHide: true }).status === 0;
+    } catch {
+        return false;
+    }
+}
+
+const goplsAvailable = resolveExecutable("gopls") !== null && goRuns();
 
 const MAIN = "package main\n\nfunc main() {\n\tprintln(helper())\n}\n";
 // helper() carries an error from the start: the file never compiled.

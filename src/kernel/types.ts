@@ -42,6 +42,8 @@ export interface NrekiInterceptResult {
     exportedApiUnchanged?: boolean;
     /** The edit touched global declarations (script file, `declare global`, `declare module "x"`): files that never import the edited ones see it. */
     declaresGlobals?: boolean;
+    /** File mode: the program gained or lost files (an import added or removed): other files may see a different program. */
+    programChanged?: boolean;
 }
 
 /**

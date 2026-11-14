@@ -2,7 +2,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/npm/v/@ruso-0/nreki?style=for-the-badge&color=blue" alt="npm version">
-  <img src="https://img.shields.io/badge/Tests-1664-brightgreen?style=for-the-badge" alt="1664 Tests">
+  <img src="https://img.shields.io/badge/Tests-1699-brightgreen?style=for-the-badge" alt="1699 Tests">
   <img src="https://img.shields.io/badge/AHI-9.7%2F10-brightgreen?style=for-the-badge" alt="AHI 9.7/10">
   <img src="https://img.shields.io/badge/Languages-TS%20%7C%20JS%20%7C%20Go%20%7C%20Python%20%7C%20Kotlin%20%7C%20Java%20%7C%20C%2B%2B-blue?style=for-the-badge" alt="Multi-language">
   <img src="https://img.shields.io/badge/Cloud-Zero-orange?style=for-the-badge" alt="Zero Cloud by default">
@@ -11,7 +11,17 @@
 
 **MCP plugin that validates AI agent edits in RAM before they touch disk.** When Claude Code, Cursor, or Copilot changes a function signature in one file and breaks 30 others, NREKI catches it in milliseconds - the file is never written. If the error is structural (missing import, forgotten `await`), NREKI auto-fixes it in RAM. Zero tokens wasted on fix-retry doom loops.
 
-**v12.1.0 — fewer turns, honest footers.** `nreki_navigate action:"context"` returns, in one call, the code a task names; for a task that names no code it returns the best hits of each issue. The `[Validated]` footer says when re-running tsc is redundant. `Class.method` names work everywhere, and an optional Voyage index adds semantic search. Measured with Codex on a new project: 33 % fewer tokens (one project, three pairs; see [Token cost](#token-cost)). Also included are the fixes from two external security and integrity audits. See [CHANGELOG.md](CHANGELOG.md#1210---2026-11-13).
+**v12.1.1 — context finds every issue, safer by default.**
+- `context` searches every issue that names no code: a named type or a capitalized word no longer cancels that search. `path` scopes it.
+- Importers are resolved the way the compiler resolves them, tsconfig aliases included, so the footer no longer calls an unchecked importer "no importers".
+- Fixes from an external audit:
+  - no writes through symbolic links;
+  - more sensitive files blocked;
+  - secrets blanked before code is sent to the optional Voyage index;
+  - auto-heal no longer reports fixes it did not make.
+- See [CHANGELOG.md](CHANGELOG.md#1211---2026-11-14).
+
+**v12.1.0 — fewer turns, honest footers.** `nreki_navigate action:"context"` returns, in one call, the code a task names; for a task that names no code it returns the best hits of each issue. The `[Validated]` footer says when re-running tsc is redundant. `Class.method` names work everywhere, and an optional Voyage index adds semantic search. Measured with Codex on two new projects, three pairs each: 33 % fewer tokens, then 1.8 % more (see [Token cost](#token-cost)). Also included are the fixes from two external security and integrity audits. See [CHANGELOG.md](CHANGELOG.md#1210---2026-11-13).
 
 **v12.0.0 — Edit-Safety MCP (BREAKING).** NREKI is an edit-safety layer: it validates and atomically commits agent edits, and provides local code navigation. Host agents bring their own semantic retrieval. **`hybrid_search` (NREKI + BM25 RRF fusion) was removed** — its +10pp recall did not justify the ~4.3× token cost for a use case that does not exist when the agent already has grep. `search` (BM25 keywords + dependency topology, with an optional Voyage semantic index) and `fast_grep` (RAM-resident exact substring) cover local navigation; `nreki_code` batch-edits with in-RAM compiler/LSP validation. See [CHANGELOG.md](CHANGELOG.md#1200) for the migration path. (v11.0.0 removed ONNX embeddings; v12.0.0 removed the hybrid_search fusion — same precedent.)
 
@@ -72,7 +82,7 @@ Depending on the client, an agent pays NREKI's three tool definitions (~700 toke
 
 - `nreki_navigate action:"context" query:"<the task>"` returns, in one call, the code the task names: symbols verbatim with their line ranges, where the fields it mentions occur, and who imports each file. Exploring with `map`/grep/reads usually takes two or three turns.
 - `read`/`compress` with `focus:"a,b"` return only those symbols; edits return one line plus the `[Validated: …]` footer.
-- Measured with Codex (2026-11-13) on synthetic TypeScript projects of 30–40 files, three pairs per run. The first run cost 25 % more tokens with NREKI: `read` ignored `focus`, agents re-read what `context` returned, and took extra turns. After those fixes, a pre-registered run was a tie (+0.02 %) and a run on a new project cost +4.97 %: `context` saved the reading turns, but agents sent `batch_edit` alone and ran the checker on the next turn. With `context` now asking for the checker in the same cell, a run on another new project used **33 % fewer tokens**: 225,391 vs 336,643, 12 vs 18 turns, NREKI ahead in all 3 pairs, all 6 solutions correct. Every NREKI session took the minimum 4 turns: checker, `context`, `batch_edit` plus checker, answer. That is one project and three pairs: a measurement, not a guarantee. The three runs after the fixes had the optional Voyage index on (see Privacy); `context` with BM25 alone, the default, has not been measured with a model.
+- Measured with Codex (2026-11-13) on synthetic TypeScript projects of 30–40 files, three pairs per run. The first run cost 25 % more tokens with NREKI: `read` ignored `focus`, agents re-read what `context` returned, and took extra turns. After those fixes, a pre-registered run was a tie (+0.02 %) and a run on a new project cost +4.97 %: `context` saved the reading turns, but agents sent `batch_edit` alone and ran the checker on the next turn. With `context` now asking for the checker in the same cell, a run on another new project used **33 % fewer tokens**: 225,391 vs 336,643, 12 vs 18 turns, NREKI ahead in all 3 pairs, all 6 solutions correct. Every NREKI session took the minimum 4 turns: checker, `context`, `batch_edit` plus checker, answer. That is one project and three pairs: a measurement, not a guarantee. On a third new project (42 files) the published 12.1.0 cost 1.8 % more. In two of its three sessions `context` let one capitalized word ("Station", a type) stand for the whole task and returned none of the files to fix. 12.1.1 searches every issue that names no code. One pair on yet another new project, run on the 12.1.1 code before release, used 40.85 % fewer tokens: 449,645 vs 760,190, 21 vs 36 turns, both solutions correct. That is one session per arm, and the agents delegated differently. All runs after the fixes had the optional Voyage index on (see Privacy). In that last pair it made no query, so the default, `context` with BM25 alone, has not been measured on its own.
 
 ## Highlights
 

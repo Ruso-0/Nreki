@@ -52,6 +52,30 @@ export interface DeclarationSurface {
     globalScope: boolean;
 }
 
+/**
+ * "Class.method", "fn", "CONFIG": the declarations that hold a position. A
+ * baseline error is tied to its declaration, not to its line (lines move with
+ * every edit above them). Keyed by file + code + message only, fixing an old
+ * error in one function and adding the same one in another function of the
+ * file kept the count, and the new error was accepted.
+ */
+function enclosingDeclarationName(sf: ts.SourceFile, pos: number): string {
+    const names: string[] = [];
+    const visit = (node: ts.Node): void => {
+        if (pos < node.pos || pos >= node.end) return;
+        const name = (node as ts.NamedDeclaration).name;
+        if (name && (ts.isIdentifier(name) || ts.isPrivateIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name))
+            && (ts.isFunctionLike(node) || ts.isClassLike(node) || ts.isVariableDeclaration(node)
+                || ts.isPropertyDeclaration(node) || ts.isPropertyAssignment(node) || ts.isInterfaceDeclaration(node)
+                || ts.isTypeAliasDeclaration(node) || ts.isEnumDeclaration(node) || ts.isModuleDeclaration(node))) {
+            names.push(name.text);
+        }
+        ts.forEachChild(node, visit);
+    };
+    ts.forEachChild(sf, visit);
+    return names.join(".");
+}
+
 /** A script's top-level declarations are global; `declare global` and `declare module "x"` reach files that never import this one. */
 function declaresGlobals(sf: ts.SourceFile): boolean {
     if (!ts.isExternalModule(sf)) return true;
@@ -508,7 +532,8 @@ export class TsCompilerWrapper {
         msg = msg.replace(this.rootRegex, "<ROOT>");
         msg = msg.replace(this.nativeRootRegex!, "<ROOT>");
         msg = msg.replace(this.nativePosixRegex!, "<ROOT>");
-        return crypto.createHash("sha256").update(`${file}|TS${diag.code}|${msg}`).digest("hex");
+        const where = diag.file && diag.start !== undefined ? enclosingDeclarationName(diag.file, diag.start) : "";
+        return crypto.createHash("sha256").update(`${file}|${where}|TS${diag.code}|${msg}`).digest("hex");
     }
 
     private toStructured(diag: ts.Diagnostic): NrekiStructuredError {
@@ -544,6 +569,7 @@ export class TsCompilerWrapper {
                 for (const diag of program.getSemanticDiagnostics(file)) processDiag(diag);
             }
             for (const diag of program.getGlobalDiagnostics()) processDiag(diag);
+            for (const diag of program.getOptionsDiagnostics()) processDiag(diag);
             return;
         }
 
@@ -557,7 +583,10 @@ export class TsCompilerWrapper {
             for (const diag of program.getSyntacticDiagnostics(sf)) processDiag(diag);
             for (const diag of program.getSemanticDiagnostics(sf)) processDiag(diag);
         }
+        // getDiagnostics checks both kinds when an environment file is edited: an
+        // options error that was already there must not count as the edit's.
         for (const diag of program.getGlobalDiagnostics()) processDiag(diag);
+        for (const diag of program.getOptionsDiagnostics()) processDiag(diag);
     }
 
     public getBaselineErrorCount(): number {
@@ -764,6 +793,40 @@ export class TsCompilerWrapper {
         };
     }
 
+    /**
+     * The program's files that import one of `targets` (absolute paths), resolved
+     * as the compiler resolves them: tsconfig `paths`/`baseUrl`, `.js` → `.ts`,
+     * `.mjs` → `.mts`, index files. repo-map's import graph only resolves
+     * relative specifiers and "@/", so an importer through an alias was neither
+     * checked with the edit nor counted, and the footer said "no importers".
+     * Absolute POSIX paths; null: no program.
+     */
+    public importersOf(targets: ReadonlySet<string>): string[] | null {
+        if (!this.builderProgram || targets.size === 0) return null;
+        const program = this.builderProgram.getProgram();
+        const options = program.getCompilerOptions();
+        const key = (p: string): string => {
+            const posix = this.toPosix(path.resolve(p));
+            return ts.sys.useCaseSensitiveFileNames ? posix : posix.toLowerCase();
+        };
+        const wanted = new Set([...targets].map(key));
+        const cache = ts.createModuleResolutionCache(
+            this.projectRoot, f => (ts.sys.useCaseSensitiveFileNames ? f : f.toLowerCase()), options,
+        );
+        const importers: string[] = [];
+        for (const sf of program.getSourceFiles()) {
+            if (sf.isDeclarationFile || /[/\\]node_modules[/\\]/.test(sf.fileName) || wanted.has(key(sf.fileName))) continue;
+            for (const spec of ts.preProcessFile(sf.text, true, true).importedFiles) {
+                const resolved = ts.resolveModuleName(spec.fileName, sf.fileName, options, this.host, cache).resolvedModule;
+                if (resolved && wanted.has(key(resolved.resolvedFileName))) {
+                    importers.push(this.toPosix(path.resolve(sf.fileName)));
+                    break;
+                }
+            }
+        }
+        return importers;
+    }
+
     /** @internal Strangler Fig bridge: inject pre-loaded builderProgram from cache */
     public _injectBuilderProgram(program: ts.EmitAndSemanticDiagnosticsBuilderProgram): void {
         this.builderProgram = program;
@@ -819,15 +882,18 @@ export class TsCompilerWrapper {
         const errorThreshold = Math.min(500, 50 + (editedFiles.size * 20));
         const touchedEnvironment = Array.from(editedFiles).some(isEnvironmentFile);
 
-        const processDiag = (diag: ts.Diagnostic) => {
-            if (!diag.file && !touchedEnvironment) return;
-            if (isThirdPartyDiagnostic(diag)) return;
+        /** true when the diagnostic is new (beyond the baseline) and became fatal. */
+        const processDiag = (diag: ts.Diagnostic): boolean => {
+            if (!diag.file && !touchedEnvironment) return false;
+            if (isThirdPartyDiagnostic(diag)) return false;
             const hash = this.getFingerprint(diag);
             const count = (currentFrequencies.get(hash) || 0) + 1;
             currentFrequencies.set(hash, count);
             if (count > (this.baselineFrequencies.get(hash) || 0)) {
                 fatalErrors.push(diag);
+                return true;
             }
+            return false;
         };
 
         // Shield 1: Global diagnostics
@@ -857,8 +923,10 @@ export class TsCompilerWrapper {
             while ((nextAffected = this.builderProgram!.getSemanticDiagnosticsOfNextAffectedFile())) {
                 for (const diag of nextAffected.result as ts.Diagnostic[]) {
                     if (isThirdPartyDiagnostic(diag)) continue;
-                    processDiag(diag);
-                    if (diag.file && !editedFiles.has(this.toPosix(diag.file.fileName))) {
+                    // Only errors the edit added: the first pass after boot visits
+                    // every file, and 71 errors already in the project used to trip
+                    // this limit on a valid edit (then "auto-healed" with no fix).
+                    if (processDiag(diag) && diag.file && !editedFiles.has(this.toPosix(diag.file.fileName))) {
                         cascadeCount++;
                     }
                 }

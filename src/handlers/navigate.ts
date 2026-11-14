@@ -32,6 +32,8 @@ import { ensureKernelBooted } from "./code/kernel-bridge.js";
 
 /** Default cap on fast_grep output lines (~4k tokens); `limit` can raise it. */
 const FAST_GREP_MAX_LINES = 120;
+/** Definitions shown with their body; the others are listed as locations. */
+const DEFINITION_BODIES = 3;
 
 // ─── Search ─────────────────────────────────────────────────────────
 
@@ -215,7 +217,8 @@ export async function handleDefinition(
     const root = engine.getProjectRoot();
     const parser = engine.getParser();
     const kind = typeof params.kind === "string" ? params.kind : "any";
-    const results = await findDefinition(root, parser, symbol, kind as SymbolKind);
+    // With the engine, candidates come from the index instead of re-reading the tree.
+    const results = await findDefinition(root, parser, symbol, kind as SymbolKind, engine);
 
     if (results.length === 0) {
         return {
@@ -228,7 +231,10 @@ export async function handleDefinition(
         };
     }
 
-    const formatted = results.map((r, i) => {
+    // A name defined in many places: the first bodies, the rest as locations
+    // (every body was printed, with no budget).
+    const shown = results.slice(0, DEFINITION_BODIES);
+    const formatted = shown.map((r, i) => {
         const exported = r.exportedAs ? ` [exported: ${r.exportedAs}]` : "";
         return (
             `### ${i + 1}. ${r.filePath}:L${r.startLine}-L${r.endLine} (${r.kind}${exported})\n` +
@@ -236,8 +242,12 @@ export async function handleDefinition(
             `\`\`\`\n${r.body}\n\`\`\``
         );
     });
+    if (results.length > shown.length) {
+        formatted.push(`Also defined at: ${results.slice(shown.length)
+            .map(r => `${r.filePath}:L${r.startLine}-L${r.endLine} (${r.kind})`).join("; ")}`);
+    }
 
-    const bodyTokens = results.reduce(
+    const bodyTokens = shown.reduce(
         (sum, r) => sum + estimateTokens(r.body), 0,
     );
 
@@ -256,7 +266,7 @@ export async function handleDefinition(
             const usedDeps = allImports.filter(d => {
                 const safeName = escapeRegExp(d.localName);
                 const regex = new RegExp(`(^|[^a-zA-Z0-9_$])${safeName}(?=[^a-zA-Z0-9_$]|$)`);
-                return results.some(r => regex.test(r.body));
+                return shown.some(r => regex.test(r.body));
             });
 
             if (usedDeps.length > 0) {
@@ -305,7 +315,7 @@ export async function handleReferences(
     const symbol = params.symbol ?? "";
     const root = engine.getProjectRoot();
     const parser = engine.getParser();
-    const results = await findReferences(root, parser, symbol);
+    const results = await findReferences(root, parser, symbol, engine);
 
     if (results.length === 0) {
         return {
@@ -544,7 +554,9 @@ export async function handleOutline(
     // FOVEAL_OFF is unset or != "1", MAX_EXPAND_TOKENS and `expandable` are
     // byte-identical to pre-Sprint-8.0. See scripts/eval-phase8/prereg-erratum-01.md.
     const fovealOff = process.env.FOVEAL_OFF === "1";
-    const MAX_EXPAND_TOKENS = fovealOff ? Number.POSITIVE_INFINITY : 6000;
+    // 2,000: an outline is asked for symbols; up to 6,000 tokens of bodies came
+    // with it, unasked, and were re-sent on every later turn.
+    const MAX_EXPAND_TOKENS = fovealOff ? Number.POSITIVE_INFINITY : 2000;
 
     const expandable = (fovealOff
         ? symbols
@@ -586,7 +598,7 @@ export async function handleOutline(
     if (omittedHighRisk.length > 0) {
         lines.push("");
         lines.push(`[BUDGET LIMIT REACHED] ${omittedHighRisk.length} HIGH-risk symbols were not expanded to save context.`);
-        lines.push(`If auditing, you MUST run: nreki_code action:"compress" focus:"${omittedHighRisk.slice(0, 8).join(", ")}"`);
+        lines.push(`To read them: nreki_code action:"compress" focus:"${omittedHighRisk.slice(0, 8).join(", ")}"`);
     }
 
     const outlineTokens = estimateTokens(lines.join("\n"));
@@ -701,7 +713,7 @@ export async function handlePrepareRefactor(
         try {
             const parser = engine.getParser();
             const root = engine.getProjectRoot();
-            const defs = await findDefinition(root, parser, symbolName, "any");
+            const defs = await findDefinition(root, parser, symbolName, "any", engine);
 
             if (defs.length > 0) {
                 const targetFile = safePath(deps.engine.getProjectRoot(), defs[0].filePath);
@@ -921,8 +933,7 @@ export async function handleOrphanOracle(
                 `2. Dependency Injection or Reflection.\n\n` +
                 `**Review manually before deleting.** ` +
                 `Potential savings: **~${savedLines} lines**.\n\n` +
-                `*Tip: Use \`nreki_code action:"batch_edit"\` to safely ` +
-                `tombstone them with \`new_code: null\`.*\n\n` +
+                `*NREKI edits do not delete files: after the review, delete them with your own tools and re-run the build.*\n\n` +
                 `### Candidates:\n${formatted.join("\n")}`,
         }],
     };

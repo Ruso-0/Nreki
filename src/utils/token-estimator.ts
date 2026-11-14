@@ -3,7 +3,7 @@
  * during v11.0.0 amputation (Sub-sprint 2.2.2.x).
  *
  * Phase 5.5.1 (Sprint Empirical Verify): replaced heuristic chars/3.5
- * with real BPE tokenizer (tiktoken cl100k_base) for genuine measurement.
+ * with real BPE tokenizer (tiktoken o200k_base since 12.1.1) for genuine measurement.
  * Falls back to heuristic if WASM init fails.
  *
  * Used cross-codebase for logUsage tokens, compression decisions,
@@ -22,7 +22,9 @@ function getEncoder(): import("tiktoken").Tiktoken | null {
     try {
         const _require = createRequire(import.meta.url);
         const { get_encoding } = _require("tiktoken") as typeof import("tiktoken");
-        _encoder = get_encoding("cl100k_base");
+        // o200k_base: the tokenizer of current OpenAI models (Codex) and of NREKI's
+        // token-economy tests; cl100k_base set budgets in another unit.
+        _encoder = get_encoding("o200k_base");
         return _encoder;
     } catch {
         return null;

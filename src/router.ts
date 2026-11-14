@@ -436,7 +436,14 @@ export async function handleCode(
     // ─── COGNITIVE ENFORCER (1ms) ───
     if (deps.enforcer) {
         const enforceRes = deps.enforcer.evaluate("nreki_code", action, params);
-        if (enforceRes.penalty) {
+        // The full read Chronos itself demands for a high-friction file costs no karma.
+        let demandedRead = false;
+        if (enforceRes.penalty && deps.chronos && typeof params.path === "string") {
+            try {
+                demandedRead = deps.chronos.isHighFriction(safePath(deps.engine.getProjectRoot(), params.path));
+            } catch { /* invalid path: the handler reports it */ }
+        }
+        if (enforceRes.penalty && !demandedRead) {
             const currentKarma = parseFloat(deps.engine.getMetadata("nreki_karma_penalty") || "0");
             deps.engine.setMetadata("nreki_karma_penalty", (currentKarma + enforceRes.penalty).toString());
             if (deps.pressure !== undefined) {

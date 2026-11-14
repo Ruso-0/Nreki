@@ -28,6 +28,43 @@ function isLspCovered(kernel: NonNullable<RouterDependencies["kernel"]>, file: s
     }
 }
 
+/** The TypeScript program can type-check this importer: not a test under another tsconfig, not plain JS. */
+function inTypeScriptProgram(kernel: NonNullable<RouterDependencies["kernel"]>, file: string): boolean {
+    try {
+        const cov = kernel.getSemanticCoverage(file);
+        return cov.backend === "typescript" && !cov.outsideProgram;
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * File mode, TypeScript: the importers of `files`, from the import graph and from
+ * the compiler's own resolution (tsconfig aliases, which the graph misses), split
+ * into those the program checks and those it cannot. The kernel used to be
+ * handed importers outside the program: it skipped them, and they were counted
+ * as checked.
+ */
+async function typeScriptImporters(
+    deps: RouterDependencies, files: string[], graphImporters: Iterable<string>,
+): Promise<{ inside: string[]; outside: number }> {
+    const found = new Set<string>(graphImporters);
+    for (const d of (await deps.kernel!.findTypeScriptImporters(files)) ?? []) found.add(d);
+    for (const f of files) found.delete(f.replace(/\\/g, "/"));
+    const inside = [...found].filter(d => inTypeScriptProgram(deps.kernel!, d));
+    return { inside, outside: found.size - inside.length };
+}
+
+/** Files auto-heal patched beyond the ones edited: their importers were not checked. */
+function healedOthers(result: NrekiInterceptResult | undefined, edited: string[]): string[] {
+    const norm = (p: string) => {
+        const posix = path.resolve(p).replace(/\\/g, "/");
+        return process.platform === "win32" ? posix.toLowerCase() : posix;
+    };
+    const mine = new Set(edited.map(norm));
+    return (result?.healedFiles ?? []).filter(f => !mine.has(norm(f)));
+}
+
 /** Copy-pasteable recovery call. JSON.stringify escapes quotes/backslashes in paths. */
 function chronosRecoveryCall(filePath: string): string {
     return JSON.stringify({
@@ -92,7 +129,9 @@ export async function handleEdit(
         };
     }
 
-    if (deps.chronos && deps.chronos.isHighFriction(resolvedPath)) {
+    // A patch is matched against the current source: it needs no full read first
+    // (the block cost a read turn for an edit that cannot touch unseen code).
+    if (mode !== "patch" && deps.chronos && deps.chronos.isHighFriction(resolvedPath)) {
         if (!deps.chronos.hasReadUncompressed(resolvedPath)) {
             releaseFileLock(resolvedPath);
             return {
@@ -173,9 +212,9 @@ export async function handleEdit(
                 // NREKI-INT-06: file mode used to type-check ONLY the edited file, so a
                 // signature change breaking every importer was committed as [OK].
                 try {
-                    const allDependents = await engine.findDependents(relPath);
-                    dependentsToInject = allDependents.slice(0, DEPENDENT_CHECK_CAP);
-                    Object.assign(depScope, { lookedUp: true, total: allDependents.length });
+                    const { inside, outside } = await typeScriptImporters(deps, [relPath], await engine.findDependents(relPath));
+                    dependentsToInject = inside.slice(0, DEPENDENT_CHECK_CAP);
+                    Object.assign(depScope, { lookedUp: true, total: inside.length, notInProgram: outside });
                 } catch {
                     dependentsToInject = [];
                 }
@@ -348,6 +387,8 @@ export async function handleEdit(
             lspImportersUnknown,
             exportedApiUnchanged: kernelResult?.exportedApiUnchanged,
             declaresGlobals: kernelResult?.declaresGlobals,
+            programChanged: kernelResult?.programChanged,
+            healedOthers: healedOthers(kernelResult, [resolvedPath]),
         });
 
         return {
@@ -437,7 +478,11 @@ export async function handleBatchEdit(
 
     if (deps.chronos) {
         for (const p of uniquePaths) {
-            if (deps.chronos.isHighFriction(p) && !deps.chronos.hasReadUncompressed(p)) {
+            // Only patches for this file: matched against its source, no full read needed.
+            const onlyPatches = edits.every(e => {
+                try { return safePath(engine.getProjectRoot(), e.path) !== p || e.mode === "patch"; } catch { return true; }
+            });
+            if (!onlyPatches && deps.chronos.isHighFriction(p) && !deps.chronos.hasReadUncompressed(p)) {
                 for (const rp of acquiredLocks) releaseFileLock(rp);
                 return {
                     content: [{
@@ -547,7 +592,14 @@ export async function handleBatchEdit(
                             for (const d of await engine.findDependents(fp)) allDepSet.add(d);
                         }
                         for (const fp of batchFiles) allDepSet.delete(fp);
-                        Object.assign(batchDepScope, { lookedUp: true, total: allDepSet.size });
+                        let notInProgram = 0;
+                        if (deps.nrekiMode === "file") {
+                            const tsFiles = [...batchFiles].filter(fp => !isLspFile(fp));
+                            const { inside, outside } = await typeScriptImporters(deps, tsFiles, allDepSet);
+                            allDepSet = new Set(inside.filter(d => !batchFiles.has(d)));
+                            notInProgram = outside;
+                        }
+                        Object.assign(batchDepScope, { lookedUp: true, total: allDepSet.size, notInProgram });
                     } catch { /* graph unavailable — reported in the banner */ }
 
                     if (allDepSet) {
@@ -704,6 +756,8 @@ export async function handleBatchEdit(
             lspImportersUnknown: batchLspImportersUnknown,
             exportedApiUnchanged: batchKernelResult?.exportedApiUnchanged,
             declaresGlobals: batchKernelResult?.declaresGlobals,
+            programChanged: batchKernelResult?.programChanged,
+            healedOthers: healedOthers(batchKernelResult, result.vfs ? [...result.vfs.keys()] : result.files),
         });
 
         return {

@@ -13,6 +13,7 @@ import crypto from "crypto";
 import path from "path";
 import type { EmbeddingSource, NrekiDB } from "../database.js";
 import { isSensitivePath } from "../utils/path-jail.js";
+import { redactSecrets } from "../utils/imports.js";
 import { logger } from "../utils/logger.js";
 import { quantize, voyageEmbed, voyageLogOnce, type VoyageConfig, type RateLimits } from "./voyage.js";
 
@@ -100,7 +101,8 @@ export class VectorIndex {
         if (code.replace(/\s+/g, "").length < 40) return null;
         const rel = path.relative(this.projectRoot, c.path).split(path.sep).join("/");
         const limit = c.node_type === "class" ? CLASS_HEADER_CHARS : BODY_CHARS;
-        return [rel, (c.context_comment ?? "").trim(), code.slice(0, limit)].filter(Boolean).join("\n");
+        // Redacted before the cut, so a key block split by the limit is still blanked.
+        return [rel, redactSecrets((c.context_comment ?? "").trim()), redactSecrets(code).slice(0, limit)].filter(Boolean).join("\n");
     }
 
     /** Chunks with a vector / chunks eligible for one. */

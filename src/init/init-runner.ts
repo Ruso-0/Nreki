@@ -20,6 +20,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import type { DetectedAgent } from "./agent-detect.js";
 import { detectAgent, isKnownAgent } from "./agent-detect.js";
+import { unsafeWriteTarget } from "../utils/path-jail.js";
 
 type WriteMode = "write" | "append" | "skip-if-marked";
 
@@ -202,6 +203,9 @@ function applyFileAction(
     dryRun: boolean,
 ): InitResult["actions"][number] {
     const abs = path.join(cwd, action.targetRel);
+    // A cloned repository can ship AGENTS.md -> ~/.bashrc: never write through a link.
+    const unsafe = unsafeWriteTarget(cwd, action.targetRel);
+    if (unsafe) return { path: action.targetRel, op: "skipped", note: `${unsafe}: not touched` };
     const exists = fs.existsSync(abs);
     // Append-mode targets belong to the USER: NREKI only ever owns its block.
     const userOwned = action.mode === "append";
@@ -267,6 +271,8 @@ function chmodExec(file: string): void {
 function mergeClaudeSettings(cwd: string, dryRun: boolean): InitResult["actions"][number] {
     const settingsPath = path.join(cwd, ".claude", "settings.json");
     const targetRel = path.relative(cwd, settingsPath);
+    const unsafe = unsafeWriteTarget(cwd, targetRel);
+    if (unsafe) return { path: targetRel, op: "skipped", note: `${unsafe}: not touched` };
 
     interface ClaudeSettings {
         hooks?: {

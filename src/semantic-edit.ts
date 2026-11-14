@@ -24,7 +24,7 @@ import { saveBackup, getBackupPath } from "./undo.js";
 import { extractSignature, cleanSignature, extractImports, extractExports } from "./repo-map.js";
 import { logger } from "./utils/logger.js";
 import { SYMBOL_REPLACE_LIMIT } from "./limits.js";
-import { findQualifiedChunk, splitQualifiedName } from "./utils/qualified-name.js";
+import { findQualifiedChunk } from "./utils/qualified-name.js";
 import crypto from "crypto";
 
 // ─── Types ───────────────────────────────────────────────────────────
@@ -681,9 +681,6 @@ export async function batchSemanticEdit(
             }
 
             const chunk = allMatches[0] || findChunkBySymbol(parseResult.chunks, edit.symbol);
-            // `Class.method` resolved: key the edit by the chunk's own name, as the
-            // blast-radius maps below (and handleBatchEdit's lookup) do.
-            if (chunk && splitQualifiedName(edit.symbol)) edit.symbol = chunk.symbolName || extractName(chunk);
             if (!chunk) {
                 const available = parseResult.chunks
                     .map(c => c.symbolName || extractName(c))
@@ -781,8 +778,11 @@ export async function batchSemanticEdit(
         for (const group of uniqueChunks) {
             const chunk = group.chunk;
             const symName = chunk.symbolName || extractName(chunk);
-            const key = `${filePath}::${symName}`;
-            oldRawCodes.set(key, chunk.rawCode);
+            // Keyed by the name each edit used ("RecoveryCodes.redeem"), as the
+            // signature checks below and handleBatchEdit look them up. Keyed by the
+            // chunk's bare name, `A.m` and `B.m` of one file overwrote each other.
+            const keys = [...new Set(group.edits.map(e => `${filePath}::${e.symbol}`))];
+            for (const k of keys) oldRawCodes.set(k, chunk.rawCode);
 
             // Isolated string — the "Limbo". Each patch mutates this, not virtualCode.
             let currentRawCode = chunk.rawCode;
@@ -872,13 +872,13 @@ export async function batchSemanticEdit(
             }
 
             if (splicedInFile !== null) {
-                newRawCodes.set(key, splicedInFile);
+                for (const k of keys) newRawCodes.set(k, splicedInFile);
                 continue;
             }
 
             // ─── PHASE D: Macro-splice — inject the final mutated chunk into virtualCode ───
             virtualCode = virtualCode.slice(0, chunk.startIndex) + currentRawCode + virtualCode.slice(chunk.endIndex);
-            newRawCodes.set(key, currentRawCode);
+            for (const k of keys) newRawCodes.set(k, currentRawCode);
         }
 
         vfs.set(filePath, virtualCode);
