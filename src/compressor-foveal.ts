@@ -26,6 +26,7 @@ import { type ParsedChunk, type ParseResult, normalizeWebSymbol } from "./parser
 import { extractDependencies, cleanSignature } from "./utils/imports.js";
 import { estimateTokens } from "./utils/token-estimator.js";
 import { findQualifiedChunk, splitQualifiedName } from "./utils/qualified-name.js";
+import { qualifiedNames } from "./utils/engram-identity.js";
 import type { NrekiEngine } from "./engine.js";
 import {
     extractTypeLedgerParafovea,
@@ -50,6 +51,7 @@ export interface TfcResult {
     tokensSaved: number;
     zones: {
         foveas: string[];
+        qualifiedFoveas: string[];
         localParafovea: number;
         externalParafovea: number;
         upstream: number;
@@ -116,6 +118,7 @@ export async function tfcCompress(
     // is one line now, and a focus that is most of the file still gets the
     // whole file (Density Shield below → the handler returns it).
     if (fovealOff) {
+        const rawList = focusInput.split(",").map(s => s.trim()).filter(Boolean);
         return {
             kind: "success",
             data: {
@@ -125,7 +128,8 @@ export async function tfcCompress(
                 ratio: 0,
                 tokensSaved: 0,
                 zones: {
-                    foveas: focusInput.split(",").map(s => s.trim()).filter(Boolean),
+                    foveas: rawList,
+                    qualifiedFoveas: rawList,
                     localParafovea: 0,
                     externalParafovea: 0,
                     upstream: 0,
@@ -199,9 +203,16 @@ export async function tfcCompress(
     // 2. CAUSAL RAYTRACING
     const foveaUses = new Set<string>();
     const foveaNames = new Set<string>();
+    const chunkQualified = qualifiedNames(parseResult.chunks);
+    const chunkIndex = new Map<ParsedChunk, number>();
+    parseResult.chunks.forEach((c, idx) => chunkIndex.set(c, idx));
+    const qualifiedFoveaNames = new Set<string>();
 
     for (const f of foveas) {
         foveaNames.add(f.symbolName);
+        const idx = chunkIndex.get(f);
+        const qName = (idx !== undefined ? chunkQualified[idx] : "") || f.symbolName;
+        if (qName) qualifiedFoveaNames.add(qName);
         const refs = extractCausalRefs(f.rawCode + "\n" + f.shorthand);
         for (const r of refs) foveaUses.add(r);
     }
@@ -377,6 +388,7 @@ export async function tfcCompress(
             tokensSaved,
             zones: {
                 foveas: Array.from(foveaNames),
+                qualifiedFoveas: Array.from(qualifiedFoveaNames),
                 localParafovea: downstream.size,
                 externalParafovea: externalCount,
                 upstream: upstreamNames.size,

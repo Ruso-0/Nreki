@@ -13,11 +13,23 @@ import type { DependencyGraph } from "../repo-map.js";
 import type { SearchResult } from "../engine-types.js";
 import type { DenseHit, VectorIndex } from "../search/vector-index.js";
 import { voyageLogOnce } from "../search/voyage.js";
+import { expandSpanishContextQuery } from "../utils/spanish-query.js";
 
 export { resolveVoyageConfig, type VoyageConfig } from "../search/voyage.js";
 
-/** Reciprocal-rank-fusion constant (Cormack et al.): flattens the head of each ranking. */
-const RRF_K = 60;
+/**
+ * Reciprocal-rank-fusion parameters.
+ * With RRF_K=60 over 40 candidates, #40 in BM25 + #40 in Dense (2/100 = 0.0200)
+ * always beat #1 in Dense alone (1/61 = 0.0164), so files matching a single
+ * comment word hijacked cross-lingual/semantic top hits. RRF_K=20 with
+ * DENSE_WEIGHT=1.08 prunes weak dense tail noise while still allowing a weak
+ * dense vote to corroborate a leading lexical hit whose full compound symbol
+ * name matches the query (`matchingSymbolIds`).
+ */
+const RRF_K = 20;
+const DENSE_WEIGHT = 1.08;
+const DENSE_CORE_RANKS = 10;
+const DENSE_TAIL_COSINE_RATIO = 0.88;
 
 export class SearchEngine {
     constructor(
@@ -32,14 +44,18 @@ export class SearchEngine {
         // 1. Fetch deep pool (5x limit, min 40) to overcome Semantic Dilution
         const fetchLimit = Math.max(limit * 5, 40);
         await this.initCore();
-        let rawResults = this.db.searchKeywordOnly(query, fetchLimit);
+        const vectors = this.getVectors();
+        // When dense vectors are active, `query` arrives unexpanded so Voyage sees
+        // natural prose; expand Spanish hints only on the lexical BM25 side so
+        // English source files compete fairly with Spanish-commented files.
+        const lexicalQuery = vectors ? expandSpanishContextQuery(query) : query;
+        let rawResults = this.db.searchKeywordOnly(lexicalQuery, fetchLimit);
 
         // Opt-in dense recall (NREKI_SEMANTIC=voyage): finds chunks that share no
         // words with the query. Any failure (no vectors yet, offline) keeps BM25.
-        const vectors = this.getVectors();
         if (vectors) {
             const dense = await vectors.searchQuery(query, fetchLimit);
-            if (dense && dense.length > 0) rawResults = this.fuseDense(rawResults, dense, fetchLimit);
+            if (dense && dense.length > 0) rawResults = this.fuseDense(rawResults, dense, lexicalQuery, fetchLimit);
         } else if (process.env.VOYAGE_API_KEY && !process.env.NREKI_SEMANTIC) {
             voyageLogOnce("hint", "info",
                 "[NREKI] VOYAGE_API_KEY is set but the Voyage semantic index is OFF. Set NREKI_SEMANTIC=voyage to opt in.");
@@ -80,19 +96,37 @@ export class SearchEngine {
      * dense ranking gets the same path prior BM25 already carries (src/ up,
      * tests/scripts down) before fusing.
      */
-    private fuseDense(bm25: HybridSearchResult[], dense: DenseHit[], limit: number): HybridSearchResult[] {
+    private fuseDense(bm25: HybridSearchResult[], dense: DenseHit[], lexicalQuery: string, limit: number): HybridSearchResult[] {
         const denseRows = this.db.getChunksByIds(dense.map(d => d.id));
         const cosine = new Map(dense.map(d => [d.id, d.score]));
+        const bestRawCosine = dense.reduce((max, d) => (d.score > max ? d.score : max), 0);
         const denseRanked = denseRows
-            .map(c => ({ c, s: (cosine.get(c.id) ?? 0) * this.db.pathBoost(c.path, c.node_type) }))
+            .map(c => {
+                const rawCos = cosine.get(c.id) ?? 0;
+                return { c, rawCos, s: rawCos * this.db.pathBoost(c.path, c.node_type) };
+            })
             .sort((a, b) => b.s - a.s);
 
         const fused = new Map<number, number>();
         bm25.forEach((r, i) => fused.set(r.id, (fused.get(r.id) ?? 0) + 1 / (RRF_K + i + 1)));
-        denseRanked.forEach(({ c }, i) => fused.set(c.id, (fused.get(c.id) ?? 0) + 1 / (RRF_K + i + 1)));
-
         const byId = new Map<number, HybridSearchResult>(bm25.map(r => [r.id, r]));
-        for (const { c } of denseRanked) if (!byId.has(c.id)) byId.set(c.id, { ...c, rrf_score: 0 });
+        const namedLexicalHits = this.db.matchingSymbolIds(lexicalQuery, bm25.slice(0, DENSE_CORE_RANKS));
+        let retainedCount = 0;
+        denseRanked.forEach(({ c, rawCos }, i) => {
+            // A weak tail hit can corroborate a leading lexical definition whose
+            // whole compound name matches. Its vote keeps its original dense rank.
+            const strongCosine = bestRawCosine > 0 && rawCos >= bestRawCosine * DENSE_TAIL_COSINE_RATIO;
+            let rank: number;
+            if (i < DENSE_CORE_RANKS || strongCosine) {
+                rank = ++retainedCount; // keep the existing rank among retained dense hits
+            } else if (rawCos > 0 && namedLexicalHits.has(c.id)) {
+                rank = i + 1;
+            } else {
+                return;
+            }
+            fused.set(c.id, (fused.get(c.id) ?? 0) + DENSE_WEIGHT / (RRF_K + rank));
+            if (!byId.has(c.id)) byId.set(c.id, { ...c, rrf_score: 0 });
+        });
         return [...fused.entries()]
             .filter(([id]) => byId.has(id))
             .sort((a, b) => b[1] - a[1])

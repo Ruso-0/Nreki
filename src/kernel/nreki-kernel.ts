@@ -125,6 +125,8 @@ export class NrekiKernel {
 
     /** Digest of the on-disk content each pending edit was based on (NREKI-INT-03). */
     private diskExpectations = new Map<string, string>();
+    /** Watcher notifications wait until an approved MCP transaction is committed. */
+    private pendingExternalChanges = new Set<string>();
 
     // ─── LSP Sidecars (Go, Python — async child processes) ────
     private lspSidecars = new Map<string, LspSidecarBase>();
@@ -638,6 +640,7 @@ export class NrekiKernel {
         if (!this.booted || files.length === 0) return null;
         return this.mutex.withLock(async () => {
             try {
+                await this.flushExternalChangesLocked();
                 this.tsBackend.updateProgram();
                 const targets = new Set(files.map(f => this.toPosix(path.resolve(this.projectRoot, f))));
                 const found = this.tsBackend.importersOf(targets);
@@ -698,7 +701,14 @@ export class NrekiKernel {
         if (!this.booted) throw new Error("[NREKI] Kernel not booted");
         if (!edits || edits.length === 0) return { safe: true, exitCode: 0, latencyMs: "0.00" };
 
-        return this.mutex.withLock(async () => {
+        return this.mutex.withLock(() => this.interceptAtomicBatchLocked(edits, dependents, computeDiff));
+    }
+
+    /** Caller holds the mutex for the entire validation and its cleanup. */
+    private async interceptAtomicBatchLocked(
+        edits: NrekiEdit[], dependents: string[], computeDiff: boolean, allowHealing = true,
+    ): Promise<NrekiInterceptResult> {
+        await this.flushExternalChangesLocked();
         // Corruption guard: if a previous timeout left the VFS in a partial state, rebuild
         // Moved inside mutex to prevent concurrent purgeCache() calls.
         if (this.tsBackend.isCorrupted) {
@@ -820,14 +830,14 @@ export class NrekiKernel {
             const surfaceFiles = new Set([...explicitlyEditedFiles].filter(f => this.isTypeScriptFile(f)));
             const preSurface = (this.mode === "file" || this.mode === "hologram")
                 && surfaceFiles.size > 0 && edits.every(e => e.proposedContent !== null)
-                ? this.tsBackend.declarationSurface(surfaceFiles, this.mode === "file")
+                ? this.tsBackend.declarationSurface(surfaceFiles, this.mode === "file" || !allowHealing)
                 : null;
             const compareSurface = (): { exportedApiUnchanged?: boolean; declaresGlobals?: boolean; programChanged?: boolean } => {
-                const post = preSurface ? this.tsBackend.declarationSurface(surfaceFiles, this.mode === "file") : null;
+                const post = preSurface ? this.tsBackend.declarationSurface(surfaceFiles, this.mode === "file" || !allowHealing) : null;
                 if (!preSurface || !post) return {};
                 // A file entering or leaving the program (an import added or removed)
                 // can change what every other file sees: nothing can be claimed.
-                const programChanged = this.mode === "file" && preSurface.programFiles !== post.programFiles;
+                const programChanged = (this.mode === "file" || !allowHealing) && preSurface.programFiles !== post.programFiles;
                 let exportedApiUnchanged: boolean | undefined;
                 if (preSurface.declarations !== null && post.declarations !== null && !programChanged) {
                     exportedApiUnchanged = preSurface.declarations === post.declarations;
@@ -954,10 +964,10 @@ export class NrekiKernel {
 
                 // ─── NREKI L3.3: Iterative Auto-Healing (Dual Cascade) ─────────────────
                 const tHealStart = performance.now();
-                const healing = await this.phase4_healingCascade(
+                const healing = allowHealing ? await this.phase4_healingCascade(
                     originalFatalErrors, explicitlyEditedFiles, filesToEvaluate, transactionMutated,
                     sidecarResult.sidecarBaselines,
-                );
+                ) : { healed: false, appliedFixes: [], newlyTouchedFiles: new Set<string>(), finalErrors: originalFatalErrors };
 
                 if (healing.healed) {
                     const latency = (performance.now() - t0).toFixed(2);
@@ -1148,6 +1158,45 @@ export class NrekiKernel {
         } finally {
             clearTxId();
         }
+    }
+
+    /** Validate a native tool's exact proposal without committing or auto-healing. */
+    public async previewAtomicBatch(edits: NrekiEdit[], dependents: string[] = []): Promise<NrekiInterceptResult> {
+        if (!this.booted) throw new Error("[NREKI] Kernel not booted");
+        if (edits.length === 0) return { safe: true, exitCode: 0, latencyMs: "0.00" };
+        return this.mutex.withLock(async () => {
+            // A MCP edit may have validated and still be awaiting its commit.
+            // Never clear, incorporate or commit that transaction in a preview.
+            if (this.mutatedFiles.size > 0) return {
+                safe: false, exitCode: 2, latencyMs: "0.00",
+                errorText: "[NREKI] Another edit is awaiting commit. Retry after it completes.",
+            };
+            const files = [...edits.map(e => e.targetFile), ...dependents];
+            for (const file of files) safePath(this.projectRoot, file);
+            await this.flushExternalChangesLocked();
+            await this.notifyExternalChangeLocked(files);
+            try {
+                const result = await this.interceptAtomicBatchLocked(edits, dependents, false, false);
+                if (!result.safe) return result;
+                const conflicts = this.findDiskConflicts(this.mutatedFiles);
+                if (conflicts.length > 0) return {
+                    ...result, safe: false, exitCode: 2, errorText: new NrekiConflictError(conflicts).message,
+                };
+                if (result.regressions?.length) return {
+                    ...result, safe: false, exitCode: 2,
+                    errorText: "[NREKI] Native edit weakens type safety: " + result.regressions.map(r => r.symbol).join(", ") + ".",
+                };
+                const hasTypeScript = edits.some(e => this.isTypeScriptFile(this.resolvePosixPath(e.targetFile)));
+                if (hasTypeScript && this.mode !== "project" && (result.exportedApiUnchanged !== true || result.declaresGlobals || result.programChanged)) return {
+                    ...result, safe: false, exitCode: 2,
+                    errorText: "[NREKI] Native edit changes declarations beyond this validation mode's coverage. Use nreki_code action:\"batch_edit\" and run the project compiler.",
+                };
+                return result;
+            } finally {
+                // Validation, rollback and sidecar resync share one lock: a MCP
+                // commit can never materialize the native tool's preview.
+                await this.rollbackAllLocked();
+            }
         });
     }
 
@@ -1577,6 +1626,14 @@ export class NrekiKernel {
         };
     }
 
+    /** Files currently staged in VFS for the pending commit (including Auto-Heal patches). */
+    public getStagedWrites(): Array<{ filePath: string; content: string | null }> {
+        return [...this.mutatedFiles].map(posixPath => ({
+            filePath: path.normalize(posixPath),
+            content: this.vfs.get(posixPath) ?? null,
+        }));
+    }
+
     /**
      * Two-Phase Atomic Commit with physical rollback (P2, P18, P27, P32).
      * Phase 1: Backup existing files to .bak
@@ -1602,6 +1659,14 @@ export class NrekiKernel {
             // (defense in depth for SEC-02), and nothing may have changed on disk
             // since the edit was computed (INT-03 — IDE save, formatter, 2nd agent).
             for (const posixPath of filesToCommit) this.assertCommitTarget(path.normalize(posixPath));
+            // An external dependency may have changed after validation. Its
+            // notification was deferred to preserve this staged transaction;
+            // abort rather than commit against a compiler state now outdated.
+            if (filesToCommit.size > 0 && this.pendingExternalChanges.size > 0) {
+                throw new NrekiConflictError([...this.pendingExternalChanges].map(
+                    file => path.relative(this.projectRoot, file).replace(/\\/g, "/"),
+                ));
+            }
             const conflicts = this.findDiskConflicts(filesToCommit);
             if (conflicts.length > 0) throw new NrekiConflictError(conflicts);
             // The backups and the WAL live in .nreki/transactions: never written
@@ -1799,7 +1864,10 @@ export class NrekiKernel {
 
     /** Emergency rollback - purge all staged changes (P3). */
     public async rollbackAll(): Promise<void> {
-        return this.mutex.withLock(async () => {
+        return this.mutex.withLock(() => this.rollbackAllLocked());
+    }
+
+    private async rollbackAllLocked(): Promise<void> {
             const touched = [...this.mutatedFiles];
             this.vfs.clear();
             this.vfsClock.clear();
@@ -1812,6 +1880,10 @@ export class NrekiKernel {
             this.initConfig(); // Re-sync rootNames from disk
             // BUG 1: In hologram mode, re-filter rootNames
             if (this.mode === "hologram") {
+                this.compilerOptions.noEmit = false;
+                this.compilerOptions.declaration = true;
+                this.compilerOptions.emitDeclarationOnly = true;
+                this.compilerOptions.isolatedModules = false;
                 if (this.jitMode) {
                     // SURGICAL JIT CACHE INVALIDATION:
                     // jitClassifyFile() reads from DISK, not VFS. Classifications
@@ -1851,7 +1923,6 @@ export class NrekiKernel {
             // LSP overlays of the discarded transaction go back to disk content (I-01).
             await this.resyncSidecarsFromDisk(touched);
             logger.warn("Hard rollback executed. VFS purged.");
-        });
     }
 
     // ─── Utilities ─────────────────────────────────────────────────
@@ -2044,6 +2115,19 @@ export class NrekiKernel {
     public async notifyExternalChange(filePaths: string[]): Promise<void> {
         if (!this.booted || filePaths.length === 0) return;
         return this.mutex.withLock(async () => {
+            for (const file of filePaths) this.pendingExternalChanges.add(this.resolvePosixPath(file));
+            await this.flushExternalChangesLocked();
+        });
+    }
+
+    private async flushExternalChangesLocked(): Promise<void> {
+        if (this.mutatedFiles.size > 0 || this.pendingExternalChanges.size === 0) return;
+        const changed = [...this.pendingExternalChanges];
+        await this.notifyExternalChangeLocked(changed);
+        for (const file of changed) this.pendingExternalChanges.delete(file);
+    }
+
+    private async notifyExternalChangeLocked(filePaths: string[]): Promise<void> {
             const changed = filePaths.map(p => this.resolvePosixPath(p));
             for (const p of changed) {
                 this.vfs.delete(p);
@@ -2055,6 +2139,9 @@ export class NrekiKernel {
                     this.jitClassifiedCache.delete(p);
                     this.shadowContent.delete(p);
                     this.prunedFiles.delete(p);
+                } else if (this.isTypeScriptFile(p)) {
+                    if (!fs.existsSync(p)) this.rootNames.delete(p);
+                    else if (this.tsBackend.isInConfiguredProgram(p)) this.rootNames.add(p);
                 }
             }
             if (this.mode === "hologram") this.buildShadowLookups();
@@ -2064,7 +2151,6 @@ export class NrekiKernel {
             if (this.mode === "project") this.tsBackend.captureBaseline(undefined, this.mode);
 
             await this.resyncSidecarsFromDisk(changed);
-        });
     }
 
     /**

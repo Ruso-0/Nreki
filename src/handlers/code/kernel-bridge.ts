@@ -14,8 +14,24 @@ import { formatErrorList } from "../../kernel/error-format.js";
 
 // ─── Domain-specific helper (NOT shared) ────────────────────────────
 
+const hologramPreparations = new WeakMap<NrekiKernel, Promise<void>>();
+
 export async function ensureHologramReady(kernel: NrekiKernel, nrekiMode: string, projectRoot: string): Promise<void> {
     if (nrekiMode !== "hologram" || kernel.hasShadows() || kernel.hasJitHologram()) return;
+    let preparation = hologramPreparations.get(kernel);
+    if (!preparation) {
+        preparation = prepareHologram(kernel, projectRoot);
+        hologramPreparations.set(kernel, preparation);
+    }
+    try {
+        await preparation;
+    } catch (error) {
+        if (hologramPreparations.get(kernel) === preparation) hologramPreparations.delete(kernel);
+        throw error;
+    }
+}
+
+async function prepareHologram(kernel: NrekiKernel, projectRoot: string): Promise<void> {
     try {
         const Parser = (await import("web-tree-sitter")).default;
         await Parser.init();
@@ -50,7 +66,7 @@ export async function ensureKernelBooted(deps: RouterDependencies): Promise<bool
         );
         try {
             await ensureHologramReady(deps.kernel, deps.nrekiMode ?? "", deps.engine.getProjectRoot());
-            deps.kernel.boot(
+            if (!deps.kernel.isBooted()) deps.kernel.boot(
                 deps.engine.getProjectRoot(),
                 deps.nrekiMode as "file" | "project" | "hologram",
             );
@@ -152,9 +168,19 @@ export async function processKernelResult(
         try { saveBackup(root, fp); } catch {}
     }
 
+    const stagedWrites = typeof kernel.getStagedWrites === "function"
+        ? kernel.getStagedWrites()
+        : [];
+    for (const w of stagedWrites) {
+        if (w.content !== null) deps.engine?.expectInternalEdit?.(w.filePath, w.content);
+    }
+
     try {
         await kernel.commitToDisk();
     } catch (err) {
+        for (const w of stagedWrites) {
+            if (w.content !== null) deps.engine?.cancelInternalEdit?.(w.filePath, w.content);
+        }
         previousBackups.restore();
         throw err;
     }

@@ -44,6 +44,9 @@ import { logger } from "./utils/logger.js";
 import { unsafeWriteTarget, writeStateFile } from "./utils/path-jail.js";
 import { upgradeEnforcerHook } from "./init/hook-upgrade.js";
 import { detectMode as detectModePure } from "./detect-mode.js";
+import { startNativeEditServer, type NativeEditServer } from "./hooks/native-edit-ipc.js";
+import { validateNativeEdit } from "./hooks/native-edit-validator.js";
+import { ensureHologramReady } from "./handlers/code/kernel-bridge.js";
 
 // Patch 7 (v10.6.1): shape of .claude/settings.json. Kept loose on unknown
 // keys because Anthropic may add fields; the init command only reads/writes
@@ -242,6 +245,18 @@ if (args[0] === "deinit") {
         }
     }
 
+    // 6. Clean .nreki/sessions — remove stale session markers
+    const sessionsDir = path.join(cwd, ".nreki", "sessions");
+    if (fs.existsSync(sessionsDir) && touchable(sessionsDir)) {
+        try {
+            fs.rmSync(sessionsDir, { recursive: true, force: true });
+            logger.info("Removed .nreki/sessions markers");
+            modified = true;
+        } catch (err) {
+            logger.error(`Failed to clean session markers: ${(err as Error).message}`);
+        }
+    }
+
     if (modified) {
         logger.info("NREKI deinit complete. Your environment is clean.");
     } else {
@@ -371,10 +386,15 @@ if (kernel) {
 
 const enforcer = new CognitiveEnforcer(process.cwd());
 const deps: RouterDependencies = { engine, monitor, sandbox, circuitBreaker, kernel, chronos, nrekiMode, enforcer };
+engine.onExternalFileChange(async file => { await kernel?.notifyExternalChange([file]); });
 
 const server = new McpServer({
     name: "NREKI",
     version: VERSION,
+}, {
+    instructions: 'Start tasks with nreki_navigate action:"context" query:"<task>".\n'
+        + 'Edit with nreki_code action:"batch_edit"; include every affected caller in the same batch.\n'
+        + 'Validation rejects new errors before writing; follow its coverage footer and run required tests/checkers.',
 });
 
 logger.info(
@@ -519,6 +539,7 @@ server.registerTool(
 
 async function main(): Promise<void> {
     const transport = new StdioServerTransport();
+    let nativeEdits: NativeEditServer | undefined;
 
     // Graceful shutdown 100% SÍNCRONO.
     // Async en shutdown path = riesgo de zombie atascado en event loop.
@@ -540,6 +561,7 @@ async function main(): Promise<void> {
             chronos.forcePersist();  // sync, ~2-5ms, dentro de ventana de gracia del SO
         } catch { /* never block shutdown on telemetry */ }
 
+        try { nativeEdits?.close(); } catch { /* already closed */ }
         try { engine.shutdown(); } catch { /* swallow */ }
 
         process.exit(0);
@@ -598,11 +620,40 @@ async function main(): Promise<void> {
     const sessionMarker = path.join(process.cwd(), ".nreki", "sessions", String(process.pid));
     try {
         // Never through a `.nreki` link shipped with the repository (writeStateFile).
-        writeStateFile(process.cwd(), sessionMarker, new Date().toISOString());
+        // No TCP port: a project-scoped pipe/socket with a fresh session secret.
+        if (!unsafeWriteTarget(cwd, sessionMarker)) {
+            const sessionsDir = path.dirname(sessionMarker);
+            if (fs.existsSync(sessionsDir)) {
+                for (const entry of fs.readdirSync(sessionsDir)) {
+                    if (!/^\d+$/.test(entry)) continue;
+                    const pid = Number(entry);
+                    if (!Number.isSafeInteger(pid) || pid <= 0 || pid === process.pid) continue;
+                    try {
+                        process.kill(pid, 0);
+                    } catch (err) {
+                        if ((err as NodeJS.ErrnoException).code === "ESRCH") {
+                            const stale = path.join(sessionsDir, entry);
+                            if (!unsafeWriteTarget(cwd, stale)) {
+                                try { fs.unlinkSync(stale); } catch { /* raced */ }
+                            }
+                        }
+                    }
+                }
+            }
+            nativeEdits = await startNativeEditServer(cwd, request => validateNativeEdit(request, deps));
+        }
+        writeStateFile(cwd, sessionMarker, JSON.stringify({
+            startedAt: new Date().toISOString(), token: nativeEdits?.token,
+        }));
+        fs.chmodSync(sessionMarker, 0o600);
         process.on("exit", () => {
+            try { nativeEdits?.close(); } catch { /* already closed */ }
             try { fs.unlinkSync(sessionMarker); } catch { /* already gone */ }
         });
-    } catch { /* read-only checkout or a linked .nreki: the hook simply fails open */ }
+    } catch {
+        try { nativeEdits?.close(); } catch { /* already closed */ }
+        // Read-only checkout or linked .nreki: retain the hook's legacy fail-open behavior.
+    }
 
     // ─── AUTO-PATCH SECURITY HOOK (v10.x) ───
     // v11.3.0: enforcer template now lives at templates/hooks/nreki-enforcer.mjs
@@ -647,19 +698,7 @@ async function main(): Promise<void> {
     if (nrekiMode === "hologram" && kernel) {
         setImmediate(async () => {
             try {
-                const Parser = (await import("web-tree-sitter")).default;
-                await Parser.init();
-                const jitParser = new Parser();
-                const wasmDir = path.join(
-                    path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Z]:)/i, "$1")),
-                    "..", "wasm",
-                );
-                const tsLangPath = path.join(wasmDir, "tree-sitter-typescript.wasm").replace(/\\/g, "/");
-                const tsLanguage = await Parser.Language.load(tsLangPath);
-                jitParser.setLanguage(tsLanguage);
-                const { classifyAndGenerateShadow } = await import("./hologram/shadow-generator.js");
-                kernel!.setJitParser(jitParser, tsLanguage);
-                kernel!.setJitClassifier(classifyAndGenerateShadow);
+                await ensureHologramReady(kernel!, nrekiMode, cwd);
                 logger.info("WASM parser pre-loaded. JIT Holography ready.");
             } catch (err) {
                 logger.warn(`WASM pre-load failed: ${(err as Error).message}`);

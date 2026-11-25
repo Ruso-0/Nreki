@@ -200,8 +200,16 @@ export class NrekiEngine {
     /** Lazy-loaded topology cache (invalidated on file changes). */
     private cachedGraph: DependencyGraph | null = null;
 
-    /** Cryptographic tickets for in-flight internal edits (expected disk hash). */
-    private expectedInternalHashes = new Map<string, string>();
+    /** Cryptographic tickets for in-flight internal edits (ordered expected disk hashes). */
+    private expectedInternalHashes = new Map<string, string[]>();
+    /** Short duplicate-event window for OS watchers that emit 2 change events per atomic rename. */
+    private lastInternalAck = new Map<string, { hash: string; at: number }>();
+    private externalFileChange: ((file: string) => Promise<void>) | null = null;
+
+    /** Keep semantic overlays in sync with edits made outside the MCP tools. */
+    public onExternalFileChange(listener: (file: string) => Promise<void>): void {
+        this.externalFileChange = listener;
+    }
 
     constructor(config: EngineConfig = {}) {
         this.config = {
@@ -628,7 +636,16 @@ export class NrekiEngine {
 
     public expectInternalEdit(filePath: string, content: string): void {
         const posixPath = this.normalizeInternalPath(filePath);
-        this.expectedInternalHashes.set(posixPath, this.db.hashContent(content));
+        const hash = this.db.hashContent(content.replace(/^\uFEFF/, ""));
+        let list = this.expectedInternalHashes.get(posixPath);
+        if (!list) {
+            list = [];
+            this.expectedInternalHashes.set(posixPath, list);
+        }
+        if (list[list.length - 1] !== hash) {
+            list.push(hash);
+            if (list.length > 8) list.shift();
+        }
         if (this.expectedInternalHashes.size > 100) {
             const firstKey = this.expectedInternalHashes.keys().next().value;
             if (firstKey !== undefined) {
@@ -637,8 +654,20 @@ export class NrekiEngine {
         }
     }
 
-    public cancelInternalEdit(filePath: string): void {
-        this.expectedInternalHashes.delete(this.normalizeInternalPath(filePath));
+    public cancelInternalEdit(filePath: string, content?: string): void {
+        const posixPath = this.normalizeInternalPath(filePath);
+        if (content === undefined) {
+            this.expectedInternalHashes.delete(posixPath);
+            return;
+        }
+        const list = this.expectedInternalHashes.get(posixPath);
+        if (!list) return;
+        const hash = this.db.hashContent(content.replace(/^\uFEFF/, ""));
+        const idx = list.lastIndexOf(hash);
+        if (idx >= 0) list.splice(idx, 1);
+        if (list.length === 0) {
+            this.expectedInternalHashes.delete(posixPath);
+        }
     }
 
     public invalidateCachedGraph(): void {
@@ -764,7 +793,7 @@ export class NrekiEngine {
             .on("unlink", (fp: string) => {
                 if (!shouldWatchFile(fp)) return;
                 this.db.clearChunks(fp);
-                this.scheduleSave();
+                this.queueIndexing(fp);
             });
 
         return this.watcherReady;
@@ -789,7 +818,8 @@ export class NrekiEngine {
                 this.indexingQueue.delete(filePath);
 
                 const posixPath = this.normalizeInternalPath(filePath);
-                const expectedHash = this.expectedInternalHashes.get(posixPath);
+                const expectedList = this.expectedInternalHashes.get(posixPath);
+                let external = false;
 
                 let diskContent: string | null = null;
                 try {
@@ -798,17 +828,36 @@ export class NrekiEngine {
 
                 if (diskContent !== null) {
                     const currentHash = this.db.hashContent(diskContent);
-                    if (expectedHash && expectedHash === currentHash) {
-                        this.expectedInternalHashes.delete(posixPath);
+                    const matchedIdx = expectedList ? expectedList.lastIndexOf(currentHash) : -1;
+                    const ack = this.lastInternalAck.get(posixPath);
+                    if (matchedIdx >= 0 && expectedList) {
+                        // Purge this write and any earlier superseded internal writes for this file.
+                        expectedList.splice(0, matchedIdx + 1);
+                        if (expectedList.length === 0) this.expectedInternalHashes.delete(posixPath);
+                        this.lastInternalAck.set(posixPath, { hash: currentHash, at: Date.now() });
+                        if (this.lastInternalAck.size > 100) {
+                            const oldestAck = this.lastInternalAck.keys().next().value;
+                            if (oldestAck !== undefined) this.lastInternalAck.delete(oldestAck);
+                        }
+                    } else if (ack && ack.hash === currentHash && Date.now() - ack.at < 1000) {
+                        // Duplicate OS watcher notification for the same internal atomic rename.
                     } else {
                         externalTopologyChange = true;
+                        external = true;
                         this.expectedInternalHashes.delete(posixPath);
+                        this.lastInternalAck.delete(posixPath);
                     }
                 } else {
                     externalTopologyChange = true;
+                    external = true;
                     this.expectedInternalHashes.delete(posixPath);
+                    this.lastInternalAck.delete(posixPath);
                 }
 
+                if (external) {
+                    try { await this.externalFileChange?.(filePath); }
+                    catch (err) { logger.warn(`Semantic cache refresh failed for ${filePath}: ${(err as Error).message}`); }
+                }
                 try {
                     const res = await this.indexFile(filePath);
                     if (res || diskContent === null) madeChanges = true;

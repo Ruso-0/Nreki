@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// nreki-enforcer:v4 — Claude Code PreToolUse hook installed by `nreki init`.
-// v4: like v3, but its state file is never written through a link.
+// nreki-enforcer:v5 — Claude Code PreToolUse hook installed by `nreki init`.
+// v5: native edits are previewed in the running kernel over authenticated local IPC.
+// Keeps state-file protection: never write through a link.
 //
 // Workflow nudge, NOT a sandbox (it cannot stop Bash). v3 follows token
 // economics: a PreToolUse hook runs AFTER the model generated the tool call,
@@ -11,15 +12,19 @@
 //     tokens ≈ 500 lines of code; NREKI_READ_MAX_TOKENS). offset/limit are
 //     honored. The block message carries the file's symbol outline, so the
 //     retry is ONE targeted Read, and repeating the same Read is allowed.
-//   - Edit / MultiEdit / Write: allowed. NREKI_ENFORCE_EDITS=1 redirects
-//     native edits of large code files to NREKI's validated edit tools.
+//   - Edit / MultiEdit / Write: silent IPC preview when supported. Without IPC,
+//     NREKI_ENFORCE_EDITS=1 redirects large edits to validated edit tools.
 //   - Only code files NREKI can outline are steered (not .md, .json, images).
 //   - Paths outside the project are left to Claude Code's own permissions
 //     (memory, plans, scratch files). A project path whose real location is
 //     outside the project (symlink escape) is blocked (NREKI-SEC-04).
-//   - Fails OPEN on any error and when no NREKI server runs for this project.
+//   - Missing/unreachable IPC fails open for compatibility. Once connected,
+//     failed validation or an invalid response blocks the native edit.
 import fs from "fs";
 import path from "path";
+import net from "net";
+import os from "os";
+import crypto from "crypto";
 
 const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
 const caseInsensitive = process.platform === "win32" || process.platform === "darwin";
@@ -89,6 +94,76 @@ function nrekiIsRunning() {
         }
     }
     return false;
+}
+
+function ipcEndpoint(pid) {
+    const canonical = norm(fs.realpathSync(projectDir));
+    const id = crypto.createHash("sha256").update(`${canonical}\0${pid}`).digest("hex").slice(0, 32);
+    return process.platform === "win32" ? `\\\\.\\pipe\\nreki-edit-${id}`
+        : path.join(os.tmpdir(), `nreki-edit-${id}.sock`);
+}
+
+/** Old servers have empty session markers: those keep the legacy behavior. */
+async function previewNativeEdit(tool, input) {
+    const dir = path.join(projectDir, ".nreki", "sessions");
+    let entries;
+    try {
+        if (!fs.lstatSync(path.dirname(dir)).isDirectory() || !fs.lstatSync(dir).isDirectory()) return null;
+        entries = fs.readdirSync(dir);
+    } catch { return null; }
+    let skipped = null;
+    for (const name of entries) {
+        if (!/^[1-9]\d*$/.test(name)) continue;
+        const marker = path.join(dir, name);
+        let token;
+        try {
+            const stat = fs.lstatSync(marker);
+            if (!stat.isFile() || stat.size > 4096) continue;
+            token = JSON.parse(fs.readFileSync(marker, "utf8")).token;
+            if (typeof token !== "string" || !/^[a-f0-9]{64}$/.test(token)) continue;
+            process.kill(Number(name), 0);
+        } catch { continue; }
+        const request = JSON.stringify({ token, tool_name: tool, tool_input: input }) + "\n";
+        if (Buffer.byteLength(request) > 4 * 1024 * 1024) {
+            return { status: "deny", error: "NREKI: native edit exceeds the 4 MiB IPC limit. Use batch_edit." };
+        }
+        const response = await new Promise(resolve => {
+            let connected = false;
+            let settled = false;
+            let data = "";
+            const socket = net.createConnection(ipcEndpoint(Number(name)));
+            socket.setEncoding("utf8");
+            const finish = result => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timer);
+                socket.destroy();
+                resolve(result);
+            };
+            const failed = () => finish(connected
+                ? { status: "deny", error: "NREKI: native-edit IPC validation did not complete. Use batch_edit to retry safely." }
+                : null);
+            const timer = setTimeout(failed, 30_000);
+            socket.once("connect", () => { connected = true; socket.write(request); });
+            socket.on("error", failed);
+            socket.once("close", () => { if (!settled) failed(); });
+            socket.on("data", chunk => {
+                data += chunk;
+                if (Buffer.byteLength(data) > 1024 * 1024) { failed(); return; }
+                const end = data.indexOf("\n");
+                if (end < 0) return;
+                try {
+                    const result = JSON.parse(data.slice(0, end));
+                    if (!result || !["allow", "deny", "skip"].includes(result.status)
+                        || (result.error !== undefined && typeof result.error !== "string")) { failed(); return; }
+                    finish(result);
+                } catch { failed(); }
+            });
+        });
+        if (response?.status === "skip") { skipped = response; continue; }
+        if (response) return response;
+    }
+    return skipped;
 }
 
 // ─── Repeat-Read escape hatch: one block per file, then the agent decides ───
@@ -197,7 +272,7 @@ function readBlockMessage(rel, est, start, end, total, outline) {
 let stdin = "";
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", chunk => stdin += chunk);
-process.stdin.on("end", () => {
+process.stdin.on("end", async () => {
     try {
         const payload = JSON.parse(stdin);
         const tool = String(payload.tool_name || payload.name || "");
@@ -224,6 +299,12 @@ process.stdin.on("end", () => {
 
         const ext = path.extname(absPath).toLowerCase();
         if (!CODE_EXTS.has(ext)) allow();
+
+        if (kind === "write") {
+            const result = await previewNativeEdit(tool, input);
+            if (result?.status === "allow") allow();
+            if (result?.status === "deny") deny(result.error || "NREKI: native edit rejected by validation.");
+        }
 
         let size = -1;
         try { size = fs.statSync(absPath).size; } catch { /* new file */ }

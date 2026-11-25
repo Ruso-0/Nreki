@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Claude hook v5 validates native `Edit`/`MultiEdit`/`Write` through authenticated, project-scoped local IPC (including LF edits against CRLF files and comment-only differential Anti-Sweep suppression checks). Success is silent; failures return diagnostics. Previews never write or auto-heal, restore state under one kernel lock, and preserve pending MCP transactions. Unavailable IPC retains legacy fallback; connected protocol failures block the edit.
+- The external-file watcher now refreshes semantic caches and invalidates topology on external `unlink`, while tracking ordered internal/Auto-Heal commits so NREKI's own writes never trigger false external reloads.
+- Spanish and hybrid `context` retrieval: `spanish-query` bridges Spanish software/business terms into English on the lexical BM25 side (preserving exact names/paths and natural Voyage queries), `KeywordIndex` filters unambiguous Spanish grammar stopwords, and `SearchEngine.fuseDense` prunes noisy dense-tail votes except when corroborating a full compound symbol-name match.
+- `CognitiveEnforcer` registers resolved qualified foveas on substring `compress focus`, unlocks whole-file density-shield fallbacks, and recognizes methods whose enclosing class was shown verbatim in `context` without unlocking sibling homonyms.
+- MCP initialization supplies concise `context` and `batch_edit` instructions even without `nreki init`, and dead `.nreki/sessions/<pid>` markers are reaped at startup and `deinit`.
+- Native validation retains the configured language/tsconfig coverage and cannot make the subsequent native write atomic. File/hologram edits that change declarations require the transactional workflow and project checker; shell writes are outside the hook.
+
 All notable changes to NREKI will be documented in this file.
 
 ## [12.1.2] - 2026-11-14

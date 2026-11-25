@@ -12,13 +12,13 @@
  *     of the verifier at the project root.
  * A different project here (a clinic), not that fixture.
  */
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import fs from "fs";
 import os from "os";
 import path from "path";
 import { createRequire } from "module";
 import { NrekiEngine } from "../src/engine.js";
-import { handleContext, extractTaskIdentifiers, splitTaskIssues } from "../src/handlers/context-pack.js";
+import { handleContext, extractTaskIdentifiers, splitTaskIssues, expandSpanishContextQuery } from "../src/handlers/context-pack.js";
 import type { RouterDependencies } from "../src/router.js";
 
 const require = createRequire(import.meta.url);
@@ -37,6 +37,7 @@ const FILES: Record<string, string> = {
     "src/schedule/calendar.ts": "import type { Booking } from \"./booking.js\";\nimport { overlaps } from \"./slots.js\";\n\nexport class DayCalendar {\n    constructor(private readonly bookings: Booking[]) {}\n\n    isFree(slot: Booking): boolean {\n        return !this.bookings.some(b => overlaps(b, slot));\n    }\n}\n",
     "src/reminders/outbox.ts": "import type { Booking } from \"../schedule/booking.js\";\n\n/** Reminder messages queued for tomorrow's appointments. */\nexport function remindersFor(bookings: Booking[]): string[] {\n    return bookings.map(b => `reminder at ${b.startMin}`);\n}\n",
     "src/reports/summary.ts": "/** The headline of the daily report. */\nexport function dailyHeadline(count: number): string {\n    return `${count} appointments today`;\n}\n",
+    "src/billing/rounding.ts": "export function invoiceRounding(amount: number): number {\n    return Math.floor(amount * 100) / 100;\n}\n",
     // A verifier outside src with a function named like a plain word of the task.
     "verify.mjs": "export function reminders() {\n    return [\"queued\", \"cancelled\"];\n}\n",
 };
@@ -93,6 +94,56 @@ describe("context: which code it picks", () => {
             expect(ids.strong).toContain(named);
             expect(ids.capitalized).not.toContain(named);
         }
+    });
+
+    it("expands Spanish domain words without changing English queries or exact code references", () => {
+        expect(expandSpanishContextQuery("Redondeo de facturación y facturas"))
+            .toBe("Redondeo de facturación y facturas rounding invoice billing");
+        for (const query of ["Fix invoice rounding", "Fix `facturas` in src/facturas.ts", "Fix factura_id and invoiceFacturas"]) {
+            expect(expandSpanishContextQuery(query)).toBe(query);
+        }
+        const long = "facturas importes precios descuentos impuestos pagos saldos envios pedidos clientes inventario citas calendario recordatorios";
+        expect(expandSpanishContextQuery(long).slice(long.length).trim().split(" ")).toHaveLength(16);
+        // English prose with words like "error", "terminal", "resume" must stay untouched
+        expect(expandSpanishContextQuery("Resume terminal session on compiler error")).toBe("Resume terminal session on compiler error");
+    });
+
+    it("finds English-only invoice rounding from Spanish using local BM25", async () => {
+        vi.stubEnv("NREKI_SEMANTIC", "");
+        try {
+            const query = "Corrige el redondeo de facturas";
+            expect(await engine.search(query)).toEqual([]);
+            const text = textOf(await handleContext({ action: "context", query, path: "src/billing" }, deps));
+            expect(text).toContain("export function invoiceRounding(amount: number): number {");
+            expect(text).not.toContain("remindersFor");
+        } finally { vi.unstubAllEnvs(); }
+    });
+
+    it("keeps the original Spanish query when Voyage is enabled", async () => {
+        vi.stubEnv("NREKI_SEMANTIC", "voyage");
+        vi.stubEnv("NREKI_VOYAGE_API_KEY", "test-key");
+        const search = vi.spyOn(engine, "search").mockResolvedValue([]);
+        try {
+            const query = "Corrige el redondeo de facturas";
+            await handleContext({ action: "context", query }, deps);
+            expect(search).toHaveBeenCalledExactlyOnceWith(query, 6);
+        } finally { search.mockRestore(); vi.unstubAllEnvs(); }
+    });
+
+    it("recalls all three independent Spanish issues in English-only code", async () => {
+        vi.stubEnv("NREKI_SEMANTIC", "");
+        try {
+            const query = [
+                "1. El redondeo de facturas devuelve importes incorrectos.",
+                "2. Las citas permiten una superposición del calendario.",
+                "3. Los recordatorios incluyen citas canceladas del calendario.",
+            ].join("\n");
+            const text = textOf(await handleContext({ action: "context", query, path: "src" }, deps));
+            expect(text).toContain("each of its 3 issues searched");
+            for (const symbol of ["invoiceRounding", "overlaps", "remindersFor"]) {
+                expect(text).toContain(`export function ${symbol}(`);
+            }
+        } finally { vi.unstubAllEnvs(); }
     });
 
     it("a class named at the start of a sentence does not cancel the search of the issues", async () => {

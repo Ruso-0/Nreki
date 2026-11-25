@@ -23,16 +23,21 @@ function tmp(prefix: string): string {
 }
 
 /** `.claude` inside the project is a link to a folder outside it. */
-function linkedClaudeDir(): { project: string; outside: string } {
+function linkedClaudeDir(ctx: { skip: (note?: string) => void }): { project: string; outside: string } {
     const project = tmp("nreki-hook-project-");
     const outside = tmp("nreki-hook-outside-");
     fs.mkdirSync(path.join(outside, "hooks"), { recursive: true });
-    fs.symlinkSync(outside, path.join(project, ".claude"), process.platform === "win32" ? "junction" : "dir");
+    try {
+        fs.symlinkSync(outside, path.join(project, ".claude"), process.platform === "win32" ? "junction" : "dir");
+    } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "EPERM") ctx.skip("environment blocks directory junctions");
+        throw err;
+    }
     return { project, outside };
 }
 
 const STOCK_V1 = "#!/usr/bin/env node\nif (/^(Write|Edit|Replace)(File)?$/i.test(tool)) {}\n";
-const UPSTREAM = "// nreki-enforcer:v4 — upgraded\n";
+const UPSTREAM = "// nreki-enforcer:v5 — upgraded\n";
 
 describe("hook upgrade at server start", () => {
     it("upgrades the stock hooks, and only those", () => {
@@ -50,6 +55,8 @@ describe("hook upgrade at server start", () => {
         // v3 wrote its state file through a `.nreki` link (audit of 0d48ca4).
         fs.writeFileSync(hook, "// nreki-enforcer:v3 — Claude Code PreToolUse hook\n");
         expect(upgradeEnforcerHook(project, () => UPSTREAM)).toBe("upgraded");
+        fs.writeFileSync(hook, "// nreki-enforcer:v4 — Claude Code PreToolUse hook\n");
+        expect(upgradeEnforcerHook(project, () => UPSTREAM)).toBe("upgraded");
         expect(upgradeEnforcerHook(project, () => UPSTREAM)).toBe("current");
 
         // A hook the user wrote (no stock matcher): left alone. It lacked "cwdPosix"
@@ -60,8 +67,8 @@ describe("hook upgrade at server start", () => {
         expect(fs.readFileSync(hook, "utf8")).toBe(custom);
     });
 
-    it("never writes through a link that leaves the project", () => {
-        const { project, outside } = linkedClaudeDir();
+    it("never writes through a link that leaves the project", (ctx) => {
+        const { project, outside } = linkedClaudeDir(ctx);
         const target = path.join(outside, "hooks", "nreki-enforcer.mjs");
         fs.writeFileSync(target, STOCK_V1);
         expect(unsafeWriteTarget(project, ".claude/hooks/nreki-enforcer.mjs")).toBe("a symbolic link");
@@ -71,8 +78,8 @@ describe("hook upgrade at server start", () => {
 });
 
 describe("nreki init", () => {
-    it("skips the files it would write through a linked folder, and writes the others", () => {
-        const { project, outside } = linkedClaudeDir();
+    it("skips the files it would write through a linked folder, and writes the others", (ctx) => {
+        const { project, outside } = linkedClaudeDir(ctx);
         const result = runInit({ cwd: project, agent: "claude" });
         const skipped = result.actions.filter(a => a.op === "skipped" && /symbolic link/.test(a.note ?? ""));
         expect(skipped.map(a => a.path.replace(/\\/g, "/")).sort()).toEqual([

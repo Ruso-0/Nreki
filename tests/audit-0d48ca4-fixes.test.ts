@@ -136,16 +136,21 @@ describe("1: the whole value of a secret name is blanked before it leaves for Vo
 });
 
 /** `.nreki` inside the project is a link to a folder outside it. */
-function linkedNreki(): { root: string; outside: string } {
+function linkedNreki(ctx: { skip: (note?: string) => void }): { root: string; outside: string } {
     const root = tmp("nreki-link-project-");
     const outside = tmp("nreki-link-outside-");
-    fs.symlinkSync(outside, path.join(root, ".nreki"), process.platform === "win32" ? "junction" : "dir");
+    try {
+        fs.symlinkSync(outside, path.join(root, ".nreki"), process.platform === "win32" ? "junction" : "dir");
+    } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "EPERM") ctx.skip("environment blocks directory junctions");
+        throw err;
+    }
     return { root, outside };
 }
 
 describe("2: NREKI's own files are never written through a `.nreki` link", () => {
-    it("the repo map cache and the Chronos history: not written outside, the map still served", async () => {
-        const { root, outside } = linkedNreki();
+    it("the repo map cache and the Chronos history: not written outside, the map still served", async (ctx) => {
+        const { root, outside } = linkedNreki(ctx);
         write(root, { "src/math.ts": "export function addAmounts(a: number, b: number): number {\n    return a + b;\n}\n" });
         write(outside, { "repo-map.json": "SENTINEL", "chronos-history.json": "SENTINEL" });
 
@@ -158,8 +163,8 @@ describe("2: NREKI's own files are never written through a `.nreki` link", () =>
         expect(fs.readFileSync(path.join(outside, "chronos-history.json"), "utf8")).toBe("SENTINEL");
     });
 
-    it("pins and undo backups refuse with the reason; quarantine moves nothing", () => {
-        const { root, outside } = linkedNreki();
+    it("pins and undo backups refuse with the reason; quarantine moves nothing", (ctx) => {
+        const { root, outside } = linkedNreki(ctx);
         write(root, { "src/a.ts": "export const a = 1;\n" });
         expect(() => addPin(root, "Always run the tests", "user")).toThrow(/symbolic link/);
         expect(() => saveBackup(root, "src/a.ts")).toThrow(/symbolic link/);
@@ -168,8 +173,8 @@ describe("2: NREKI's own files are never written through a `.nreki` link", () =>
         expect(fs.readdirSync(outside).sort()).toEqual(["pins.json"]);
     });
 
-    it("the kernel neither deletes the linked transactions folder at boot nor commits through it", async () => {
-        const { root, outside } = linkedNreki();
+    it("the kernel neither deletes the linked transactions folder at boot nor commits through it", async (ctx) => {
+        const { root, outside } = linkedNreki(ctx);
         write(root, { "tsconfig.json": TSCONFIG(), "src/a.ts": "export const a: number = 1;\n" });
         // A folder of the same name the link points at: WAL recovery deleted it recursively.
         write(outside, { "transactions/keep.txt": "user data" });
@@ -187,7 +192,7 @@ describe("2: NREKI's own files are never written through a `.nreki` link", () =>
 
     it("the installed hook (v4) writes its state through no link either", () => {
         const hook = fs.readFileSync(new URL("../templates/hooks/nreki-enforcer.mjs", import.meta.url), "utf8");
-        expect(hook).toContain("nreki-enforcer:v4");
+        expect(hook).toContain("nreki-enforcer:v5");
         expect(hook).toMatch(/lstatSync\(path\.dirname\(STATE_FILE\)\)\.isDirectory\(\)/);
         expect(hook).toContain("{ flag: \"wx\" }");
     });

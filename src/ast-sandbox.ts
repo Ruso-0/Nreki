@@ -83,6 +83,8 @@ const EXT_TO_LANGUAGE: Record<string, string> = {
     ".h": "c",
 };
 
+const COMMENT_NODE_TYPES = new Set(["comment", "line_comment", "block_comment", "multiline_comment"]);
+
 // ─── AstSandbox ──────────────────────────────────────────────────────
 
 export class AstSandbox {
@@ -287,7 +289,44 @@ export class AstSandbox {
         return result;
     }
 
+    /**
+     * Extract only AST comment node slices (joined by newline) for differential
+     * suppression checks so string/template literals never cause false positives.
+     */
+    async extractCommentText(code: string, language: string): Promise<string | null> {
+        await this.initialize();
+        const lang = await this.loadLanguage(language);
+        if (!lang) return null;
+        const parser = await this.pool.acquire(lang, language);
+        try {
+            return safeParse(parser, code, (tree) => {
+                const comments: string[] = [];
+                this.collectComments(tree.rootNode, code, comments, 0);
+                return comments.join("\n");
+            });
+        } finally {
+            this.pool.release(language, parser);
+        }
+    }
+
     // ─── Tree Walking ──────────────────────────────────────────────
+
+    private collectComments(
+        node: Parser.SyntaxNode,
+        code: string,
+        out: string[],
+        depth: number = 0,
+    ): void {
+        if (depth > 500) return;
+        if (COMMENT_NODE_TYPES.has(node.type)) {
+            out.push(code.slice(node.startIndex, node.endIndex));
+            return;
+        }
+        for (let i = 0; i < node.childCount; i++) {
+            const child = node.child(i);
+            if (child) this.collectComments(child, code, out, depth + 1);
+        }
+    }
 
     /**
      * Python: a compound statement whose body is not indented (`def f():`

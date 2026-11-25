@@ -84,6 +84,65 @@ const optIn = () => {
     vi.stubEnv("VOYAGE_API_KEY", "pa-test");
 };
 
+it("distinguishes qualifiers and short identifier components in a lexical symbol match", async () => {
+    const dir = makeProject();
+    const db = new NrekiDB(path.join(dir, "names.db"), dir);
+    await db.initialize();
+    cleanups.push(() => db.close());
+    const candidates = ["creditsBeforeTax", "creditsAfterTax", "applyCredits", "doNotApplyCredits", "applyCreditsV2"]
+        .map((symbol_name, id) => ({ id, symbol_name }));
+    expect([...db.matchingSymbolIds("credits before tax", candidates)]).toEqual([0]);
+    expect([...db.matchingSymbolIds("apply credit", candidates)]).toEqual([2]);
+});
+
+it("keeps a weak dense vote only for a strong lexical match to the compound symbol name", async () => {
+    const dir = makeProject();
+    const head = Array.from({ length: 10 }, (_, i) => `worker${i}`);
+    const tail = ["applyDeadlines", "credit", "applyCredits"];
+    for (const name of [...head, ...tail]) {
+        fs.writeFileSync(path.join(dir, "src", `${name}.ts`),
+            `export function ${name}(amount: number) { return amount + 1; }\n`);
+    }
+
+    optIn();
+    vi.stubGlobal("fetch", voyageMock().fn);
+    const engine = await openEngine(dir);
+    await engine.indexDirectory(dir);
+    await engine.syncSemanticIndex();
+    const ids = await Promise.all([...head, ...tail].map(async name =>
+        (await engine.getChunksBySymbolExact(name, true))[0]!.id));
+    const dense = vi.spyOn(VectorIndex.prototype, "searchQuery");
+    try {
+        const search = async (tailScores: number[]) => {
+            const scores = [...head.map(() => 0.9), ...tailScores];
+            dense.mockResolvedValue(ids.map((id, i) => ({ id, score: scores[i] })));
+            return engine.search("apply credit", 20);
+        };
+        const without = await search([0, 0, 0]);
+        const withTail = await search([0.3, 0.2, 0.1]);
+        const score = (hits: typeof withTail, name: string) => hits.find(r => r.symbolName === name)!.score;
+
+        // A lower path prior can sort a strong dense hit behind pruned source chunks.
+        // Its established vote must survive both pruning and a new name-based vote.
+        const pathBoost = vi.spyOn(NrekiDB.prototype, "pathBoost")
+            .mockImplementation(file => path.basename(file) === "credit.ts" ? 0.5 : 1.35);
+        try {
+            const strong = await search([0, 0.9, 0]);
+            const withInterveningHits = await search([0.5, 0.9, 0.4]);
+            expect(score(withInterveningHits, "credit")).toBe(score(strong, "credit"));
+        } finally {
+            pathBoost.mockRestore();
+        }
+        expect(withTail[0]?.symbolName).toBe("applyCredits");
+        expect(score(withTail, "applyCredits")).toBeGreaterThan(score(without, "applyCredits"));
+        for (const partial of ["applyDeadlines", "credit"]) {
+            expect(score(withTail, partial)).toBe(score(without, partial));
+        }
+    } finally {
+        dense.mockRestore();
+    }
+});
+
 describe("Voyage semantic index (opt-in)", () => {
     it("is off with only VOYAGE_API_KEY set: no vectors, no network", async () => {
         vi.stubEnv("NREKI_SEMANTIC", "");
@@ -153,6 +212,58 @@ describe("Voyage semantic index (opt-in)", () => {
         await semantic.syncSemanticIndex();
         const hits = await semantic.search(CONCEPT_QUERY, 5);
         expect(hits[0]?.path.endsWith("limits.ts")).toBe(true);
+    });
+
+    it("does not let weak BM25 Spanish-comment matches in the dense tail outrank the #1 semantic hit", async () => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), "nreki-voyage-rrf-"));
+        cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+        fs.mkdirSync(path.join(dir, "src/utils"), { recursive: true });
+        fs.writeFileSync(
+            path.join(dir, "src/utils/suppression-guard.ts"),
+            "// Blocks edits that add comments silencing compiler or linter checks.\n" +
+            "export function findNewSuppressions(before: string, after: string): string[] {\n" +
+            "    return after === before ? [] : ['blocked'];\n" +
+            "}\n",
+        );
+        // 20 distractor files with Spanish comments sharing words with the Spanish query
+        for (let i = 0; i < 20; i++) {
+            fs.writeFileSync(
+                path.join(dir, `src/orchestrator-${i}.ts`),
+                `// Cuando el agente tiene errores del compilador antes de validar comentarios (${i})\n` +
+                `export function runStep${i}(input: number): number {\n    return input + ${i};\n}\n`,
+            );
+        }
+
+        optIn();
+        vi.stubGlobal("fetch", vi.fn(async (_url: string, init: { body: string }) => {
+            const body = JSON.parse(init.body) as Body;
+            const vecFor = (text: string): number[] => {
+                if (body.input_type === "query") return [1, 0, 0, 0];
+                if (text.includes("suppression-guard.ts")) return [0.98, 0.20, 0, 0];
+                // Distractors sit in the noisy dense tail (~0.30 cosine)
+                return [0.30, 0.95, 0, 0];
+            };
+            return {
+                ok: true,
+                status: 200,
+                headers: new Headers(),
+                json: async () => ({ data: body.input.map((text, index) => ({ index, embedding: vecFor(text) })) }),
+            };
+        }));
+
+        const engine = await openEngine(dir);
+        await engine.indexDirectory(dir);
+        await engine.syncSemanticIndex();
+
+        const hits = await engine.search(
+            "Impide que el agente silencie errores del compilador añadiendo comentarios especiales",
+            4,
+        );
+        expect(hits.some(h => h.path.endsWith("suppression-guard.ts"))).toBe(true);
+        expect(hits[0]?.path.endsWith("suppression-guard.ts")).toBe(true);
+        // And the strongest lexical hit still retains a top-4 slot when dense hits are disjoint
+        expect(hits.some(h => h.path.includes("orchestrator-"))).toBe(true);
     });
 
     it("stops on an invalid key without retrying, and search still answers from BM25", async () => {

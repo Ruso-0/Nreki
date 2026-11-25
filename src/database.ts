@@ -1135,6 +1135,19 @@ export class NrekiDB {
         return stale.length;
     }
 
+    /** Candidate names whose two or more distinct BM25 terms all occur in the query. */
+    matchingSymbolIds(query: string, candidates: ReadonlyArray<Pick<HybridSearchResult, "id" | "symbol_name">>): Set<number> {
+        const queryTerms = new Set(this.kwIndex.tokenize(query, true));
+        const matches = new Set<number>();
+        for (const candidate of candidates) {
+            const name = candidate.symbol_name;
+            if (new Set(this.kwIndex.tokenize(name)).size < 2) continue;
+            // Words ignored by BM25 can distinguish names such as creditsBeforeTax and creditsAfterTax.
+            if (this.kwIndex.tokenize(name, true).every(term => queryTerms.has(term))) matches.add(candidate.id);
+        }
+        return matches;
+    }
+
     /** Path prior (src/ up, tests/scripts/docs down) for rankings built outside BM25. */
     pathBoost(filePath: string, nodeType: string = ""): number {
         return this.getPathBoost(filePath, nodeType);

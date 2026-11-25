@@ -35,10 +35,20 @@ export class KeywordIndex {
         "each", "same", "some", "such", "than", "too", "very", "just", "also",
         "only", "both", "about", "between", "under", "over", "again", "further",
         "once", "here", "there", "out", "up", "down", "off", "two",
+        // Unambiguous Spanish function words (kept disjoint from short code/math/locale
+        // tokens such as `sin`, `el`, `lo`, `le`, `es`, `con`, `al`, `de`, `en`, `la`, `un`, `se`):
+        "del", "las", "los", "una", "uno", "unas", "unos",
+        "para", "por", "sobre", "entre", "hasta", "desde", "hacia",
+        "antes", "despues", "durante", "cuando", "donde", "como",
+        "quien", "cual", "cuales", "que", "porque", "aunque", "pero", "sino",
+        "tambien", "ademas", "este", "esta", "estos", "estas",
+        "ese", "esa", "esos", "esas", "todo", "toda", "todos", "todas",
+        "cada", "otro", "otra", "otros", "otras", "mismo", "misma", "mismos", "mismas",
+        "sus", "les", "muy", "mas",
     ]);
 
     /** Tokenize text into normalized terms with code-aware splitting. */
-    private tokenize(text: string): string[] {
+    tokenize(text: string, includeIgnored = false): string[] {
         // FIX 5: Apply code-aware tokenizer before stemming.
         // Accents and ñ are folded first: "configuración" was split into
         // "configuraci" + "n" and matched neither Spanish comments nor ASCII names.
@@ -47,7 +57,7 @@ export class KeywordIndex {
             .replace(/\p{M}/gu, "")
             .replace(/[^a-zA-Z0-9_.]/g, " ")
             .split(/\s+/)
-            .filter((t) => t.length > 1);
+            .filter(t => t.length > (includeIgnored ? 0 : 1));
 
         const allTerms: string[] = [];
         for (const raw of rawTokens) {
@@ -55,13 +65,13 @@ export class KeywordIndex {
             const subTokens = codeTokenize(raw);
             if (subTokens.length > 0) {
                 for (const sub of subTokens) {
-                    if (sub.length > 1 && !KeywordIndex.STOPWORDS.has(sub)) {
+                    if (includeIgnored || (sub.length > 1 && !KeywordIndex.STOPWORDS.has(sub))) {
                         allTerms.push(this.stem(sub));
                     }
                 }
             } else {
                 const lower = raw.toLowerCase();
-                if (!KeywordIndex.STOPWORDS.has(lower)) {
+                if (includeIgnored || !KeywordIndex.STOPWORDS.has(lower)) {
                     allTerms.push(this.stem(lower));
                 }
             }

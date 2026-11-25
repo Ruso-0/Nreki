@@ -36,6 +36,10 @@ import { readSource } from "../utils/read-source.js";
 import { isSensitivePath, safePath } from "../utils/path-jail.js";
 import { escapeRegExp, extractDependencies, isSensitiveSignature } from "../utils/imports.js";
 import { goPackageHolds, jsDeclarationSite, jsImportBindings, pythonModuleHolds } from "../utils/import-origin.js";
+import { expandSpanishContextQuery } from "../utils/spanish-query.js";
+import { resolveVoyageConfig } from "../search/voyage.js";
+
+export { expandSpanishContextQuery } from "../utils/spanish-query.js";
 
 /** Default size of the package (estimated tokens). */
 export const CONTEXT_DEFAULT_BUDGET = 2000;
@@ -58,6 +62,7 @@ const HELPERS_MAX = 12;
 /** Parts of a task searched one by one, and the hits kept per part. */
 const ISSUES_MAX = 6;
 const HITS_PER_ISSUE = 3;
+
 export const CONTEXT_EDIT_HINT =
     "To edit: one batch_edit with every change; in code mode, run your tests/checker right after it, in the same cell (a rejected batch writes nothing).";
 
@@ -178,7 +183,9 @@ async function searchTask(
 ): Promise<{ hits: ChunkRecord[]; files: Set<string>; empty: string[] }> {
     // A scope drops hits: ask for more, keep the first k inside it.
     const find = async (query: string, k: number): Promise<SearchResult[]> => {
-        const found = await engine.search(query, scope ? k * 3 : k);
+        // Dense embeddings already understand Spanish; keep their input unchanged.
+        const searchQuery = resolveVoyageConfig() ? query : expandSpanishContextQuery(query);
+        const found = await engine.search(searchQuery, scope ? k * 3 : k);
         return (scope ? found.filter(r => scope(r.path)) : found).slice(0, k);
     };
     if (issues.length === 1) {
@@ -259,7 +266,8 @@ async function meetingFile(engine: NrekiEngine, root: string, list: SearchResult
 
 const fromSearch = (r: SearchResult): ChunkRecord => ({
     id: 0, path: r.path, shorthand: r.shorthand, raw_code: r.rawCode, node_type: r.nodeType,
-    start_line: r.startLine, end_line: r.endLine, start_index: 0, end_index: 0, symbol_name: r.symbolName ?? "",
+    start_line: r.startLine, end_line: r.endLine, start_index: 0, end_index: 0,
+    symbol_name: r.symbolName ?? "", qualified_name: r.qualifiedName ?? "",
 });
 
 /** The file's text, LF, when it is inside the project, not a secrets path, and readable. */
@@ -539,7 +547,10 @@ export async function handleContext(params: NavigateParams, deps: RouterDependen
                 used += cost;
                 blocks.push(`${header}\n${body}`);
                 wholeShown.add(file);
-                shownByFile.set(file, items.map(p => p.chunk.symbol_name).filter(Boolean));
+                const absWhole = path.resolve(root, file);
+                deps.enforcer?.registerRawRead(absWhole);
+                deps.chronos?.markReadUncompressed(absWhole);
+                shownByFile.set(file, items.map(p => p.chunk.qualified_name || p.chunk.symbol_name).filter(Boolean));
                 shownCode.push({ file, text: fileText, code: body });
                 continue;
             }
@@ -562,7 +573,8 @@ export async function handleContext(params: NavigateParams, deps: RouterDependen
             blocks.push(`${header}\n${body}`);
             const names = shownByFile.get(file) ?? [];
             // A symbol cut to its first line was not read: it must not unlock a blind replace.
-            if (c.symbol_name && lineCount <= VERBATIM_MAX_LINES) names.push(c.symbol_name);
+            const symKey = c.qualified_name || c.symbol_name;
+            if (symKey && lineCount <= VERBATIM_MAX_LINES) names.push(symKey);
             shownByFile.set(file, names);
             if (fileText !== null && lineCount <= VERBATIM_MAX_LINES) shownCode.push({ file, text: fileText, code: c.raw_code });
         }

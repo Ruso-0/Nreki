@@ -313,6 +313,8 @@ export async function handleCompress(
             const bypassLineCount = rawForBypass.split("\n").length;
             if (bypassLineCount < 100) {
                 engine.markFileRead(resolvedPath);
+                deps.enforcer?.registerRawRead(resolvedPath);
+                deps.chronos?.markReadUncompressed(resolvedPath);
                 const shown = estimateTokens(rawForBypass);
                 engine.logUsage("nreki_compress", shown, shown, 0);
                 return {
@@ -366,6 +368,7 @@ export async function handleCompress(
             if (tfcPayload.kind === "success") {
                 const tfcResult = tfcPayload.data;
                 engine.markFileRead(resolvedPath);
+                deps.enforcer?.registerFocusedSymbols(resolvedPath, tfcResult.zones.qualifiedFoveas);
 
                 const compressedTokens = estimateTokens(tfcResult.compressed);
                 engine.logUsage("nreki_compress_tfc",
@@ -378,6 +381,10 @@ export async function handleCompress(
                 // humans; the agent pays them on every later request.
                 const name = path.basename(resolvedPath);
                 const whole = tfcResult.compressed === content;
+                if (whole) {
+                    deps.enforcer?.registerRawRead(resolvedPath);
+                    deps.chronos?.markReadUncompressed(resolvedPath);
+                }
                 const header = whole
                     ? `${name} (whole file, ${content.split("\n").length}L)`
                     : `${name} [${tfcResult.zones.foveas.join(", ")}]` +
@@ -393,6 +400,8 @@ export async function handleCompress(
                 // than any view of it. It used to answer an ERROR asking for a
                 // second call (action:"read"), i.e. one more full-context turn.
                 engine.markFileRead(resolvedPath);
+                deps.enforcer?.registerRawRead(resolvedPath);
+                deps.chronos?.markReadUncompressed(resolvedPath);
                 const tokens = estimateTokens(content);
                 engine.logUsage("nreki_compress_tfc", tokens, tokens, 0);
                 return {

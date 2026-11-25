@@ -7,7 +7,7 @@
 import fs from "fs";
 import path from "path";
 import { quarantineFile, signState, verifyState } from "../utils/trust.js";
-import { memberName } from "../utils/qualified-name.js";
+import { memberName, splitQualifiedName } from "../utils/qualified-name.js";
 import { writeStateFile } from "../utils/path-jail.js";
 
 /**
@@ -49,7 +49,12 @@ interface FilePassport {
  */
 function sawSymbol(pass: FilePassport, symbol: string): boolean {
     if (pass.focusedSymbols.has(symbol)) return true;
-    if (memberName(symbol) !== symbol) return pass.focusedSymbols.has(memberName(symbol));
+    const q = splitQualifiedName(symbol);
+    if (q) {
+        return pass.focusedSymbols.has(q.member)
+            || pass.focusedSymbols.has(q.container)
+            || pass.focusedSymbols.has(`${q.container}.${q.member}`);
+    }
     for (const seen of pass.focusedSymbols) if (memberName(seen) === symbol) return true;
     return false;
 }

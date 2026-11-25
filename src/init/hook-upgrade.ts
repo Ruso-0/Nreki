@@ -5,7 +5,7 @@
  * contain "cwdPosix": any file at that path, including a hook the user wrote,
  * and, through a symbolic link shipped in a cloned repository, a file outside
  * the project (`-> ~/.bashrc`). Now only a hook NREKI wrote is upgraded (the
- * v1 stock hook, which every pre-v3 NREKI hook contains, or a tagged v2/v3
+ * v1 stock hook, which every pre-v3 NREKI hook contains, or a tagged v2/v3/v4
  * one), and never through a link.
  */
 
@@ -22,11 +22,11 @@ export function upgradeEnforcerHook(cwd: string, upstreamHook: () => string): Ho
     if (unsafeWriteTarget(cwd, HOOK_REL_PATH)) return fs.existsSync(hookPath) ? "unsafe-path" : "absent";
     if (!fs.existsSync(hookPath)) return "absent";
     const current = fs.readFileSync(hookPath, "utf-8");
-    if (current.includes("nreki-enforcer:v4")) return "current";
-    // v1 stock (and every older NREKI hook) carries this matcher; v2 and v3 are
-    // tagged (v3 wrote its state file through a `.nreki` link).
+    if (current.includes("nreki-enforcer:v5")) return "current";
+    // Tagged v2-v4 hooks are stock; v3 wrote state through a `.nreki` link,
+    // v4 fixed that, and v5 adds native-edit validation.
     const isStockV1 = !current.includes("nreki-enforcer:v") && current.includes("/^(Write|Edit|Replace)(File)?$/i");
-    const isTagged = /nreki-enforcer:v[23]\b/.test(current);
+    const isTagged = /nreki-enforcer:v[234]\b/.test(current);
     if (!isStockV1 && !isTagged) return "not-nreki";
     fs.writeFileSync(hookPath, upstreamHook(), "utf-8");
     return "upgraded";

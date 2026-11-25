@@ -192,7 +192,8 @@ export async function handleEdit(
             };
         }
 
-        if (result.newContent) {
+        const kernelTracksStaged = useKernel && typeof deps.kernel?.getStagedWrites === "function";
+        if (result.newContent && !kernelTracksStaged) {
             engine.expectInternalEdit(resolvedPath, result.newContent);
         }
 
@@ -290,13 +291,13 @@ export async function handleEdit(
                     `**File:** ${file}\n\n`,
                 );
                 if (verifyResult.response) {
-                    engine.cancelInternalEdit(resolvedPath);
+                    if (!kernelTracksStaged) engine.cancelInternalEdit(resolvedPath, result.newContent);
                     return verifyResult.response;
                 }
                 ttrdFeedback = verifyResult.ttrdFeedback;
 
             } catch (kernelError) {
-                engine.cancelInternalEdit(resolvedPath);
+                if (!kernelTracksStaged) engine.cancelInternalEdit(resolvedPath, result.newContent);
                 logger.error(`Kernel error during edit verification: ${kernelError}`);
                 try { await deps.kernel.rollbackAll(); } catch (e) {
                     logger.error(`Rollback after kernel crash also failed: ${e}`);
@@ -549,7 +550,8 @@ export async function handleBatchEdit(
             };
         }
 
-        if (result.vfs) {
+        const kernelTracksBatchStaged = useKernel && typeof deps.kernel?.getStagedWrites === "function";
+        if (result.vfs && !kernelTracksBatchStaged) {
             for (const [vfsPath, virtualContent] of result.vfs.entries()) {
                 engine.expectInternalEdit(vfsPath, virtualContent);
             }
@@ -625,7 +627,11 @@ export async function handleBatchEdit(
                             // NREKI-INT-06: mirror handleEdit. The batch path used to fall
                             // through with ZERO dependents and commit, leaving every caller
                             // outside the batch unvalidated.
-                            for (const vfsPath of result.vfs!.keys()) engine.cancelInternalEdit(vfsPath);
+                            if (!kernelTracksBatchStaged) {
+                                for (const [vfsPath, virtualContent] of result.vfs!.entries()) {
+                                    engine.cancelInternalEdit(vfsPath, virtualContent);
+                                }
+                            }
                             return {
                                 content: [{
                                     type: "text" as const,
@@ -662,9 +668,9 @@ export async function handleBatchEdit(
                         `**Files involved:** ${result.fileCount}\n\n`,
                     );
                     if (verifyResult.response) {
-                        if (result.vfs) {
-                            for (const vfsPath of result.vfs.keys()) {
-                                engine.cancelInternalEdit(vfsPath);
+                        if (result.vfs && !kernelTracksBatchStaged) {
+                            for (const [vfsPath, virtualContent] of result.vfs.entries()) {
+                                engine.cancelInternalEdit(vfsPath, virtualContent);
                             }
                         }
                         return verifyResult.response;
@@ -672,9 +678,9 @@ export async function handleBatchEdit(
                     batchTtrdFeedback = verifyResult.ttrdFeedback;
                 }
             } catch (kernelError) {
-                if (result.vfs) {
-                    for (const vfsPath of result.vfs.keys()) {
-                        engine.cancelInternalEdit(vfsPath);
+                if (result.vfs && !kernelTracksBatchStaged) {
+                    for (const [vfsPath, virtualContent] of result.vfs.entries()) {
+                        engine.cancelInternalEdit(vfsPath, virtualContent);
                     }
                 }
                 logger.error(`Kernel error during batch verification: ${kernelError}`);

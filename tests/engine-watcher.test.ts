@@ -74,6 +74,8 @@ describe("engine watcher and fast_grep bootstrap", () => {
     });
 
     it("updates stale chunks after an external write", async () => {
+        const changed: string[] = [];
+        engine.onExternalFileChange(async file => { changed.push(file); });
         const file = path.join(tmpDir, "src", "reactive.ts");
         fs.writeFileSync(file, [
             "export function reactive(): string {",
@@ -93,6 +95,20 @@ describe("engine watcher and fast_grep bootstrap", () => {
 
         await waitFor(async () => {
             expectFastGrepHit(await fastGrepText("REACTIVE_NEW_TOKEN"), "REACTIVE_NEW_TOKEN");
+            expect(changed.map(p => path.resolve(p))).toContain(file);
+        });
+    });
+
+    it("keeps indexing when a semantic refresh fails", async () => {
+        const file = path.join(tmpDir, "src", "refresh.ts");
+        fs.writeFileSync(file, "export const refresh = 1;\n");
+        await engine.initialize();
+        await engine.indexFile(file);
+        engine.onExternalFileChange(async () => { throw new Error("temporary semantic failure"); });
+        await engine.startWatcher();
+        fs.writeFileSync(file, 'export const refresh = "REFRESH_RECOVERY_TOKEN";\n');
+        await waitFor(async () => {
+            expectFastGrepHit(await fastGrepText("REFRESH_RECOVERY_TOKEN"), "REFRESH_RECOVERY_TOKEN");
         });
     });
 
@@ -141,5 +157,57 @@ describe("engine watcher and fast_grep bootstrap", () => {
 
         expect(connectIndex).toBeGreaterThan(-1);
         expect(watcherIndex).toBeGreaterThan(connectIndex);
+    });
+
+    it("ignores back-to-back internal edits and still detects a subsequent external edit", async () => {
+        const externalEvents: string[] = [];
+        engine.onExternalFileChange(async file => { externalEvents.push(path.resolve(file)); });
+        const file = path.join(tmpDir, "src", "seq.ts");
+        fs.writeFileSync(file, "export const seq = 'V0';\n", "utf-8");
+
+        await engine.initialize();
+        await engine.indexFile(file);
+        await engine.startWatcher();
+
+        const v1 = "export const seq = 'INTERNAL_V1';\n";
+        const v2 = "export const seq = 'INTERNAL_V2';\n";
+        engine.expectInternalEdit(file, v1);
+        fs.writeFileSync(file, v1, "utf-8");
+        engine.expectInternalEdit(file, v2);
+        fs.writeFileSync(file, v2, "utf-8");
+
+        await waitFor(async () => {
+            expectFastGrepHit(await fastGrepText("INTERNAL_V2"), "INTERNAL_V2");
+        });
+        await sleep(150);
+        expect(externalEvents).toEqual([]);
+
+        // Now an external edit reverts back to V1: must NOT be swallowed by superseded V1 ticket!
+        fs.writeFileSync(file, v1, "utf-8");
+        await waitFor(async () => {
+            expectFastGrepHit(await fastGrepText("INTERNAL_V1"), "INTERNAL_V1");
+            expect(externalEvents).toContain(path.resolve(file));
+        });
+    });
+
+    it("notifies externalFileChange and invalidates dependency graph on external unlink", async () => {
+        const externalEvents: string[] = [];
+        engine.onExternalFileChange(async file => { externalEvents.push(path.resolve(file)); });
+        const base = path.join(tmpDir, "src", "base.ts");
+        const leaf = path.join(tmpDir, "src", "leaf.ts");
+        fs.writeFileSync(base, "export const shared = 1;\n", "utf-8");
+        fs.writeFileSync(leaf, "import { shared } from './base.js';\nexport const val = shared;\n", "utf-8");
+
+        await engine.initialize();
+        await engine.indexDirectory(path.join(tmpDir, "src"));
+        expect(await engine.findDependents("base.ts")).toContain("leaf.ts");
+
+        await engine.startWatcher();
+        fs.unlinkSync(leaf);
+
+        await waitFor(async () => {
+            expect(externalEvents).toContain(path.resolve(leaf));
+            expect(await engine.findDependents("base.ts")).not.toContain("leaf.ts");
+        });
     });
 });

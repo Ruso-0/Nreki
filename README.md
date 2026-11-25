@@ -11,6 +11,10 @@
 
 **MCP plugin that validates AI agent edits in RAM before they touch disk.** When Claude Code, Cursor, or Copilot changes a function signature in one file and breaks 30 others, NREKI catches it in milliseconds - the file is never written. If the error is structural (missing import, forgotten `await`), NREKI auto-fixes it in RAM. Zero tokens wasted on fix-retry doom loops.
 
+**Unreleased — native edit preflight and Spanish/hybrid recall.** The Claude hook v5 previews `Edit`, `MultiEdit` and `Write` over authenticated local IPC. Accepted edits add no hook output to the model's context; rejected edits return diagnostics before the native tool writes. MCP initialization also supplies the `context` / `batch_edit` workflow, and `context` / hybrid search bridges Spanish software/business terms into English on the lexical side while keeping exact names, paths and Voyage queries unchanged.
+
+The preview never writes proposed code or auto-heals. It restores the kernel under the same lock, and the watcher refreshes semantic caches after external writes. Validation follows the configured language coverage: TypeScript, checked JavaScript (`allowJs` + `checkJs`), and configured Python/Go LSP backends; other supported languages and syntax mode receive syntax validation. Files outside the active tsconfig (including not-yet-created TypeScript files) and known importers built elsewhere require `batch_edit` and their own checker. In file/hologram modes, native edits that change exported declarations, global scope or program membership also require that workflow. Missing/unreachable IPC keeps the previous hook behavior; once connected, timeout or malformed replies block the edit. This preflight cannot make the later native write atomic with validation: use `batch_edit` for NREKI's transactional writes. The hook does not intercept shell writes.
+
 **v12.1.2 — fixes from an external audit of 12.1.1.**
 - Secrets are blanked across a typed or commented initializer before code is sent to the optional Voyage index.
 - NREKI never writes its own files (`.nreki/…`) through a link; the installed hook is v4.
