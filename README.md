@@ -11,7 +11,7 @@
 
 **MCP plugin that validates AI agent edits in RAM before they touch disk.** When Claude Code, Cursor, or Copilot changes a function signature in one file and breaks 30 others, NREKI catches it in milliseconds - the file is never written. If the error is structural (missing import, forgotten `await`), NREKI auto-fixes it in RAM. Zero tokens wasted on fix-retry doom loops.
 
-**v12.4.0 — a box for the Voyage key.** `npx nreki init` asks for your Voyage API key (a small window on Windows, a hidden prompt elsewhere), checks it with Voyage, saves it outside every project (`~/.nreki/voyage.key`) and turns semantic search on for the project. It never asks when an agent runs `init`.
+**v12.4.1 — a box for the Voyage key.** `npx nreki init` asks for your Voyage API key (a small window on Windows, a hidden prompt elsewhere), checks it with Voyage, saves it outside every project (`~/.nreki/voyage.key`) and turns semantic search on for the project. It never asks when an agent runs `init`.
 
 **v12.3.0 — one command installs NREKI.** Run `npx nreki init` in a project: it writes each agent's instructions and registers NREKI as that agent's MCP server (Claude Code, Codex, Antigravity, Cursor, VS Code/Copilot), with the project folder pinned so NREKI indexes the right code. Without agent files in the project it installs for the agents found on your computer. `--voyage` turns on semantic search. `NREKI_PROJECT_ROOT` names the project for hosts that start servers in another folder (measured: Antigravity starts a global plugin's server in the plugin folder). `npx nreki deinit` removes the registrations too.
 

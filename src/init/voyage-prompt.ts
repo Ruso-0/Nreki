@@ -103,7 +103,10 @@ export function askViaWindowsDialog(t: DialogTexts): VoyageChoice | null {
         {
             env: { ...process.env, NREKI_DIALOG: JSON.stringify(t) },
             encoding: "utf8",
-            windowsHide: true,
+            // No windowsHide: Windows applies a launcher's SW_HIDE to the FIRST
+            // window the child shows, which here is the box itself (measured: the
+            // box opened invisible). Run from a terminal, PowerShell shares the
+            // terminal's console, so no extra window appears.
             timeout: 30 * 60_000,
         },
     );

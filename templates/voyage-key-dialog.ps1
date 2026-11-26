@@ -10,6 +10,18 @@ Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 $cfg = $env:NREKI_DIALOG | ConvertFrom-Json
 $script:result = @{ action = "skip" }
 
+# A launcher can ask Windows to hide this process's first window (SW_HIDE in
+# STARTUPINFO); Windows applies it to the first ShowWindow call. Spend that
+# call on an invisible throwaway window so the real box always shows.
+$spent = New-Object System.Windows.Forms.Form
+$spent.ShowInTaskbar = $false
+$spent.Opacity = 0
+$spent.FormBorderStyle = "None"
+$spent.Size = New-Object System.Drawing.Size(1, 1)
+$spent.Show()
+$spent.Hide()
+$spent.Dispose()
+
 $form = New-Object System.Windows.Forms.Form
 $form.Text = $cfg.title
 $form.ClientSize = New-Object System.Drawing.Size(520, 236)

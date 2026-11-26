@@ -1,5 +1,12 @@
 # Changelog
 
+## [12.4.1] - 2026-11-26
+
+- **The Voyage box opens visibly on Windows.** In 12.4.0 (tagged, never published to npm) it opened invisible: `spawnSync`'s `windowsHide` sets `SW_HIDE` in the child's startup info, and Windows applies it to the first window the child shows, here the box itself. UI Automation found no window for the dialog process, so `init` waited for an answer nobody could give.
+  - The box now starts without `windowsHide`. Run from a terminal, PowerShell shares the terminal's console.
+  - The script spends the first `ShowWindow` call on an invisible throwaway form, so a launcher's `SW_HIDE` can never hide the box.
+  - Checked end to end with UI Automation and `BM_CLICK` / `WM_SETTEXT`, with no keyboard input: a visible window in Spanish; "Sin Voyage" returns `local`; a typed key comes back whole.
+
 ## [12.4.0] - 2026-11-26
 
 `npx nreki init` asks for the Voyage API key in a box, and CI is green again on every OS and Node version.
