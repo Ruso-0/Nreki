@@ -1,5 +1,29 @@
 # Changelog
 
+## [12.4.0] - 2026-11-26
+
+`npx nreki init` asks for the Voyage API key in a box, and CI is green again on every OS and Node version.
+
+- **The Voyage box.** In an interactive terminal, `init` shows a box for the Voyage API key: on Windows a small window with a masked field, elsewhere a hidden prompt in the terminal.
+  - Before saving a typed key, `init` checks it with one tiny Voyage request. A rejected key asks again, up to three times.
+  - The key is saved outside every project in `~/.nreki/voyage.key`, next to the trust key: mode 0600, written to a fresh temp file and renamed, never through a link.
+  - Accepting turns Voyage on in this project's registrations (`NREKI_SEMANTIC=voyage`). "No Voyage" turns it off. Closing the box changes nothing.
+  - With a key already set, an empty field uses it.
+  - On Windows, an existing user variable `NREKI_VOYAGE_API_KEY` is updated to the new key, so it cannot shadow it. Elsewhere `init` warns when an environment variable holds a different key.
+  - The box speaks Spanish on a Spanish system.
+  - It never appears when `init` runs without a terminal (as an agent runs it), under `CI`, with `--dry-run`, `--no-mcp`, `--no-voyage`, or the new `--no-prompt`.
+- **NREKI reads the saved key** when no environment variable holds one: `NREKI_VOYAGE_API_KEY`, then `VOYAGE_API_KEY`, then `~/.nreki/voyage.key`. A host that forwards only some variables (Codex) still gets the key. A key alone never turns Voyage on: the project still opts in with `NREKI_SEMANTIC=voyage`.
+- **Session marker removed before the native-edit endpoint closes.** A reader never finds a marker pointing at a closed endpoint. This also fixes a race in the built-server test, which failed on slow Linux CI runners.
+- **CI:**
+  - Each failed test becomes a GitHub annotation (`scripts/ci-test-report.mjs`); annotations are readable without signing in, unlike job logs. That is how the two failures of 12.3.0 were found:
+    - On Windows, the `NREKI_PROJECT_ROOT` server test started the server through `tsx`. A child process outlived the client and kept the project folder locked (`EBUSY`). The test now starts the built server and waits for it to exit.
+    - On Linux, the race above.
+  - `actions/checkout@v5` and `actions/setup-node@v5`.
+  - Node 24 no longer runs as `continue-on-error`, which reported its failures as green.
+  - `npm run typecheck:tests` runs in CI.
+
+Tests: `tests/voyage-key-prompt.test.ts`. One test checks that `init` run without a terminal never shows the box.
+
 ## [12.3.0] - 2026-11-26
 
 `npx nreki init` now installs NREKI in one command: it writes each agent's instructions and registers NREKI as that agent's MCP server, with the project folder pinned.

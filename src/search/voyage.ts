@@ -2,13 +2,15 @@
  * voyage.ts — Minimal Voyage AI embeddings client (BYOK, opt-in).
  *
  * OFF unless the user opts in explicitly with NREKI_SEMANTIC=voyage plus a key
- * (NREKI_VOYAGE_API_KEY, else VOYAGE_API_KEY): a VOYAGE_API_KEY exported for
+ * (NREKI_VOYAGE_API_KEY, else VOYAGE_API_KEY, else the key `nreki init` saved in
+ * ~/.nreki/voyage.key): a VOYAGE_API_KEY exported for
  * another tool must not silently start sending this repository's code to a
  * third party. Only `float` output is requested (the one dtype the docs
  * guarantee for every model); vectors are normalized and quantized locally.
  */
 
 import { logger } from "../utils/logger.js";
+import { availableVoyageKey } from "../utils/voyage-key.js";
 
 const VOYAGE_URL = "https://api.voyageai.com/v1/embeddings";
 
@@ -16,7 +18,8 @@ export interface VoyageConfig { apiKey: string; model: string }
 
 export function resolveVoyageConfig(env: NodeJS.ProcessEnv = process.env): VoyageConfig | null {
     if ((env.NREKI_SEMANTIC ?? "").trim().toLowerCase() !== "voyage") return null;
-    const apiKey = (env.NREKI_VOYAGE_API_KEY || env.VOYAGE_API_KEY || "").trim();
+    // Environment first, then the key `nreki init` saved in ~/.nreki/voyage.key.
+    const apiKey = availableVoyageKey(env)?.key ?? "";
     if (!apiKey) return null;
     return { apiKey, model: (env.NREKI_VOYAGE_MODEL || "voyage-code-4").trim() };
 }

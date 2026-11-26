@@ -48,6 +48,16 @@ const write = (rel: string, text: string): void => {
 };
 const base = { version: "12.3.0", platform: "linux" as NodeJS.Platform };
 
+/** Wait until a process is gone, so its folder can be removed (Windows locks a process's cwd). */
+async function waitForExit(pid: number | null | undefined, timeoutMs = 15_000): Promise<void> {
+    if (!pid) return;
+    const end = Date.now() + timeoutMs;
+    while (Date.now() < end) {
+        try { process.kill(pid, 0); } catch { return; }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+}
+
 // ─── NREKI_PROJECT_ROOT ─────────────────────────────────────────────────────
 
 describe("NREKI_PROJECT_ROOT", () => {
@@ -90,16 +100,21 @@ describe("NREKI_PROJECT_ROOT", () => {
     });
 
     it("the real server started in another folder indexes NREKI_PROJECT_ROOT", async () => {
+        // The built server, one process: through tsx a child process outlived the
+        // client on Windows CI and kept `project` locked (EBUSY).
+        const builtServer = path.join(repoRoot, "dist", "index.js");
+        if (!fs.existsSync(builtServer)) throw new Error("Run npm run build before the built-server integration test.");
         fs.writeFileSync(path.join(project, "zebra.ts"), "export function zebraQuokkaMarker(): number { return 42; }\n");
         const transport = new StdioClientTransport({
             command: process.execPath,
-            args: [tsxCli, path.join(repoRoot, "src", "index.ts")],
+            args: [builtServer],
             cwd: scratch,
-            env: { ...getDefaultEnvironment(), NREKI_PROJECT_ROOT: project },
+            env: { ...getDefaultEnvironment(), NREKI_PROJECT_ROOT: project, NREKI_TRUST_DIR: process.env.NREKI_TRUST_DIR ?? "" },
             stderr: "ignore",
         });
         const client = new Client({ name: "project-root-test", version: "1" });
         await client.connect(transport);
+        const serverPid = transport.pid;
         try {
             let text = "";
             for (let i = 0; i < 40; i++) {
@@ -111,6 +126,7 @@ describe("NREKI_PROJECT_ROOT", () => {
             expect(text).toContain("zebra.ts");
         } finally {
             await client.close();
+            await waitForExit(serverPid);
         }
         expect(fs.existsSync(path.join(project, ".nreki.db")) || fs.existsSync(path.join(project, ".nreki"))).toBe(true);
         expect(fs.readdirSync(scratch)).toEqual([]);

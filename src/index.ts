@@ -104,6 +104,8 @@ Usage:
   --voyage              Turn on Voyage semantic search in the registrations
                         (this project's code is sent to Voyage once to be indexed)
   --no-voyage           Turn it off again
+  --no-prompt           Do not show the Voyage key box (it only appears in an
+                        interactive terminal; the key is saved in ~/.nreki/voyage.key)
   --no-mcp              Write the instructions only, do not register the MCP server
   --force               Rewrite existing NREKI blocks and replace a "nreki" MCP entry
                         NREKI did not write
@@ -294,13 +296,29 @@ if (args[0] === "init") {
         process.stderr.write(`nreki init: ${parsed.error}\n`);
         process.stderr.write(
             "\nUsage: nreki init [--agent <claude,codex,antigravity,cursor,cline,copilot,generic>]" +
-            " [--voyage|--no-voyage] [--no-mcp] [--force] [--dry-run]\n",
+            " [--voyage|--no-voyage] [--no-prompt] [--no-mcp] [--force] [--dry-run]\n",
         );
         process.exit(2);
     }
 
     try {
-        const result = runInit(parsed.opts);
+        // The Voyage box: only in an interactive terminal (an agent running init
+        // must never get a window it cannot answer), and only when it matters.
+        const opts = parsed.opts;
+        const voyageLines: string[] = [];
+        const interactive = Boolean(process.stdin.isTTY && process.stderr.isTTY) && !process.env.CI;
+        if (interactive && opts.prompt !== false && !opts.dryRun && opts.mcp !== false && opts.voyage !== false) {
+            const { availableVoyageKey } = await import("./utils/voyage-key.js");
+            if (!(opts.voyage === true && availableVoyageKey() !== null)) {
+                const { promptForVoyage } = await import("./init/voyage-prompt.js");
+                const answer = await promptForVoyage();
+                if (answer.voyage !== undefined) opts.voyage = answer.voyage;
+                voyageLines.push(...answer.lines);
+            }
+        }
+
+        const result = runInit(opts);
+        for (const line of voyageLines) process.stderr.write(`${line}\n`);
         process.stderr.write(`nreki init: ${result.reason}\n`);
         process.stderr.write(`  agents: ${result.agents.join(", ")}${parsed.opts.dryRun ? " (dry-run)" : ""}\n`);
         for (const action of result.actions) {
@@ -558,6 +576,11 @@ async function main(): Promise<void> {
     // El verdadero GC es process.exit(0) — el SO mata in-flight
     // requests instantáneo (post v11.0.0 amputación: ya sin ONNX).
     let _shuttingDown = false;
+    // Set once the session marker is written (below). The marker announces the
+    // native-edit endpoint, so it is removed BEFORE the endpoint closes: a reader
+    // never finds a marker pointing at a closed endpoint, and "endpoint gone"
+    // implies "marker gone" (the built-server test raced on slow CI runners).
+    let removeSessionMarker: (() => void) | null = null;
 
     const gracefulShutdown = () => {
         if (_shuttingDown) return;
@@ -573,6 +596,7 @@ async function main(): Promise<void> {
             chronos.forcePersist();  // sync, ~2-5ms, dentro de ventana de gracia del SO
         } catch { /* never block shutdown on telemetry */ }
 
+        try { removeSessionMarker?.(); } catch { /* already gone */ }
         try { nativeEdits?.close(); } catch { /* already closed */ }
         try { engine.shutdown(); } catch { /* swallow */ }
 
@@ -664,9 +688,10 @@ async function main(): Promise<void> {
             startedAt: new Date().toISOString(), token: nativeEdits?.token,
         }));
         fs.chmodSync(sessionMarker, 0o600);
+        removeSessionMarker = () => { try { fs.unlinkSync(sessionMarker); } catch { /* already gone */ } };
         process.on("exit", () => {
+            removeSessionMarker?.();
             try { nativeEdits?.close(); } catch { /* already closed */ }
-            try { fs.unlinkSync(sessionMarker); } catch { /* already gone */ }
         });
     } catch {
         try { nativeEdits?.close(); } catch { /* already closed */ }

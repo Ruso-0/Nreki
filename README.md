@@ -2,7 +2,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/npm/v/nreki?style=for-the-badge&color=blue" alt="npm version">
-  <img src="https://img.shields.io/badge/Tests-1858-brightgreen?style=for-the-badge" alt="1858 Tests">
+  <img src="https://img.shields.io/badge/Tests-1873-brightgreen?style=for-the-badge" alt="1873 Tests">
   <img src="https://img.shields.io/badge/AHI-9.7%2F10-brightgreen?style=for-the-badge" alt="AHI 9.7/10">
   <img src="https://img.shields.io/badge/Languages-TS%20%7C%20JS%20%7C%20Go%20%7C%20Python%20%7C%20Kotlin%20%7C%20Java%20%7C%20C%2B%2B-blue?style=for-the-badge" alt="Multi-language">
   <img src="https://img.shields.io/badge/Cloud-Zero-orange?style=for-the-badge" alt="Zero Cloud by default">
@@ -10,6 +10,8 @@
 </p>
 
 **MCP plugin that validates AI agent edits in RAM before they touch disk.** When Claude Code, Cursor, or Copilot changes a function signature in one file and breaks 30 others, NREKI catches it in milliseconds - the file is never written. If the error is structural (missing import, forgotten `await`), NREKI auto-fixes it in RAM. Zero tokens wasted on fix-retry doom loops.
+
+**v12.4.0 — a box for the Voyage key.** `npx nreki init` asks for your Voyage API key (a small window on Windows, a hidden prompt elsewhere), checks it with Voyage, saves it outside every project (`~/.nreki/voyage.key`) and turns semantic search on for the project. It never asks when an agent runs `init`.
 
 **v12.3.0 — one command installs NREKI.** Run `npx nreki init` in a project: it writes each agent's instructions and registers NREKI as that agent's MCP server (Claude Code, Codex, Antigravity, Cursor, VS Code/Copilot), with the project folder pinned so NREKI indexes the right code. Without agent files in the project it installs for the agents found on your computer. `--voyage` turns on semantic search. `NREKI_PROJECT_ROOT` names the project for hosts that start servers in another folder (measured: Antigravity starts a global plugin's server in the plugin folder). `npx nreki deinit` removes the registrations too.
 
@@ -47,12 +49,15 @@ In the project folder:
 
 ```bash
 npx nreki init            # instructions + MCP registration for each agent, project folder pinned
-npx nreki init --voyage   # same, with Voyage semantic search on (needs NREKI_VOYAGE_API_KEY; sends this project's code to Voyage once)
+npx nreki init --voyage   # same, with Voyage semantic search on (sends this project's code to Voyage once)
+npx nreki init --no-prompt   # never show the Voyage key box
 npx nreki init --agent codex,antigravity   # choose the agents (claude, codex, antigravity, cursor, cline, copilot, generic)
 npx nreki init --dry-run  # preview the plan, write nothing
 npx nreki init --no-mcp   # instructions only
 npx nreki deinit          # remove NREKI's hooks, instructions and MCP registrations
 ```
+
+In a terminal, `init` first shows a box for your Voyage API key (optional): on Windows a small window, elsewhere a hidden prompt. A typed key is checked with Voyage and saved in `~/.nreki/voyage.key` (outside every project, readable only by you), and Voyage is turned on for the project; "No Voyage" keeps local search only. With a key already set, leave the field empty to use it. NREKI reads `NREKI_VOYAGE_API_KEY`, then `VOYAGE_API_KEY`, then that file.
 
 `init` installs for every agent configured in the project. If there is none, it installs for the agents found on this computer (`~/.claude`, `~/.codex`, `~/.gemini/antigravity`, `~/.cursor`); if there is none either, it writes `AGENTS.md`. Then it prints what is left to do in each agent, such as approving the server in Claude Code or trusting the folder in Codex. Re-running it after an upgrade updates NREKI's own entries to the new version and keeps fields you added; an entry named `nreki` that NREKI did not write is left alone unless `--force`.
 

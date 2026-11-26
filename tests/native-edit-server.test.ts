@@ -38,6 +38,16 @@ function endpointLive(endpoint: string): Promise<boolean> {
     });
 }
 
+/** Wait until a process is gone, so its folder can be removed (Linux CI raced with ENOTEMPTY). */
+async function waitForExit(pid: number | null | undefined, timeoutMs = 15_000): Promise<void> {
+    if (!pid) return;
+    const end = Date.now() + timeoutMs;
+    while (Date.now() < end) {
+        try { process.kill(pid, 0); } catch { return; }
+        await new Promise(resolve => setTimeout(resolve, 100));
+    }
+}
+
 describe("built MCP server native-edit integration", () => {
     it("advertises instructions and validates installed native hooks without writing source", async () => {
         if (!fs.existsSync(builtServer)) throw new Error("Run npm run build before the built-server integration test.");
@@ -61,8 +71,10 @@ describe("built MCP server native-edit integration", () => {
         const client = new Client({ name: "native-edit-e2e", version: "1.0.0" });
         let serverStderr = "";
         transport.stderr?.on("data", chunk => serverStderr += String(chunk));
+        let serverPid: number | null = null;
         try {
             await client.connect(transport);
+            serverPid = transport.pid;
             // Instructions must arrive even in a repository that has never run init.
             expect(fs.existsSync(path.join(root, "CLAUDE.md"))).toBe(false);
             expect(client.getInstructions()).toContain('nreki_navigate action:"context"');
@@ -101,6 +113,7 @@ describe("built MCP server native-edit integration", () => {
         } finally {
             await client.close().catch(() => {});
             await transport.close().catch(() => {});
+            await waitForExit(serverPid);
             fs.rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
         }
     });

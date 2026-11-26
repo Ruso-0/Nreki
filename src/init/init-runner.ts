@@ -27,6 +27,7 @@ import type { DetectedAgent } from "./agent-detect.js";
 import { detectAgent, isKnownAgent, KNOWN_AGENTS } from "./agent-detect.js";
 import { isMcpHost, launchCommand, registerMcp, removeEmptyDirs, type McpAction } from "./mcp-register.js";
 import { unsafeWriteTarget } from "../utils/path-jail.js";
+import { availableVoyageKey } from "../utils/voyage-key.js";
 
 type WriteMode = "write" | "append" | "skip-if-marked";
 
@@ -66,6 +67,8 @@ export interface InitOptions {
     voyage?: boolean;
     /** Version pinned in the registrations. Defaults to this package's version. */
     version?: string;
+    /** CLI only: `--no-prompt` never shows the Voyage key box. */
+    prompt?: boolean;
 }
 
 export interface InitResult {
@@ -470,8 +473,7 @@ export function runInit(opts: InitOptions = {}): InitResult {
         if (machineSpecific.length > 0) {
             notes.push(`${machineSpecific.join(" and ")} hold${machineSpecific.length === 1 ? "s" : ""} this computer's path to the project: keep ${machineSpecific.length === 1 ? "it" : "them"} out of git.`);
         }
-        const hasKey = Boolean(process.env.NREKI_VOYAGE_API_KEY || process.env.VOYAGE_API_KEY);
-        if (opts.voyage === undefined && hasKey) {
+        if (opts.voyage === undefined && availableVoyageKey() !== null) {
             notes.push("A Voyage key is set: add --voyage to turn on semantic search for this project (its code is sent to Voyage once to be indexed).");
         }
     }
@@ -512,6 +514,7 @@ export function parseInitArgs(argv: string[]): { opts: InitOptions; error?: stri
         if (a === "--no-mcp") { opts.mcp = false; continue; }
         if (a === "--voyage") { opts.voyage = true; continue; }
         if (a === "--no-voyage") { opts.voyage = false; continue; }
+        if (a === "--no-prompt") { opts.prompt = false; continue; }
         if (a === "--agent") {
             const error = addAgents(argv[++i]);
             if (error) return { opts, error };
