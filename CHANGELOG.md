@@ -1,5 +1,45 @@
 # Changelog
 
+## [12.3.0] - 2026-11-26
+
+`npx nreki init` now installs NREKI in one command: it writes each agent's instructions and registers NREKI as that agent's MCP server, with the project folder pinned.
+
+Why the folder has to be pinned. NREKI indexes the folder it starts in, and on 2026-11-26 a probe MCP server measured where hosts start servers:
+- Antigravity IDE 2.9.0 starts a global plugin's server in the plugin's own folder (`~/.gemini/config/plugins/<name>`), so NREKI would have indexed the wrong folder.
+- It starts a workspace `.agents/mcp_config.json` server in the project.
+- It expands none of `${workspaceFolder}`, `${WORKSPACE_ROOT}` or `${PWD}`, and it does not offer MCP roots.
+
+Changes:
+- **`NREKI_PROJECT_ROOT`.** When set to an existing absolute folder, the server switches to it before any module reads `process.cwd()` (`src/bootstrap-root.ts` is the first import of `index.ts`). An unexpanded `${…}`, a relative path or a missing folder is ignored with a stderr warning.
+- **`init` registers the MCP server**:
+  - Claude Code: `.mcp.json`.
+  - Codex: `.codex/config.toml`, with `cwd`, `startup_timeout_sec = 120` (the first `npx` download took 25 s; Codex's default is 10 s) and `env_vars` forwarding the Voyage key.
+  - Antigravity: `.agents/mcp_config.json`.
+  - Cursor: `.cursor/mcp.json`, with an absolute `NREKI_PROJECT_ROOT`.
+  - VS Code/Copilot: `.vscode/mcp.json`, with `NREKI_PROJECT_ROOT=${workspaceFolder}`.
+  - Every entry pins `nreki@<version>`. On Windows it launches through `cmd /c npx`.
+- **Updates and refusals.**
+  - Re-running `init` updates NREKI's own entry to the new version and keeps fields the user added.
+  - An entry named `nreki` that NREKI did not write is left alone unless `--force`.
+  - A JSON file with comments, or a Codex inline-table definition, is never rewritten: `init` prints the entry to add by hand.
+  - Nothing is written through a linked folder.
+- **Agent selection.**
+  - `init` installs for every agent configured in the project. `codex` (`.codex/`) and `antigravity` (`.agents/mcp_config.json`, `.agents/rules/`, `GEMINI.md`) are new agents. Before, only the first agent detected was installed.
+  - Without project signals, it installs for the agents found in the home folder (`~/.claude`, `~/.codex`, `~/.gemini/antigravity`, `~/.cursor`), then falls back to `AGENTS.md`.
+  - `--agent` takes a comma list.
+  - Codex and Antigravity share the `AGENTS.md` block: Antigravity loads a root `AGENTS.md` as an always-on rule.
+- **New flags:** `--voyage` / `--no-voyage` set or remove `NREKI_SEMANTIC=voyage` in the registrations. `--no-mcp` writes the instructions only. `init` ends with the steps left in each agent (approve the server in Claude Code, trust the folder in Codex, Refresh in Antigravity).
+- **`deinit`** also removes the MCP entries NREKI wrote, and deletes a config file that held nothing else and the folders left empty.
+- **`deinit` bugs fixed (found while testing this release):**
+  - In `CLAUDE.md` it cut from `# NREKI ACTIVE` to the end of the file. That dropped the user's text after the block and left the `<!-- nreki:begin -->` sentinel behind.
+  - It looked for an `AGENTS.md` header that the template stopped using in v12.1, so it never removed that block.
+  - It left `.claude/skills/nreki-optimizer/SKILL.md`, `.cursor/rules/nreki.mdc`, `.clinerules/nreki.md` and the `.github/copilot-instructions.md` block behind.
+  - Now it removes exactly the block `init` wrote, recognizing both the sentinels and the legacy headers.
+  - It deletes `.claude/settings.json` when only NREKI's hooks were in it.
+  - Measured on a project with all five agents installed: the old `deinit` left 13 files; the new one leaves only the user's.
+
+Tests: `tests/init-mcp-register.test.ts`. One of them starts the real server from an empty folder with `NREKI_PROJECT_ROOT` pointing at a project and finds a symbol there. Without the bootstrap import, that test and the import-order test fail.
+
 ## [12.2.0] - 2026-11-26
 
 - The npm package is renamed to `nreki` (unscoped). Releases up to 12.0.0 were published as `@ruso-0/nreki`. `npx nreki` replaces `npx @ruso-0/nreki` in the README, the CLI help and the `trust-db` hints; the `nreki` bin name is unchanged.

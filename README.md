@@ -2,7 +2,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/npm/v/nreki?style=for-the-badge&color=blue" alt="npm version">
-  <img src="https://img.shields.io/badge/Tests-1825-brightgreen?style=for-the-badge" alt="1825 Tests">
+  <img src="https://img.shields.io/badge/Tests-1858-brightgreen?style=for-the-badge" alt="1858 Tests">
   <img src="https://img.shields.io/badge/AHI-9.7%2F10-brightgreen?style=for-the-badge" alt="AHI 9.7/10">
   <img src="https://img.shields.io/badge/Languages-TS%20%7C%20JS%20%7C%20Go%20%7C%20Python%20%7C%20Kotlin%20%7C%20Java%20%7C%20C%2B%2B-blue?style=for-the-badge" alt="Multi-language">
   <img src="https://img.shields.io/badge/Cloud-Zero-orange?style=for-the-badge" alt="Zero Cloud by default">
@@ -10,6 +10,8 @@
 </p>
 
 **MCP plugin that validates AI agent edits in RAM before they touch disk.** When Claude Code, Cursor, or Copilot changes a function signature in one file and breaks 30 others, NREKI catches it in milliseconds - the file is never written. If the error is structural (missing import, forgotten `await`), NREKI auto-fixes it in RAM. Zero tokens wasted on fix-retry doom loops.
+
+**v12.3.0 — one command installs NREKI.** Run `npx nreki init` in a project: it writes each agent's instructions and registers NREKI as that agent's MCP server (Claude Code, Codex, Antigravity, Cursor, VS Code/Copilot), with the project folder pinned so NREKI indexes the right code. Without agent files in the project it installs for the agents found on your computer. `--voyage` turns on semantic search. `NREKI_PROJECT_ROOT` names the project for hosts that start servers in another folder (measured: Antigravity starts a global plugin's server in the plugin folder). `npx nreki deinit` removes the registrations too.
 
 **v12.2.0 — Spanish/hybrid recall, symbol deletion, and opt-in native edit preflight.** By default, NREKI writes its session marker without opening any local IPC socket or pipe: the Claude hook keeps large-file `Read` steering active and lets native `Edit`, `MultiEdit` and `Write` pass silently. Claude instructions (`CLAUDE.md`, `SKILL.md`, and MCP initialization) use native `Edit` for single-file changes and reserve `nreki_code action:"batch_edit"` for cross-file signature changes and renames (`AGENTS.md` keeps the `batch_edit` + checker workflow for Codex). `edit` and `batch_edit` also accept `mode:"replace"` with `new_code:""` to delete a symbol under full AST and compiler validation, and `context` / hybrid search bridges Spanish software/business terms into English on the lexical side while keeping exact names, paths and Voyage queries unchanged.
 
@@ -41,38 +43,34 @@ Opting in with `NREKI_NATIVE_PREFLIGHT=1` enables the Claude hook v5 authenticat
 
 ## Install
 
-Since 12.2.0 the npm package is **`nreki`**. Releases up to 12.0.0 were published as `@ruso-0/nreki`; if you configured that name, replace it with `nreki` in your MCP config.
+In the project folder:
 
 ```bash
-# Claude Code (macOS / Linux)
-claude mcp add nreki -- npx -y nreki
-
-# Claude Code (Windows) — wrap with `cmd /c`, otherwise Claude Code warns
-# that the server failed to start (npx is a .cmd shim on Windows):
-claude mcp add nreki -- cmd /c npx -y nreki
-
-# Cursor / any MCP client - add to mcp.json:
-# macOS/Linux:
-{ "mcpServers": { "nreki": { "command": "npx", "args": ["-y", "nreki"] } } }
-# Windows:
-{ "mcpServers": { "nreki": { "command": "cmd", "args": ["/c", "npx", "-y", "nreki"] } } }
-
-# Optional: agent-aware instructions install (v11.3.0+)
-npx nreki init               # auto-detect agent (Claude Code / Cursor / Cline / Copilot / generic)
-npx nreki init --agent cursor # explicit; valid: claude, cursor, cline, copilot, generic
-npx nreki init --dry-run     # preview the plan, write nothing
-npx nreki init --force       # rewrite an existing NREKI block (your own content in the file is kept)
+npx nreki init            # instructions + MCP registration for each agent, project folder pinned
+npx nreki init --voyage   # same, with Voyage semantic search on (needs NREKI_VOYAGE_API_KEY; sends this project's code to Voyage once)
+npx nreki init --agent codex,antigravity   # choose the agents (claude, codex, antigravity, cursor, cline, copilot, generic)
+npx nreki init --dry-run  # preview the plan, write nothing
+npx nreki init --no-mcp   # instructions only
+npx nreki deinit          # remove NREKI's hooks, instructions and MCP registrations
 ```
 
-What `nreki init` writes per agent:
+`init` installs for every agent configured in the project. If there is none, it installs for the agents found on this computer (`~/.claude`, `~/.codex`, `~/.gemini/antigravity`, `~/.cursor`); if there is none either, it writes `AGENTS.md`. Then it prints what is left to do in each agent, such as approving the server in Claude Code or trusting the folder in Codex. Re-running it after an upgrade updates NREKI's own entries to the new version and keeps fields you added; an entry named `nreki` that NREKI did not write is left alone unless `--force`.
 
-| Agent     | Detected via                          | Files installed                                                       |
-|-----------|----------------------------------------|-----------------------------------------------------------------------|
-| `claude`  | `.claude/` or `CLAUDE.md`              | `CLAUDE.md` (NREKI block), `.claude/skills/nreki-optimizer/SKILL.md`, `.claude/hooks/nreki-enforcer.mjs`, `.claude/settings.json` |
-| `cursor`  | `.cursor/` or `.cursorrules`           | `.cursor/rules/nreki.mdc` (with `alwaysApply: true` frontmatter)      |
-| `cline`   | `.clinerules` (file or dir)            | `.clinerules/nreki.md`                                                |
-| `copilot` | `.github/copilot-instructions.md`      | `.github/copilot-instructions.md` (appended)                          |
-| `generic` | none of the above                      | `AGENTS.md`                                                           |
+| Agent         | Detected in the project via                         | Instructions                                   | MCP registration (project folder pinned by)                 |
+|---------------|-----------------------------------------------------|------------------------------------------------|-------------------------------------------------------------|
+| `claude`      | `.claude/` or `CLAUDE.md`                           | `CLAUDE.md` block, skill, enforcer hook, `.claude/settings.json` | `.mcp.json` (Claude Code starts it in the project) |
+| `codex`       | `.codex/`                                           | `AGENTS.md` block                              | `.codex/config.toml` (`cwd`; Codex reads it only for trusted projects) |
+| `antigravity` | `.agents/mcp_config.json`, `.agents/rules/`, `GEMINI.md` | `AGENTS.md` block (always-on rule)        | `.agents/mcp_config.json` (Antigravity starts it in the project) |
+| `cursor`      | `.cursor/` or `.cursorrules`                        | `.cursor/rules/nreki.mdc`                      | `.cursor/mcp.json` (`NREKI_PROJECT_ROOT`)                   |
+| `copilot`     | `.github/copilot-instructions.md`                   | `.github/copilot-instructions.md` block        | `.vscode/mcp.json` (`NREKI_PROJECT_ROOT=${workspaceFolder}`) |
+| `cline`       | `.clinerules`                                       | `.clinerules/nreki.md`                         | by hand: Cline keeps MCP servers in its global settings    |
+| `generic`     | none of the above                                   | `AGENTS.md` block                              | by hand                                                     |
+
+The Codex and Cursor entries hold this computer's path to the project: keep `.codex/` and `.cursor/mcp.json` out of git. On Windows every entry launches `cmd /c npx -y nreki@<version>`, because `npx` is a `.cmd` shim there.
+
+Registering by hand works too, from the project folder: `claude mcp add nreki -- npx -y nreki` (Windows: `claude mcp add nreki -- cmd /c npx -y nreki`), or `{ "mcpServers": { "nreki": { "command": "npx", "args": ["-y", "nreki"] } } }` in an MCP client's config. If the client starts servers in another folder, add `"env": { "NREKI_PROJECT_ROOT": "<absolute project path>" }`.
+
+Since 12.2.0 the npm package is **`nreki`**. Releases up to 12.0.0 were published as `@ruso-0/nreki`; if you configured that name, run `npx nreki init` or replace it with `nreki` in your MCP config.
 
 First MCP run indexes the project automatically in the background — `fast_grep` returns RAM-resident substring matches immediately while NREKI's semantic index warms (v11.2.1+). Zero config for TS/JS; point a `tsconfig.json` at your code and NREKI detects the right validation mode.
 

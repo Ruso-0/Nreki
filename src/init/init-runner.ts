@@ -1,6 +1,10 @@
 /**
  * init/init-runner.ts — orchestrates `nreki init` for the detected (or
- * explicitly chosen) AI coding agent.
+ * explicitly chosen) AI coding agents.
+ *
+ * v12.3.0: installs for every detected agent (project signals, else the agents
+ * found in the home folder) and registers NREKI as each agent's MCP server with
+ * the project folder pinned (see mcp-register.ts), so one command is enough.
  *
  * v11.3.0 replaces the pre-v11.3.0 "spray every template" behavior with
  * targeted per-agent installs. Templates and the Claude Code enforcer
@@ -16,10 +20,12 @@
  */
 
 import fs from "fs";
+import os from "os";
 import path from "path";
 import { fileURLToPath } from "url";
 import type { DetectedAgent } from "./agent-detect.js";
-import { detectAgent, isKnownAgent } from "./agent-detect.js";
+import { detectAgent, isKnownAgent, KNOWN_AGENTS } from "./agent-detect.js";
+import { isMcpHost, launchCommand, registerMcp, removeEmptyDirs, type McpAction } from "./mcp-register.js";
 import { unsafeWriteTarget } from "../utils/path-jail.js";
 
 type WriteMode = "write" | "append" | "skip-if-marked";
@@ -46,18 +52,39 @@ export interface InitOptions {
     cwd?: string;
     /** Explicit agent override. Bypasses disk detection. */
     agent?: DetectedAgent;
+    /** Explicit agent list (`--agent codex,antigravity`). Bypasses disk detection. */
+    agents?: DetectedAgent[];
+    /** Home folder consulted for installed agents. Defaults to os.homedir(). */
+    home?: string;
     /** Overwrite existing NREKI block instead of skipping when marker present. */
     force?: boolean;
     /** Print plan and skip filesystem mutations. */
     dryRun?: boolean;
+    /** Register NREKI as an MCP server for each agent (default true; `--no-mcp` turns it off). */
+    mcp?: boolean;
+    /** `--voyage` sets NREKI_SEMANTIC=voyage in the registrations, `--no-voyage` removes it. */
+    voyage?: boolean;
+    /** Version pinned in the registrations. Defaults to this package's version. */
+    version?: string;
 }
 
 export interface InitResult {
+    /** First agent of `agents` (kept for callers that handle a single agent). */
     agent: DetectedAgent;
-    /** Why this agent was chosen (detection reason or "--agent override"). */
+    /** Every agent installed for. */
+    agents: DetectedAgent[];
+    /** Why these agents were chosen (detection reason or "--agent override"). */
     reason: string;
     /** Per-file outcome. `op` describes what we did (or would do in dry-run). */
-    actions: Array<{ path: string; op: "created" | "appended" | "rewritten" | "skipped" | "merged"; note?: string }>;
+    actions: Array<{ path: string; op: "created" | "appended" | "rewritten" | "skipped" | "merged" | "removed"; note?: string }>;
+    /** What the user still has to do in each agent. */
+    notes: string[];
+}
+
+/** Version of the installed package (dist/init → ../../package.json). */
+export function packageVersion(): string {
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    return (JSON.parse(fs.readFileSync(path.resolve(here, "..", "..", "package.json"), "utf-8")) as { version: string }).version;
 }
 
 /** Resolve templates/ shipped inside the installed package. */
@@ -145,6 +172,10 @@ function planForAgent(agent: DetectedAgent): FileAction[] {
                     mode: "append",
                 },
             ];
+        // Codex and Antigravity both read AGENTS.md at the project root (Antigravity
+        // loads it as an always-on rule, without frontmatter).
+        case "codex":
+        case "antigravity":
         case "generic":
             return [
                 {
@@ -195,6 +226,63 @@ function replaceNrekiBlock(current: string, marker: string, block: string): stri
         end = next;
     }
     return current.slice(0, start) + block + current.slice(end);
+}
+
+/** User-owned files where `init` adds a block: `deinit` removes only that block. */
+const USER_OWNED_TARGETS: Array<{ rel: string; markers: string[] }> = [
+    { rel: "CLAUDE.md", markers: ["# NREKI ACTIVE"] },
+    // The second marker is the header of the pre-v12.1 AGENTS.md template.
+    { rel: "AGENTS.md", markers: ["NREKI MCP instructions", "# Instructions for AI coding agents consuming NREKI via MCP"] },
+    { rel: path.join(".github", "copilot-instructions.md"), markers: ["NREKI MCP instructions"] },
+];
+
+/** Files `init` owns outright: `deinit` deletes them when they still carry NREKI's marker. */
+const NREKI_OWNED_TARGETS: Array<{ rel: string; marker: string }> = [
+    { rel: path.join(".claude", "skills", "nreki-optimizer", "SKILL.md"), marker: "name: nreki-optimizer" },
+    { rel: path.join(".cursor", "rules", "nreki.mdc"), marker: "# NREKI ACTIVE" },
+    { rel: path.join(".clinerules", "nreki.md"), marker: "# NREKI ACTIVE" },
+];
+
+/**
+ * Undo the instruction files `init` wrote. Before v12.3.0 `deinit` cut
+ * CLAUDE.md from "# NREKI ACTIVE" to the end of the file (dropping the user's
+ * text after the block and leaving the begin sentinel), never matched the
+ * current AGENTS.md header, and left the Claude skill behind.
+ */
+export function removeInstructions(cwd: string, dryRun = false): InitResult["actions"] {
+    const actions: InitResult["actions"] = [];
+    for (const target of USER_OWNED_TARGETS) {
+        const abs = path.join(cwd, target.rel);
+        if (!fs.existsSync(abs)) continue;
+        const unsafe = unsafeWriteTarget(cwd, target.rel);
+        if (unsafe) { actions.push({ path: target.rel, op: "skipped", note: `${unsafe}: not touched` }); continue; }
+        const current = fs.readFileSync(abs, "utf-8").replace(/^﻿/, "");
+        let stripped: string | null = null;
+        for (const marker of target.markers) {
+            stripped = replaceNrekiBlock(current, marker, "");
+            if (stripped !== null) break;
+        }
+        if (stripped === null) continue;
+        const rest = stripped.replace(/\s+$/, "");
+        if (!dryRun) {
+            if (rest === "") fs.unlinkSync(abs);
+            else fs.writeFileSync(abs, rest + (current.includes("\r\n") ? "\r\n" : "\n"), "utf-8");
+        }
+        actions.push({ path: target.rel, op: "removed", note: rest === "" ? "file deleted (it only held NREKI's block)" : "NREKI block removed; your content kept" });
+    }
+    for (const target of NREKI_OWNED_TARGETS) {
+        const abs = path.join(cwd, target.rel);
+        if (!fs.existsSync(abs)) continue;
+        const unsafe = unsafeWriteTarget(cwd, target.rel);
+        if (unsafe) { actions.push({ path: target.rel, op: "skipped", note: `${unsafe}: not touched` }); continue; }
+        if (!fs.readFileSync(abs, "utf-8").includes(target.marker)) continue;
+        if (!dryRun) {
+            fs.unlinkSync(abs);
+            removeEmptyDirs(cwd, path.dirname(abs));
+        }
+        actions.push({ path: target.rel, op: "removed", note: "file deleted" });
+    }
+    return actions;
 }
 
 function applyFileAction(
@@ -330,30 +418,75 @@ function mergeClaudeSettings(cwd: string, dryRun: boolean): InitResult["actions"
  * mkdtemp + assert on the returned plan.
  */
 export function runInit(opts: InitOptions = {}): InitResult {
-    const cwd = opts.cwd ?? process.cwd();
+    const cwd = path.resolve(opts.cwd ?? process.cwd());
+    const force = opts.force === true;
+    const dryRun = opts.dryRun === true;
 
-    let agent: DetectedAgent;
+    let agents: DetectedAgent[];
     let reason: string;
-    if (opts.agent) {
-        agent = opts.agent;
+    const explicit = [...(opts.agents ?? []), ...(opts.agent ? [opts.agent] : [])];
+    if (explicit.length > 0) {
+        agents = KNOWN_AGENTS.filter((a) => explicit.includes(a));
         reason = "--agent override";
     } else {
-        const detection = detectAgent(cwd);
-        agent = detection.agent;
+        const detection = detectAgent(cwd, opts.home ?? os.homedir());
+        agents = detection.agents;
         reason = detection.reason;
     }
 
     const actions: InitResult["actions"] = [];
-    const plan = planForAgent(agent);
-    for (const action of plan) {
-        actions.push(applyFileAction(cwd, action, opts.force === true, opts.dryRun === true));
-    }
-    if (agent === "claude") {
-        actions.push(mergeClaudeSettings(cwd, opts.dryRun === true));
+    // Codex, Antigravity and generic share AGENTS.md: write each target once.
+    const planned = new Set<string>();
+    for (const agent of agents) {
+        for (const action of planForAgent(agent)) {
+            if (planned.has(action.targetRel)) continue;
+            planned.add(action.targetRel);
+            actions.push(applyFileAction(cwd, action, force, dryRun));
+        }
+        if (agent === "claude") actions.push(mergeClaudeSettings(cwd, dryRun));
     }
 
-    return { agent, reason, actions };
+    const notes: string[] = [];
+    const version = opts.version ?? packageVersion();
+    if (opts.mcp !== false) {
+        for (const agent of agents) {
+            if (!isMcpHost(agent)) continue;
+            const result: McpAction = registerMcp(agent, { cwd, version, voyage: opts.voyage, force, dryRun });
+            actions.push(result);
+            if (result.op !== "skipped" || /already registered/.test(result.note ?? "")) notes.push(NEXT_STEP[agent]);
+        }
+        const manual = agents.filter((a) => !isMcpHost(a));
+        if (manual.length > 0) {
+            const { command, args } = launchCommand(version);
+            notes.push(
+                `${manual.join(", ")}: register the MCP server by hand — command "${command}", args ${JSON.stringify(args)}, ` +
+                `started in this folder (or set NREKI_PROJECT_ROOT=${cwd}).`,
+            );
+        }
+        const machineSpecific = [
+            ...(agents.includes("codex") ? [".codex/config.toml"] : []),
+            ...(agents.includes("cursor") ? [".cursor/mcp.json"] : []),
+        ];
+        if (machineSpecific.length > 0) {
+            notes.push(`${machineSpecific.join(" and ")} hold${machineSpecific.length === 1 ? "s" : ""} this computer's path to the project: keep ${machineSpecific.length === 1 ? "it" : "them"} out of git.`);
+        }
+        const hasKey = Boolean(process.env.NREKI_VOYAGE_API_KEY || process.env.VOYAGE_API_KEY);
+        if (opts.voyage === undefined && hasKey) {
+            notes.push("A Voyage key is set: add --voyage to turn on semantic search for this project (its code is sent to Voyage once to be indexed).");
+        }
+    }
+
+    return { agent: agents[0], agents, reason, actions, notes };
 }
+
+/** What the user still has to do after the registration, per host. */
+const NEXT_STEP: Record<"claude" | "codex" | "antigravity" | "cursor" | "copilot", string> = {
+    claude: "Claude Code: start it in this folder and approve the project server \"nreki\" when asked (.mcp.json).",
+    codex: "Codex: restart Codex and open this folder as a trusted project; Codex ignores .codex/config.toml in untrusted projects.",
+    antigravity: "Antigravity: open \"Manage MCP servers\" and press Refresh (the server is in .agents/mcp_config.json).",
+    cursor: "Cursor: restart Cursor and enable \"nreki\" in its MCP settings if it is off (.cursor/mcp.json).",
+    copilot: "VS Code: open .vscode/mcp.json and start the \"nreki\" server for Copilot agent mode.",
+};
 
 /**
  * Parse argv-style flags accepted by `nreki init`. Returns a usable
@@ -362,25 +495,31 @@ export function runInit(opts: InitOptions = {}): InitResult {
  */
 export function parseInitArgs(argv: string[]): { opts: InitOptions; error?: string } {
     const opts: InitOptions = {};
+    const addAgents = (value: string | undefined): string | undefined => {
+        if (!value) return "--agent requires a value";
+        for (const name of value.split(",").map((s) => s.trim()).filter(Boolean)) {
+            if (!isKnownAgent(name)) return `unknown agent "${name}"; valid: ${KNOWN_AGENTS.join(", ")}`;
+            opts.agents = [...(opts.agents ?? []), name];
+        }
+        if (!opts.agents || opts.agents.length === 0) return "--agent requires a value";
+        opts.agent = opts.agents[0];
+        return undefined;
+    };
     for (let i = 0; i < argv.length; i++) {
         const a = argv[i];
         if (a === "--force") { opts.force = true; continue; }
         if (a === "--dry-run") { opts.dryRun = true; continue; }
+        if (a === "--no-mcp") { opts.mcp = false; continue; }
+        if (a === "--voyage") { opts.voyage = true; continue; }
+        if (a === "--no-voyage") { opts.voyage = false; continue; }
         if (a === "--agent") {
-            const v = argv[++i];
-            if (!v) return { opts, error: "--agent requires a value" };
-            if (!isKnownAgent(v)) {
-                return { opts, error: `unknown agent "${v}"; valid: claude, cursor, cline, copilot, generic` };
-            }
-            opts.agent = v;
+            const error = addAgents(argv[++i]);
+            if (error) return { opts, error };
             continue;
         }
         if (a.startsWith("--agent=")) {
-            const v = a.slice("--agent=".length);
-            if (!isKnownAgent(v)) {
-                return { opts, error: `unknown agent "${v}"; valid: claude, cursor, cline, copilot, generic` };
-            }
-            opts.agent = v;
+            const error = addAgents(a.slice("--agent=".length));
+            if (error) return { opts, error };
             continue;
         }
         return { opts, error: `unknown flag: ${a}` };
@@ -396,6 +535,7 @@ export function formatAction(a: InitResult["actions"][number]): string {
         rewritten: "[write] ",
         merged: "[merge] ",
         skipped: "[skip]  ",
+        removed: "[remove]",
     } as const)[a.op];
     return `${tag} ${a.path}${a.note ? ` — ${a.note}` : ""}`;
 }

@@ -15,62 +15,68 @@ import { detectAgent } from "../src/init/agent-detect.js";
 import { parseInitArgs, runInit } from "../src/init/init-runner.js";
 
 let tmpDir: string;
+/** Empty home folder: detection must not depend on the agents installed on this machine. */
+let homeDir: string;
 
 beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nreki-init-"));
+    homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "nreki-home-"));
 });
 
 afterEach(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(homeDir, { recursive: true, force: true });
 });
 
 describe("detectAgent", () => {
     it("returns generic when no agent config is present", () => {
-        const result = detectAgent(tmpDir);
+        const result = detectAgent(tmpDir, homeDir);
         expect(result.agent).toBe("generic");
         expect(result.detected).toEqual([]);
     });
 
     it("detects claude from .claude/ directory", () => {
         fs.mkdirSync(path.join(tmpDir, ".claude"), { recursive: true });
-        const result = detectAgent(tmpDir);
+        const result = detectAgent(tmpDir, homeDir);
         expect(result.agent).toBe("claude");
         expect(result.detected).toContain("claude");
     });
 
     it("detects claude from CLAUDE.md alone", () => {
         fs.writeFileSync(path.join(tmpDir, "CLAUDE.md"), "user content\n");
-        expect(detectAgent(tmpDir).agent).toBe("claude");
+        expect(detectAgent(tmpDir, homeDir).agent).toBe("claude");
     });
 
     it("detects cursor from .cursor/ directory", () => {
         fs.mkdirSync(path.join(tmpDir, ".cursor"), { recursive: true });
-        expect(detectAgent(tmpDir).agent).toBe("cursor");
+        expect(detectAgent(tmpDir, homeDir).agent).toBe("cursor");
     });
 
     it("detects cursor from legacy .cursorrules", () => {
         fs.writeFileSync(path.join(tmpDir, ".cursorrules"), "x");
-        expect(detectAgent(tmpDir).agent).toBe("cursor");
+        expect(detectAgent(tmpDir, homeDir).agent).toBe("cursor");
     });
 
     it("detects cline from .clinerules", () => {
         fs.writeFileSync(path.join(tmpDir, ".clinerules"), "x");
-        expect(detectAgent(tmpDir).agent).toBe("cline");
+        expect(detectAgent(tmpDir, homeDir).agent).toBe("cline");
     });
 
     it("detects copilot from .github/copilot-instructions.md", () => {
         fs.mkdirSync(path.join(tmpDir, ".github"), { recursive: true });
         fs.writeFileSync(path.join(tmpDir, ".github", "copilot-instructions.md"), "x");
-        expect(detectAgent(tmpDir).agent).toBe("copilot");
+        expect(detectAgent(tmpDir, homeDir).agent).toBe("copilot");
     });
 
-    it("prioritizes claude over cursor when both are present", () => {
+    it("lists claude first and installs both when claude and cursor are present", () => {
         fs.mkdirSync(path.join(tmpDir, ".claude"));
         fs.mkdirSync(path.join(tmpDir, ".cursor"));
-        const result = detectAgent(tmpDir);
+        const result = detectAgent(tmpDir, homeDir);
         expect(result.agent).toBe("claude");
         expect(result.detected).toEqual(["claude", "cursor"]);
-        expect(result.reason).toContain("--agent to override");
+        // v12.3.0: every agent configured in the project is installed, not only the first.
+        expect(result.agents).toEqual(["claude", "cursor"]);
+        expect(result.reason).toContain("--agent to choose");
     });
 });
 
@@ -110,7 +116,7 @@ describe("parseInitArgs", () => {
 
 describe("runInit — generic", () => {
     it("creates AGENTS.md when no agent is detected", () => {
-        const result = runInit({ cwd: tmpDir });
+        const result = runInit({ cwd: tmpDir, home: homeDir });
         expect(result.agent).toBe("generic");
         expect(result.reason).toMatch(/no agent-specific/);
         const agents = fs.readFileSync(path.join(tmpDir, "AGENTS.md"), "utf-8");
@@ -271,7 +277,7 @@ describe("runInit — copilot", () => {
 describe("runInit — agent auto-detection end-to-end", () => {
     it("picks claude when .claude exists and writes claude files only", () => {
         fs.mkdirSync(path.join(tmpDir, ".claude"));
-        const result = runInit({ cwd: tmpDir });
+        const result = runInit({ cwd: tmpDir, home: homeDir });
         expect(result.agent).toBe("claude");
         expect(fs.existsSync(path.join(tmpDir, "CLAUDE.md"))).toBe(true);
         expect(fs.existsSync(path.join(tmpDir, "AGENTS.md"))).toBe(false);
@@ -280,7 +286,7 @@ describe("runInit — agent auto-detection end-to-end", () => {
 
     it("picks cursor when .cursorrules exists and skips claude files", () => {
         fs.writeFileSync(path.join(tmpDir, ".cursorrules"), "user rules\n");
-        const result = runInit({ cwd: tmpDir });
+        const result = runInit({ cwd: tmpDir, home: homeDir });
         expect(result.agent).toBe("cursor");
         expect(fs.existsSync(path.join(tmpDir, ".cursor", "rules", "nreki.mdc"))).toBe(true);
         expect(fs.existsSync(path.join(tmpDir, "CLAUDE.md"))).toBe(false);

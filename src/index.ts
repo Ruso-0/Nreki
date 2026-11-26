@@ -17,6 +17,8 @@
  * All processing is local. Zero cloud dependencies.
  */
 
+// First import: switches to NREKI_PROJECT_ROOT before any module reads process.cwd().
+import "./bootstrap-root.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
@@ -88,17 +90,28 @@ NREKI v${VERSION} - Semantic validation MCP server for AI coding agents
 
 Usage:
   npx nreki                               Start MCP server (default)
-  npx nreki init [options]                Install per-agent instructions
-  npx nreki deinit                        Safely remove NREKI hooks before uninstall
+  npx nreki init [options]                Install NREKI in this project: instructions for
+                                          each agent + its MCP server registration
+  npx nreki deinit                        Safely remove NREKI hooks and MCP registrations
   npx nreki trust-db                      Review and restore quarantined engrams/notes/pins
                                           (interactive terminal only)
 
 \`init\` options:
-  --agent <name>        Force agent: claude | cursor | cline | copilot | generic
-                        (default: auto-detect via .claude/, .cursor/, .clinerules,
-                         .github/copilot-instructions.md; falls back to generic)
-  --force               Rewrite existing NREKI block (default: skip if marker present)
+  --agent <names>       Agents to install for, comma-separated:
+                        claude | codex | antigravity | cursor | cline | copilot | generic
+                        (default: every agent configured in this project; without any,
+                         every agent installed on this computer; else generic AGENTS.md)
+  --voyage              Turn on Voyage semantic search in the registrations
+                        (this project's code is sent to Voyage once to be indexed)
+  --no-voyage           Turn it off again
+  --no-mcp              Write the instructions only, do not register the MCP server
+  --force               Rewrite existing NREKI blocks and replace a "nreki" MCP entry
+                        NREKI did not write
   --dry-run             Print plan only, no filesystem writes
+
+Environment:
+  NREKI_PROJECT_ROOT    Absolute path of the project folder, for MCP hosts that start
+                        servers in another folder (set by \`init\` for Cursor and VS Code)
 
 Global flags:
   --help, -h            Show this help message
@@ -142,8 +155,14 @@ if (args[0] === "deinit") {
                     if (settings.hooks.PreToolUse.length === 0) delete settings.hooks.PreToolUse;
                     if (settings.hooks && Object.keys(settings.hooks).length === 0) delete settings.hooks;
 
-                    fs.writeFileSync(claudeSettingsPath, JSON.stringify(settings, null, 2), "utf-8");
-                    logger.info("Removed NREKI hooks from .claude/settings.json");
+                    if (Object.keys(settings).length === 0) {
+                        // Only NREKI's hooks were in it (init creates it when absent).
+                        fs.unlinkSync(claudeSettingsPath);
+                        logger.info("Deleted .claude/settings.json (it only held NREKI's hooks)");
+                    } else {
+                        fs.writeFileSync(claudeSettingsPath, JSON.stringify(settings, null, 2), "utf-8");
+                        logger.info("Removed NREKI hooks from .claude/settings.json");
+                    }
                     modified = true;
                 }
             }
@@ -157,6 +176,8 @@ if (args[0] === "deinit") {
     if (fs.existsSync(hookPath) && touchable(hookPath)) {
         try {
             fs.unlinkSync(hookPath);
+            const { removeEmptyDirs } = await import("./init/mcp-register.js");
+            removeEmptyDirs(cwd, path.dirname(hookPath));
             logger.info("Deleted .claude/hooks/nreki-enforcer.mjs");
             modified = true;
         } catch (err) {
@@ -164,55 +185,21 @@ if (args[0] === "deinit") {
         }
     }
 
-    // 3. Clean CLAUDE.md — strip only NREKI block, preserve user's own rules
-    const claudeMdPath = path.join(cwd, "CLAUDE.md");
-    if (fs.existsSync(claudeMdPath) && touchable(claudeMdPath)) {
-        try {
-            const content = fs.readFileSync(claudeMdPath, "utf-8").replace(/^\uFEFF/, "");
-            const markerIndex = content.indexOf("# NREKI ACTIVE");
-            if (markerIndex !== -1) {
-                const cleanedContent = content.substring(0, markerIndex).trim();
-                if (cleanedContent === "") {
-                    fs.unlinkSync(claudeMdPath);
-                    logger.info("Deleted empty CLAUDE.md");
-                } else {
-                    fs.writeFileSync(claudeMdPath, cleanedContent + "\n", "utf-8");
-                    logger.info("Removed NREKI instructions from CLAUDE.md");
-                }
+    // 3-4. Instruction files `init` wrote: NREKI's block in CLAUDE.md, AGENTS.md and
+    //      .github/copilot-instructions.md (the user's content is kept), and the
+    //      files NREKI owns (Claude skill, Cursor rule, Cline rule).
+    try {
+        const { removeInstructions } = await import("./init/init-runner.js");
+        for (const action of removeInstructions(cwd)) {
+            if (action.op === "removed") {
+                logger.info(`${action.path}: ${action.note}`);
                 modified = true;
+            } else {
+                logger.warn(`${action.path}: ${action.note}`);
             }
-        } catch (err) {
-            logger.error(`Failed to clean CLAUDE.md: ${(err as Error).message}`);
         }
-    }
-
-    // 4. Clean AGENTS.md — strip only NREKI block, preserve user own rules
-    const agentsMdPath = path.join(cwd, "AGENTS.md");
-    if (fs.existsSync(agentsMdPath) && touchable(agentsMdPath)) {
-        try {
-            const content = fs.readFileSync(agentsMdPath, "utf-8").replace(/^\uFEFF/, "");
-            const nrekiMarker = "# Instructions for AI coding agents consuming NREKI via MCP";
-            const nrekiIdx = content.indexOf(nrekiMarker);
-            if (nrekiIdx !== -1) {
-                let stripFrom = nrekiIdx;
-                const before = content.substring(0, nrekiIdx);
-                const lastH1 = before.lastIndexOf("# AGENTS.md");
-                if (lastH1 !== -1 && before.substring(lastH1).trim() === "# AGENTS.md") {
-                    stripFrom = lastH1;
-                }
-                const cleanedContent = content.substring(0, stripFrom).trim();
-                if (cleanedContent === "") {
-                    fs.unlinkSync(agentsMdPath);
-                    logger.info("Deleted empty AGENTS.md");
-                } else {
-                    fs.writeFileSync(agentsMdPath, cleanedContent + "\n", "utf-8");
-                    logger.info("Removed NREKI instructions from AGENTS.md");
-                }
-                modified = true;
-            }
-        } catch (err) {
-            logger.error(`Failed to clean AGENTS.md: ${(err as Error).message}`);
-        }
+    } catch (err) {
+        logger.error(`Failed to clean instruction files: ${(err as Error).message}`);
     }
 
     // 5. Clean SKILL.md — strip only NREKI block, preserve user own rules
@@ -257,6 +244,26 @@ if (args[0] === "deinit") {
         }
     }
 
+    // 7. Remove the MCP server entries `nreki init` wrote (only entries that launch
+    //    the nreki package; a user's own "nreki" entry is left alone).
+    {
+        const { MCP_HOSTS, unregisterMcp } = await import("./init/mcp-register.js");
+        for (const host of MCP_HOSTS) {
+            try {
+                const removed = unregisterMcp(host, cwd);
+                if (!removed) continue;
+                if (removed.op === "removed") {
+                    logger.info(`Removed NREKI MCP registration from ${removed.path} (${removed.note})`);
+                    modified = true;
+                } else {
+                    logger.warn(`${removed.path}: ${removed.note}`);
+                }
+            } catch (err) {
+                logger.error(`Failed to clean ${host} MCP registration: ${(err as Error).message}`);
+            }
+        }
+    }
+
     if (modified) {
         logger.info("NREKI deinit complete. Your environment is clean.");
     } else {
@@ -286,7 +293,8 @@ if (args[0] === "init") {
     if (parsed.error) {
         process.stderr.write(`nreki init: ${parsed.error}\n`);
         process.stderr.write(
-            "\nUsage: nreki init [--agent <claude|cursor|cline|copilot|generic>] [--force] [--dry-run]\n",
+            "\nUsage: nreki init [--agent <claude,codex,antigravity,cursor,cline,copilot,generic>]" +
+            " [--voyage|--no-voyage] [--no-mcp] [--force] [--dry-run]\n",
         );
         process.exit(2);
     }
@@ -294,14 +302,18 @@ if (args[0] === "init") {
     try {
         const result = runInit(parsed.opts);
         process.stderr.write(`nreki init: ${result.reason}\n`);
-        process.stderr.write(`  agent: ${result.agent}${parsed.opts.dryRun ? " (dry-run)" : ""}\n`);
+        process.stderr.write(`  agents: ${result.agents.join(", ")}${parsed.opts.dryRun ? " (dry-run)" : ""}\n`);
         for (const action of result.actions) {
             process.stderr.write(`  ${formatAction(action)}\n`);
         }
+        if (result.notes.length > 0) {
+            process.stderr.write("\nNext:\n");
+            for (const note of result.notes) process.stderr.write(`  - ${note}\n`);
+        }
         if (result.agent === "generic" && !parsed.opts.agent) {
             process.stderr.write(
-                "\nNo agent-specific config detected. If you use Claude Code / Cursor / Cline / Copilot,\n" +
-                "re-run with --agent <name> to install the agent-specific files.\n",
+                "\nNo agent detected in this project or on this computer. If you use Claude Code / Codex /\n" +
+                "Antigravity / Cursor / Cline / Copilot, re-run with --agent <name>.\n",
             );
         }
         process.exit(0);
