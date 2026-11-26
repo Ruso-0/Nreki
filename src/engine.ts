@@ -205,10 +205,16 @@ export class NrekiEngine {
     /** Short duplicate-event window for OS watchers that emit 2 change events per atomic rename. */
     private lastInternalAck = new Map<string, { hash: string; at: number }>();
     private externalFileChange: ((file: string) => Promise<void>) | null = null;
+    private externalBatchChange: ((files: string[]) => Promise<void>) | null = null;
 
     /** Keep semantic overlays in sync with edits made outside the MCP tools. */
     public onExternalFileChange(listener: (file: string) => Promise<void>): void {
         this.externalFileChange = listener;
+    }
+
+    /** Coalesced notification for all external files processed in a watcher queue drain. */
+    public onExternalBatchChange(listener: (files: string[]) => Promise<void>): void {
+        this.externalBatchChange = listener;
     }
 
     constructor(config: EngineConfig = {}) {
@@ -287,7 +293,10 @@ export class NrekiEngine {
         // Opt-in whole-repository dense index (NREKI_SEMANTIC=voyage + key).
         const voyage = resolveVoyageConfig();
         this.vectors = voyage
-            ? new VectorIndex(this.db, voyage, this.getProjectRoot(), { onStored: () => this.scheduleSave() })
+            ? new VectorIndex(this.db, voyage, this.getProjectRoot(), {
+                onStored: () => this.scheduleSave(),
+                onComplete: () => this.flushSaveSync(),
+            })
             : null;
         this.searcher = new SearchEngine(
             this.db,
@@ -409,6 +418,7 @@ export class NrekiEngine {
         if (!this.vectors) return null;
         await this.ensureIndexed();
         await this.vectors.sync();
+        this.flushSaveSync();
         return this.vectors.coverage();
     }
 
@@ -812,6 +822,7 @@ export class NrekiEngine {
         let madeChanges = false;
         let externalTopologyChange = false;
 
+        const externalBatch: string[] = [];
         try {
             while (this.indexingQueue.size > 0) {
                 const [filePath] = this.indexingQueue;
@@ -855,6 +866,7 @@ export class NrekiEngine {
                 }
 
                 if (external) {
+                    externalBatch.push(filePath);
                     try { await this.externalFileChange?.(filePath); }
                     catch (err) { logger.warn(`Semantic cache refresh failed for ${filePath}: ${(err as Error).message}`); }
                 }
@@ -866,6 +878,10 @@ export class NrekiEngine {
                         `Queue error for ${filePath}: ${(err as Error).message}`
                     );
                 }
+            }
+            if (externalBatch.length > 0 && this.externalBatchChange) {
+                try { await this.externalBatchChange(externalBatch); }
+                catch (err) { logger.warn(`Semantic batch cache refresh failed: ${(err as Error).message}`); }
             }
         } finally {
             if (madeChanges && !this.closed) {
@@ -950,6 +966,15 @@ export class NrekiEngine {
             this.saveTimeout = null;
             this.db.save();
         }, 1_000);
+    }
+
+    /** Immediate save cancelling any pending debounce (e.g., after Voyage sync completes). */
+    private flushSaveSync(): void {
+        if (this.saveTimeout) {
+            clearTimeout(this.saveTimeout);
+            this.saveTimeout = null;
+        }
+        if (!this.closed) this.db.save();
     }
 
     /** Shutdown engine: stop watcher and close database. */

@@ -40,6 +40,11 @@ export interface NrekiInterceptResult {
      * Absent: not compared.
      */
     exportedApiUnchanged?: boolean;
+    /**
+     * All pre-existing exported declarations were preserved verbatim and only
+     * disjoint new exports (or a brand-new module) were added, without globals.
+     */
+    exportedApiAdditive?: boolean;
     /** The edit touched global declarations (script file, `declare global`, `declare module "x"`): files that never import the edited ones see it. */
     declaresGlobals?: boolean;
     /** File mode: the program gained or lost files (an import added or removed): other files may see a different program. */

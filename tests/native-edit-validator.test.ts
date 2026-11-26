@@ -46,8 +46,9 @@ describe("native edit reconstruction", () => {
         expect(nativeEditContent(request, "x")).toBe("z");
         expect(() => nativeEditContent({ tool_name: "MultiEdit", tool_input: { edits: [null] } }, "x")).toThrow(/invalid/);
     });
-    it("supports new files and skips unsupported tool shapes", () => {
+    it("supports new files and empty 0-byte files and skips unsupported tool shapes", () => {
         expect(nativeEditContent(edit("", "new"), null)).toBe("new");
+        expect(nativeEditContent(edit("", "populated"), "")).toBe("populated");
         expect(nativeEditContent({ tool_name: "Write", tool_input: { content: "new" } }, null)).toBe("new");
         expect(nativeEditContent({ tool_name: "Replace", tool_input: {} }, "old")).toBeNull();
     });
@@ -108,12 +109,42 @@ describe("native preflight validation", () => {
         expect((await validateNativeEdit({ tool_name: "Write", tool_input: { file_path: "new.ts", content: "export const fresh: number = 3;" } }, deps)).status).toBe("allow");
         expect(fs.existsSync(path.join(root, "new.ts"))).toBe(false);
     });
-    it("directs new TypeScript files outside the current program to batch_edit", async () => {
+    it("validates new TypeScript files matching tsconfig in RAM without touching disk, and blocks type errors", async () => {
         const { root, deps } = fixture();
-        const result = await validateNativeEdit({ tool_name: "Write", tool_input: { file_path: "new.ts", content: "export const fresh: number = 3;" } }, deps);
-        expect(result.status).toBe("deny");
-        expect(result.error).toContain("batch_edit");
+        const goodNew = await validateNativeEdit({
+            tool_name: "Write",
+            tool_input: { file_path: "new.ts", content: 'import { count } from "./a";\nexport const fresh: number = count + 2;\n' },
+        }, deps);
+        expect(goodNew).toEqual({ status: "allow" });
         expect(fs.existsSync(path.join(root, "new.ts"))).toBe(false);
+
+        const badNew = await validateNativeEdit({
+            tool_name: "Write",
+            tool_input: { file_path: "new.ts", content: 'import { count } from "./a";\nexport const broken: string = count;\n' },
+        }, deps);
+        expect(badNew.status).toBe("deny");
+        expect(badNew.error).toMatch(/2322|not assignable/);
+        expect(fs.existsSync(path.join(root, "new.ts"))).toBe(false);
+
+        // Also supports Edit with old_string:"" on both non-existent and 0-byte stub files
+        expect(await validateNativeEdit({
+            tool_name: "Edit",
+            tool_input: { file_path: "created-via-edit.ts", old_string: "", new_string: "export const n: number = 5;\n" },
+        }, deps)).toEqual({ status: "allow" });
+
+        const stubPath = path.join(root, "empty-stub.ts");
+        fs.writeFileSync(stubPath, "");
+        expect(await validateNativeEdit({
+            tool_name: "Edit",
+            tool_input: { file_path: "empty-stub.ts", old_string: "", new_string: "export const filled: number = 9;\n" },
+        }, deps)).toEqual({ status: "allow" });
+
+        // Brand-new file outside tsconfig (where batch_edit cannot create files) is syntax + zero-any checked and allowed
+        fs.mkdirSync(path.join(root, "scripts"), { recursive: true });
+        expect(await validateNativeEdit({
+            tool_name: "Write",
+            tool_input: { file_path: "scripts/tool.ts", content: "export const ok: number = 1;\n" },
+        }, deps)).toEqual({ status: "allow" });
     });
     it("rejects isolated checking under a solution-style tsconfig", async () => {
         const { root, deps } = fixture();
@@ -129,17 +160,119 @@ describe("native preflight validation", () => {
         expect(preview).not.toHaveBeenCalled();
         expect(fs.readFileSync(path.join(root, "pkg/api.ts"), "utf8")).toContain("number");
     });
-    it("rejects a known importer compiled under another tsconfig", async () => {
+    it("rejects breaking declaration changes when a known importer is outside tsconfig, while allowing API-preserving edits", async () => {
         const { root, deps } = fixture();
         fs.mkdirSync(path.join(root, "tests"));
         fs.writeFileSync(path.join(root, "tests/caller.ts"), 'import { count } from "../a"; export const result: number = count;');
         await deps.engine.initialize();
         await deps.engine.indexDirectory(root);
         expect(await deps.engine.findDependents("a.ts")).toContain("tests/caller.ts");
+
+        // Internal change / comment preserves .d.ts -> allowed!
+        const commentEdit = await validateNativeEdit(
+            edit("export const count: number = 1;", "// internal doc\nexport const count: number = 2;"),
+            deps,
+        );
+        expect(commentEdit).toEqual({ status: "allow" });
+
+        // Disjoint additive export preserves existing contract -> allowed!
+        const additiveEdit = await validateNativeEdit(
+            edit("export const count: number = 1;", 'export const count: number = 1;\nexport function extraLabel(): string { return "v1"; }'),
+            deps,
+        );
+        expect(additiveEdit).toEqual({ status: "allow" });
+
+        // Breaking signature change -> still rejected!
         const result = await validateNativeEdit({ tool_name: "Write", tool_input: { file_path: "a.ts", content: 'export const count: string = "bad";' } }, deps);
         expect(result.status).toBe("deny");
         expect(result.error).toContain("batch_edit");
         expect(fs.readFileSync(path.join(root, "a.ts"), "utf8")).toContain("number");
+    });
+    it("allows existing test files outside tsconfig when they have no dependents", async () => {
+        const { root, deps } = fixture();
+        fs.mkdirSync(path.join(root, "tests"), { recursive: true });
+        fs.writeFileSync(path.join(root, "tests/unit.test.ts"), "export const expectedValue: number = 10;\n");
+        await deps.engine.initialize();
+        await deps.engine.indexDirectory(root);
+        const res = await validateNativeEdit({
+            tool_name: "Edit",
+            tool_input: { file_path: "tests/unit.test.ts", old_string: "= 10", new_string: "= 20" },
+        }, deps);
+        expect(res).toEqual({ status: "allow" });
+    });
+    it("allows Python and Go native edits when LSP sidecar is offline while still blocking TTRD warnings", async () => {
+        const { root, deps } = fixture();
+        const file = path.join(root, "service.py");
+        fs.writeFileSync(file, "def compute(a: int) -> int:\n    return a + 1\n");
+        vi.spyOn(deps.kernel!, "isBooted").mockReturnValue(true);
+        vi.spyOn(deps.kernel!, "getSemanticCoverage").mockReturnValue({ backend: "lsp", languageId: "python" });
+        vi.spyOn(deps.engine, "findDependents").mockResolvedValue([]);
+        const preview = vi.spyOn(deps.kernel!, "previewAtomicBatch").mockResolvedValueOnce({
+            safe: true,
+            exitCode: 0,
+            latencyMs: "0.00",
+            degradedLanguages: ["python"],
+        });
+        const offlineRes = await validateNativeEdit({
+            tool_name: "Edit",
+            tool_input: { file_path: "service.py", old_string: "return a + 1", new_string: "return a + 2" },
+        }, deps);
+        expect(offlineRes).toEqual({ status: "allow" });
+        expect(preview).toHaveBeenCalledTimes(1);
+
+        preview.mockResolvedValueOnce({
+            safe: true,
+            exitCode: 0,
+            latencyMs: "0.00",
+            degradedLanguages: ["python"],
+            warnings: ["TTRD WARNING: service.py weakened parameter type to Any"],
+        });
+        const weakenedRes = await validateNativeEdit({
+            tool_name: "Edit",
+            tool_input: { file_path: "service.py", old_string: "def compute(a: int) -> int:", new_string: "def compute(a):" },
+        }, deps);
+        expect(weakenedRes.status).toBe("deny");
+        expect(weakenedRes.error).toContain("TTRD WARNING");
+    });
+    it("enforces strict zero-any differentially without false positives on Promise.any, properties, strings, comments, or legacy debt", async () => {
+        const { root, file, deps } = fixture();
+        const anyTok = "a" + "ny";
+
+        // Blocks local `: any`, `as any`, `<any>`, and non-exported parameter `: any`
+        for (const snippet of [
+            `export const count: number = 1;\nconst lazy: ${anyTok} = 2;`,
+            `export const count: number = (1 as ${anyTok});`,
+            `export const count: number = <${anyTok}>1;`,
+            `function helper(x: ${anyTok}): number { return Number(x); }\nexport const count: number = helper(1);`,
+        ]) {
+            const denied = await validateNativeEdit(edit("export const count: number = 1;", snippet), deps);
+            expect(denied.status).toBe("deny");
+            expect(denied.error).toContain("explicit 'any' type is forbidden");
+        }
+
+        // Also blocks `: any` in test files and in syntax mode
+        fs.mkdirSync(path.join(root, "tests"), { recursive: true });
+        fs.writeFileSync(path.join(root, "tests/no-any.test.ts"), "const seed = 1;\n");
+        const deniedInTest = await validateNativeEdit({
+            tool_name: "Edit",
+            tool_input: { file_path: "tests/no-any.test.ts", old_string: "const seed = 1;", new_string: `const seed: ${anyTok} = 1;` },
+        }, deps);
+        expect(deniedInTest.status).toBe("deny");
+
+        // Zero false positives on Promise.any, method/property names, identifiers, strings, or comments
+        const cleanConstructs = [
+            "export const count: number = 1;",
+            "export const race = Promise.any([Promise.resolve(1)]);",
+            "export const propHolder = { any: 42 };",
+            "export const company = 'many';",
+            `export const note = "x as ${anyTok} : ${anyTok}";`,
+            `// comment mentioning : ${anyTok} and as ${anyTok}`,
+        ].join("\n");
+        expect(await validateNativeEdit(edit("export const count: number = 1;", cleanConstructs), deps)).toEqual({ status: "allow" });
+
+        // Legacy untouched `any` in the same file does not block an unrelated fix
+        fs.writeFileSync(file, `const legacy: ${anyTok} = 0;\nexport const count: number = 1;\n`);
+        expect(await validateNativeEdit(edit("export const count: number = 1;", "export const count: number = 2;"), deps)).toEqual({ status: "allow" });
     });
     it("forwards Python importers from the graph to the LSP preview", async () => {
         const { root, deps } = fixture();

@@ -38,6 +38,60 @@ export function nativeEditEndpoint(root: string, pid: number = process.pid): str
         : path.join(os.tmpdir(), `nreki-edit-${id}.sock`);
 }
 
+function listenOnce(server: net.Server, endpoint: string): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+        const onError = (err: Error): void => {
+            server.off("listening", onListening);
+            reject(err);
+        };
+        const onListening = (): void => {
+            server.off("error", onError);
+            resolve();
+        };
+        server.once("error", onError);
+        server.once("listening", onListening);
+        server.listen(endpoint);
+    });
+}
+
+async function isUnixSocketStale(endpoint: string): Promise<boolean> {
+    try {
+        if (!fs.lstatSync(endpoint).isSocket()) return false;
+    } catch {
+        return false;
+    }
+    return new Promise<boolean>(resolve => {
+        const probe = net.createConnection(endpoint);
+        let settled = false;
+        const done = (stale: boolean): void => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            probe.destroy();
+            resolve(stale);
+        };
+        const timer = setTimeout(() => done(false), 250);
+        timer.unref();
+        probe.once("connect", () => done(false));
+        probe.once("error", (err: NodeJS.ErrnoException) => {
+            done(err.code === "ECONNREFUSED" || err.code === "ENOENT");
+        });
+    });
+}
+
+export async function listenWithStaleSocketRecovery(server: net.Server, endpoint: string): Promise<void> {
+    try {
+        await listenOnce(server, endpoint);
+    } catch (err) {
+        if (process.platform === "win32" || (err as NodeJS.ErrnoException).code !== "EADDRINUSE") {
+            throw err;
+        }
+        if (!await isUnixSocketStale(endpoint)) throw err;
+        try { fs.unlinkSync(endpoint); } catch { throw err; }
+        await listenOnce(server, endpoint);
+    }
+}
+
 /** One request per local connection. Never writes project content. */
 export async function startNativeEditServer(
     root: string,
@@ -84,10 +138,7 @@ export async function startNativeEditServer(
         });
     });
     server.maxConnections = 16;
-    await new Promise<void>((resolve, reject) => {
-        server.once("error", reject);
-        server.listen(endpoint, () => { server.off("error", reject); resolve(); });
-    });
+    await listenWithStaleSocketRecovery(server, endpoint);
     server.on("error", () => { /* an unavailable endpoint must not crash MCP */ });
     try {
         if (process.platform !== "win32") fs.chmodSync(endpoint, 0o600);

@@ -24,6 +24,7 @@ const BATCH_TOKENS = 60_000;      // well under the documented 120K tokens/reque
 const CHARS_PER_TOKEN = 3.5;
 const QUERY_TIMEOUT_MS = 2500;
 const BATCH_TIMEOUT_MS = 60_000;
+const DEFAULT_SYNC_WAIT_MS = 5000;
 const MAX_RETRIES = 5;
 const QUERY_CACHE_MAX = 500;
 const DEFAULT_TOKEN_BUDGET = 20_000_000;
@@ -33,6 +34,10 @@ export interface DenseHit { id: number; score: number }
 export interface VectorIndexOptions {
     /** Called after each stored batch (the engine schedules a DB save). */
     onStored?: () => void;
+    /** Called once when a sync run finishes after storing or pruning vectors. */
+    onComplete?: () => void;
+    /** Max ms searchQuery waits for an in-flight sync when vectors are missing (default 5000). */
+    syncWaitMs?: number;
     /** Base delay for 429/5xx/network retries (doubles each attempt). */
     retryBaseMs?: number;
     /** Length of a rate-limit window (tests shorten the minute). */
@@ -60,6 +65,8 @@ export class VectorIndex {
     private queryCache = new Map<string, Float32Array>();
     private tokenBudget: number;
     private readonly onStored: () => void;
+    private readonly onComplete: () => void;
+    private readonly syncWaitMs: number;
     private readonly retryBaseMs: number;
     private readonly rateWindowMs: number;
     /**
@@ -85,6 +92,8 @@ export class VectorIndex {
         const budget = Number((options.env ?? process.env).NREKI_VOYAGE_MAX_TOKENS);
         this.tokenBudget = budget > 0 ? budget : DEFAULT_TOKEN_BUDGET;
         this.onStored = options.onStored ?? (() => {});
+        this.onComplete = options.onComplete ?? (() => {});
+        this.syncWaitMs = options.syncWaitMs ?? DEFAULT_SYNC_WAIT_MS;
         this.retryBaseMs = options.retryBaseMs ?? 1000;
         this.rateWindowMs = options.rateWindowMs ?? 60_000;
     }
@@ -100,6 +109,7 @@ export class VectorIndex {
         const code = c.node_type === "top_level" ? c.raw_code.replace(/^\s*import\b[^\n]*$/gm, "").trim() : c.raw_code;
         if (code.replace(/\s+/g, "").length < 40) return null;
         const rel = path.relative(this.projectRoot, c.path).split(path.sep).join("/");
+        if (!rel || rel === ".." || rel.startsWith("../") || path.isAbsolute(rel)) return null;
         const limit = c.node_type === "class" ? CLASS_HEADER_CHARS : BODY_CHARS;
         // Redacted before the cut, so a key block split by the limit is still blanked.
         return [rel, redactSecrets((c.context_comment ?? "").trim()), redactSecrets(code).slice(0, limit)].filter(Boolean).join("\n");
@@ -130,6 +140,7 @@ export class VectorIndex {
     }
 
     private async runSync(): Promise<void> {
+        let mutated = false;
         do {
             this.syncAgain = false;
             const todo = this.missing();
@@ -148,17 +159,22 @@ export class VectorIndex {
 
                 let done = 0;
                 this.pendingTokens = estTokens;
-                for (const batch of this.batches(todo)) {
-                    if (this.stopped) return;
-                    const vectors = await this.embedWithRetry(batch.map(t => t.text));
-                    if (!vectors || this.stopped) return;
-                    this.db.putEmbeddings(this.cfg.model, batch.map((t, i) => ({ hash: t.hash, vec: quantize(vectors[i]) })));
-                    this.storeVersion++;
-                    const spent = estimateTokens(batch.map(t => t.text));
-                    this.tokenBudget -= spent;
-                    this.pendingTokens = Math.max(0, this.pendingTokens - spent);
-                    done += batch.length;
-                    this.onStored();
+                try {
+                    for (const batch of this.batches(todo)) {
+                        if (this.stopped) return;
+                        const vectors = await this.embedWithRetry(batch.map(t => t.text));
+                        if (!vectors || this.stopped) return;
+                        this.db.putEmbeddings(this.cfg.model, batch.map((t, i) => ({ hash: t.hash, vec: quantize(vectors[i]) })));
+                        this.storeVersion++;
+                        mutated = true;
+                        const spent = estimateTokens(batch.map(t => t.text));
+                        this.tokenBudget -= spent;
+                        this.pendingTokens = Math.max(0, this.pendingTokens - spent);
+                        done += batch.length;
+                        this.onStored();
+                    }
+                } finally {
+                    this.pendingTokens = 0;
                 }
                 logger.info(`[NREKI] Voyage: embedded ${done} chunk(s).`);
             }
@@ -168,8 +184,10 @@ export class VectorIndex {
         const removed = this.db.pruneEmbeddings(this.cfg.model, this.liveHashes());
         if (removed > 0) {
             this.storeVersion++;
+            mutated = true;
             this.onStored();
         }
+        if (mutated && !this.stopped) this.onComplete();
     }
 
     private liveHashes(): Set<string> {
@@ -313,6 +331,12 @@ export class VectorIndex {
 
     /** Dense top-k for a query, or null when unavailable (no vectors yet, offline, timeout). */
     async searchQuery(query: string, k: number): Promise<DenseHit[] | null> {
+        if (this.syncing && !this.stopped && this.syncWaitMs > 0) {
+            this.ensureLoaded();
+            if (this.ids.length === 0 || this.pendingTokens > 0) {
+                await Promise.race([this.syncing, sleep(this.syncWaitMs)]);
+            }
+        }
         this.ensureLoaded();
         if (this.ids.length === 0) return null;
         let q = this.queryCache.get(query);

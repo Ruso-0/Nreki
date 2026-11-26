@@ -92,7 +92,8 @@ export async function handleEdit(
 
     const file = params.path ?? "";
     const symbol = typeof params.symbol === "string" ? params.symbol : "";
-    const new_code = typeof params.new_code === "string" ? params.new_code : "";
+    const hasNewCode = typeof params.new_code === "string";
+    const new_code = hasNewCode ? params.new_code! : "";
     const search_text = typeof params.search_text === "string" ? params.search_text : undefined;
     const replace_text = typeof params.replace_text === "string" ? params.replace_text : undefined;
 
@@ -103,8 +104,11 @@ export async function handleEdit(
     if (!symbol) {
         return { content: [{ type: "text" as const, text: `Error: "symbol" is required.` }], isError: true };
     }
-    if (mode !== "patch" && !new_code) {
-        return { content: [{ type: "text" as const, text: `Error: "new_code" is required for mode "${mode}".` }], isError: true };
+    if (mode === "replace" && !hasNewCode) {
+        return { content: [{ type: "text" as const, text: `Error: "new_code" is required for mode "replace" (pass "" to delete the symbol).` }], isError: true };
+    }
+    if ((mode === "insert_before" || mode === "insert_after") && !new_code) {
+        return { content: [{ type: "text" as const, text: `Error: "new_code" (non-empty) is required for mode "${mode}".` }], isError: true };
     }
     if (mode === "patch" && (!search_text || search_text.length < 2)) {
         return { content: [{ type: "text" as const, text: `Error: "search_text" (min 2 chars) is required for patch mode.` }], isError: true };
@@ -168,7 +172,7 @@ export async function handleEdit(
         const result = await semanticEdit(
             resolvedPath,
             symbol,
-            new_code || undefined,
+            hasNewCode ? new_code : undefined,
             parser,
             sandbox,
             engine.getProjectRoot(),
@@ -178,7 +182,7 @@ export async function handleEdit(
             replace_text,
         );
 
-        if (!result.success || (useKernel && !result.newContent)) {
+        if (!result.success || (useKernel && result.newContent === undefined)) {
             return {
                 content: [{
                     type: "text" as const,
@@ -193,7 +197,7 @@ export async function handleEdit(
         }
 
         const kernelTracksStaged = useKernel && typeof deps.kernel?.getStagedWrites === "function";
-        if (result.newContent && !kernelTracksStaged) {
+        if (result.newContent !== undefined && !kernelTracksStaged) {
             engine.expectInternalEdit(resolvedPath, result.newContent);
         }
 
@@ -240,7 +244,7 @@ export async function handleEdit(
                         // (already in semanticEdit result) = zero extra I/O, zero parser.
                         let sigChanged = false;
                         if (mode === "replace" || mode === "patch") {
-                            if (result.oldRawCode && result.newRawCode) {
+                            if (result.oldRawCode && result.newRawCode !== undefined) {
                                 const oldExported = result.oldRawCode.trim().startsWith("export");
                                 const newExported = result.newRawCode.trim().startsWith("export");
                                 if (oldExported !== newExported || (oldExported && detectSignatureChange(result.oldRawCode, result.newRawCode))) {
@@ -291,13 +295,13 @@ export async function handleEdit(
                     `**File:** ${file}\n\n`,
                 );
                 if (verifyResult.response) {
-                    if (!kernelTracksStaged) engine.cancelInternalEdit(resolvedPath, result.newContent);
+                    if (!kernelTracksStaged && result.newContent !== undefined) engine.cancelInternalEdit(resolvedPath, result.newContent);
                     return verifyResult.response;
                 }
                 ttrdFeedback = verifyResult.ttrdFeedback;
 
             } catch (kernelError) {
-                if (!kernelTracksStaged) engine.cancelInternalEdit(resolvedPath, result.newContent);
+                if (!kernelTracksStaged && result.newContent !== undefined) engine.cancelInternalEdit(resolvedPath, result.newContent);
                 logger.error(`Kernel error during edit verification: ${kernelError}`);
                 try { await deps.kernel.rollbackAll(); } catch (e) {
                     logger.error(`Rollback after kernel crash also failed: ${e}`);
@@ -340,9 +344,11 @@ export async function handleEdit(
         );
 
         let blastRadiusWarning = "";
-        if (result.oldRawCode && result.newRawCode && (mode === "replace" || mode === "patch")) {
+        if (result.oldRawCode && result.newRawCode !== undefined && (mode === "replace" || mode === "patch")) {
             try {
-                const sigChanged = detectSignatureChange(result.oldRawCode, result.newRawCode);
+                const sigChanged = result.newRawCode === ""
+                    ? result.oldRawCode.trim().startsWith("export")
+                    : detectSignatureChange(result.oldRawCode, result.newRawCode);
                 if (sigChanged) {
                     const relPath = path.relative(engine.getProjectRoot(), resolvedPath).replace(/\\/g, "/");
                     const dependents = await engine.findDependents(relPath);
@@ -448,11 +454,21 @@ export async function handleBatchEdit(
                 isError: true,
             };
         }
-        if (e.mode !== "patch" && !e.new_code) {
+        const editMode = e.mode ?? "replace";
+        if (editMode === "replace" && typeof e.new_code !== "string") {
             return {
                 content: [{
                     type: "text" as const,
-                    text: `Error: edit[${i}] missing "new_code" (required for ${e.mode ?? "replace"} mode).`,
+                    text: `Error: edit[${i}] missing "new_code" (required for replace mode; pass "" to delete the symbol).`,
+                }],
+                isError: true,
+            };
+        }
+        if ((editMode === "insert_before" || editMode === "insert_after") && !e.new_code) {
+            return {
+                content: [{
+                    type: "text" as const,
+                    text: `Error: edit[${i}] missing "new_code" (non-empty string required for ${editMode} mode).`,
                 }],
                 isError: true,
             };
@@ -600,7 +616,9 @@ export async function handleBatchEdit(
                             const key = `${safePath(engine.getProjectRoot(), edit.path)}::${edit.symbol}`;
                             const oldRaw = result.oldRawCodes?.get(key);
                             const newRaw = result.newRawCodes?.get(key);
-                            if (oldRaw && newRaw && detectSignatureChange(oldRaw, newRaw)) sigChanged = true;
+                            if (oldRaw && newRaw !== undefined) {
+                                if (newRaw === "" ? oldRaw.trim().startsWith("export") : detectSignatureChange(oldRaw, newRaw)) sigChanged = true;
+                            }
                         }
                         allDepSet = new Set<string>();
                         for (const fp of batchFiles) {
@@ -727,8 +745,9 @@ export async function handleBatchEdit(
                     const key = `${safePath(engine.getProjectRoot(), edit.path)}::${edit.symbol}`;
                     const oldRaw = result.oldRawCodes.get(key);
                     const newRaw = result.newRawCodes.get(key);
-                    if (oldRaw && newRaw && detectSignatureChange(oldRaw, newRaw)) {
-                        changedSymbols.push(edit.symbol);
+                    if (oldRaw && newRaw !== undefined) {
+                        const changed = newRaw === "" ? oldRaw.trim().startsWith("export") : detectSignatureChange(oldRaw, newRaw);
+                        if (changed) changedSymbols.push(edit.symbol);
                     }
                 }
                 if (changedSymbols.length > 0) {

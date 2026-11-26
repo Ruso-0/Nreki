@@ -56,15 +56,36 @@ const WEAK_LOOKUPS = 200;
 /** A file search led to is shown whole up to this size: agents read it whole anyway. */
 const WHOLE_FILE_LINES = 80;
 const WHOLE_FILE_TOKENS = 900;
-/** Imported definitions shown under the code: short ones only, and few. */
-const HELPER_MAX_LINES = 6;
-const HELPERS_MAX = 12;
+/**
+ * Primary search files (an issue's #1 hit, its meeting file, or a module #1
+ * imports) are shown whole up to 135 lines: in the 2026-11-25 v3 A/B/C, folding
+ * a 117-line #1 service still triggered `compress` in 6/6 sessions (+1 turn).
+ */
+const PRIMARY_WHOLE_FILE_LINES = 135;
+const PRIMARY_WHOLE_FILE_TOKENS = 1950;
+/** Imported definitions shown under the code: short ones whole, longer called ones as a 1-line signature. */
+const HELPER_MAX_LINES = 18;
+const HELPERS_MAX = 15;
+/** Focused interior window shown when search/occurrence lands inside a >80-line symbol. */
+const LARGE_WINDOW_LINES = 28;
 /** Parts of a task searched one by one, and the hits kept per part. */
 const ISSUES_MAX = 6;
 const HITS_PER_ISSUE = 3;
+/**
+ * A file that only a weaker search hit led to (not the top hit of its issue,
+ * not where the hits meet, not imported by the top hit) is shown whole only up
+ * to this size; above it, only the matched symbol.
+ */
+const SECONDARY_WHOLE_FILE_LINES = 24;
+/** Minimum file size for a #1 hit to prune single-parent downstream wrapper hits. */
+const CONCRETE_PRIMARY_MIN_LINES = 20;
+/** A helper whose file this many project files import is boilerplate (fault, logger, assert): not inlined. */
+const UBIQUITOUS_HELPER_IMPORTERS = 10;
+/** Largest search/occurrence symbol whose guard runs are folded to fit VERBATIM_MAX_LINES. */
+const FOLD_MAX_SOURCE_LINES = 240;
 
 export const CONTEXT_EDIT_HINT =
-    "To edit: one batch_edit with every change; in code mode, run your tests/checker right after it, in the same cell (a rejected batch writes nothing).";
+    "When using batch_edit, send one call; in code mode, run your tests/checker right after it, in the same cell (a rejected batch writes nothing).";
 
 /** Words that say what to do with code, not which code: no search signal in them. */
 const TASK_WORDS = new Set([
@@ -107,6 +128,8 @@ interface Picked {
     via: string;
     /** Higher = more relevant: identifiers the task wrote like code beat plain words. */
     rank: number;
+    /** Insertion index so search hits preserve relevance order instead of sorting alphabetically. */
+    orderIdx: number;
 }
 
 /**
@@ -180,7 +203,7 @@ export function splitTaskIssues(task: string): string[] {
  */
 async function searchTask(
     engine: NrekiEngine, root: string, issues: string[], scope: Scope,
-): Promise<{ hits: ChunkRecord[]; files: Set<string>; empty: string[] }> {
+): Promise<{ hits: ChunkRecord[]; files: Set<string>; empty: string[]; primary: Set<string>; epicenters: Set<string> }> {
     // A scope drops hits: ask for more, keep the first k inside it.
     const find = async (query: string, k: number): Promise<SearchResult[]> => {
         // Dense embeddings already understand Spanish; keep their input unchanged.
@@ -188,26 +211,42 @@ async function searchTask(
         const found = await engine.search(searchQuery, scope ? k * 3 : k);
         return (scope ? found.filter(r => scope(r.path)) : found).slice(0, k);
     };
+    const primary = new Set<string>();
+    const epicenters = new Set<string>();
     if (issues.length === 1) {
         const all = await find(issues[0], 6);
-        const hits = all.slice(0, 4).map(fromSearch);
-        const meeting = await meetingFile(engine, root, all.slice(0, 4), scope);
-        if (meeting) hits.push(meeting);
-        return { hits, files: new Set(all.map(r => r.path)), empty: all.length === 0 ? issues : [] };
+        const refined = await refineIssueHits(engine, root, all.slice(0, 5), scope);
+        for (const p of refined.primaryRels) primary.add(p);
+        for (const e of refined.epicenterRels) epicenters.add(e);
+        const hits = refined.kept.slice(0, 4).map(fromSearch);
+        if (refined.meeting) {
+            hits.push(refined.meeting);
+            primary.add(relOf(root, refined.meeting.path));
+            epicenters.add(relOf(root, refined.meeting.path));
+        }
+        return { hits, files: new Set(all.map(r => r.path)), empty: all.length === 0 ? issues : [], primary, epicenters };
     }
     const lists: SearchResult[][] = [];
     for (const issue of issues) lists.push(await find(issue, 4)); // sequential: Voyage rate limits
-    // 3 per issue: the code to edit was 3rd in 2 of the 6 A/B issues (BM25 and
-    // Voyage alike). A small file more is ~250 tokens; a missed one, a read turn.
+    const refinedLists: Array<Awaited<ReturnType<typeof refineIssueHits>>> = [];
+    for (const list of lists) {
+        const ref = await refineIssueHits(engine, root, list, scope);
+        for (const p of ref.primaryRels) primary.add(p);
+        for (const e of ref.epicenterRels) epicenters.add(e);
+        refinedLists.push(ref);
+    }
     const hits: ChunkRecord[] = [];
     for (let rank = 0; rank < HITS_PER_ISSUE; rank++) {
-        for (const list of lists) if (list[rank]) hits.push(fromSearch(list[rank]));
+        for (const ref of refinedLists) if (ref.kept[rank]) hits.push(fromSearch(ref.kept[rank]));
     }
-    for (const list of lists) {
-        const meeting = await meetingFile(engine, root, list, scope);
-        if (meeting) hits.push(meeting);
+    for (const ref of refinedLists) {
+        if (ref.meeting) {
+            hits.push(ref.meeting);
+            primary.add(relOf(root, ref.meeting.path));
+            epicenters.add(relOf(root, ref.meeting.path));
+        }
     }
-    return { hits, files: new Set(lists.flat().map(r => r.path)), empty: issues.filter((_, i) => lists[i].length === 0) };
+    return { hits, files: new Set(lists.flat().map(r => r.path)), empty: issues.filter((_, i) => lists[i].length === 0), primary, epicenters };
 }
 
 /** `path` passed to context: only code under it is shown (agents pass path:"src"). Takes absolute paths. */
@@ -228,40 +267,290 @@ function resolveScope(root: string, requested: string | undefined): { scope: Sco
     return { scope: (file: string) => { const rel = relOf(root, file); return rel === prefix || rel.startsWith(prefix + "/"); }, note: "" };
 }
 
+/** Files explicitly forbidden by a negative imperative in the prompt ("Do not read verify.mjs", "No leas verify.mjs"). */
+function extractForbiddenFiles(task: string): Set<string> {
+    const out = new Set<string>();
+    for (const clause of task.split(/(?<=[.!?;\n])\s+/)) {
+        const trimmed = clause.trim().replace(/^\s*(?:\d+[.)]|[-*•])\s*/, "");
+        if (!NEGATIVE_IMPERATIVE.test(trimmed)) continue;
+        for (const m of trimmed.matchAll(/`?([\w./\\-]+\.(?:[cm]?[jt]sx?|py|go|json))`?/gi)) {
+            const norm = m[1].replace(/\\/g, "/").replace(/^[./]+/, "").toLowerCase();
+            if (norm) {
+                out.add(norm);
+                out.add(path.posix.basename(norm));
+            }
+        }
+    }
+    return out;
+}
+
+/** Extract a compact interior window around query-matching lines inside a >80-line symbol. */
+function focusedLargeSymbolWindow(
+    rawCode: string,
+    startLine: number,
+    name: string,
+    queryTerms: ReadonlySet<string>,
+): { body: string; matchedSlice: string | null } {
+    const lines = rawCode.replace(/\r\n/g, "\n").split("\n");
+    const fallback = `${lines[0]}\n// … ${lines.length} lines: compress focus:"${name}"`;
+    if (lines.length <= 2 || queryTerms.size === 0) return { body: fallback, matchedSlice: null };
+
+    const terms = [...queryTerms];
+    const lineScores = new Int32Array(lines.length);
+    let anyMatch = false;
+    for (let i = 1; i < lines.length; i++) {
+        const lower = lines[i].toLowerCase();
+        let score = 0;
+        for (const t of terms) {
+            if (lower.includes(t)) score++;
+        }
+        lineScores[i] = score;
+        if (score > 0) anyMatch = true;
+    }
+    if (!anyMatch) return { body: fallback, matchedSlice: null };
+
+    const winLen = Math.min(LARGE_WINDOW_LINES, lines.length - 1);
+    let clusterStart = 1;
+    let bestSum = -1;
+    let running = 0;
+    for (let i = 1; i < lines.length; i++) {
+        running += lineScores[i];
+        if (i - winLen >= 1) running -= lineScores[i - winLen];
+        const candidateStart = Math.max(1, i - winLen + 1);
+        if (running > bestSum) {
+            bestSum = running;
+            clusterStart = candidateStart;
+        }
+    }
+    const clusterEnd = Math.min(lines.length - 1, clusterStart + winLen - 1);
+    let mFirst = clusterStart;
+    let mLast = clusterStart;
+    let seenMatch = false;
+    for (let i = clusterStart; i <= clusterEnd; i++) {
+        if (lineScores[i] > 0) {
+            if (!seenMatch) { mFirst = i; seenMatch = true; }
+            mLast = i;
+        }
+    }
+    const matchSpan = Math.min(winLen, mLast - mFirst + 1);
+    const lead = Math.floor((winLen - matchSpan) * 0.35);
+    const bestStart = Math.max(1, Math.min(lines.length - winLen, mFirst - lead));
+    const winEnd = Math.min(lines.length - 1, bestStart + winLen - 1);
+    const slice = lines.slice(bestStart, winEnd + 1).join("\n");
+    const fileStart = startLine + bestStart;
+    const fileEnd = startLine + winEnd;
+    return {
+        body: `${lines[0]}\n// … L${fileStart}-L${fileEnd} (matched window of ${lines.length}L; full body: compress focus:"${name}")\n${slice}`,
+        matchedSlice: slice,
+    };
+}
+
+/** A call that only validates: requireX(…), assertX(…), invariant(…), ensureX(…), checkX(…). */
+const GUARD_CALL = /^(?:(?:require|assert|invariant|ensure|check)[A-Z_]\w*|assert|invariant)\s*\(/;
+
 /**
- * The small file that imports at least two of the files search found: where
- * the concepts of the issue meet, which is where behaviour that spans them
- * lives. "VAT on shipping" found tax-rates.ts, zones.ts and shipping/rates.ts —
- * leaves; the bug was in invoice-builder.ts, which imports two of them.
- * Tests and barrels (files that only import/re-export) are not candidates.
+ * Index of the last line of the statement starting at `from` (brackets
+ * balanced, strings and line comments skipped), or -1 past `maxLines`.
  */
-async function meetingFile(engine: NrekiEngine, root: string, list: SearchResult[], scope: Scope): Promise<ChunkRecord | null> {
+function statementEnd(lines: string[], from: number, maxLines = 40): number {
+    let depth = 0;
+    let quote = "";
+    for (let i = from; i < lines.length && i < from + maxLines; i++) {
+        const line = lines[i];
+        let code = "";
+        for (let k = 0; k < line.length; k++) {
+            const ch = line[k];
+            if (quote) {
+                if (ch === "\\") { k++; continue; }
+                if (ch === quote) quote = "";
+                continue;
+            }
+            if (ch === "/" && line[k + 1] === "/") break;
+            if (ch === "'" || ch === "\"" || ch === "`") { quote = ch; code += ch; continue; }
+            if (ch === "(" || ch === "[" || ch === "{") depth++;
+            else if (ch === ")" || ch === "]" || ch === "}") depth--;
+            code += ch;
+        }
+        if (quote === "'" || quote === "\"") quote = ""; // an unterminated plain string does not span lines
+        if (depth <= 0 && !quote && /[;)}]\s*$/.test(code.trimEnd())) return i;
+    }
+    return -1;
+}
+
+/** Last line of the guard statement starting at `from` (a validating call, or an `if` whose body only throws/validates), or -1. */
+function guardStatementEnd(lines: string[], from: number): number {
+    const t = lines[from].trim();
+    if (GUARD_CALL.test(t)) return statementEnd(lines, from);
+    if (!/^if\s*\(/.test(t)) return -1;
+    const end = statementEnd(lines, from);
+    if (end < 0 || /^else\b/.test(lines[end + 1]?.trim() ?? "")) return -1;
+    if (end === from) {
+        // `if (cond) throw …;` / `if (cond) requireX(…);` on one line.
+        return /\)\s*(?:throw\b|(?:require|assert|invariant|ensure|check)[A-Z_]?\w*\s*\()/.test(t) && !/\{/.test(t) ? end : -1;
+    }
+    if (!/\{\s*$/.test(t) || lines[end].trim() !== "}") return -1;
+    let j = from + 1;
+    let statements = 0;
+    while (j < end) {
+        const body = lines[j].trim();
+        if (body === "") { j++; continue; }
+        const e = body.startsWith("throw ") || body.startsWith("throw(") ? statementEnd(lines, j) : GUARD_CALL.test(body) ? statementEnd(lines, j) : -1;
+        if (e < 0 || e >= end) return -1;
+        statements++;
+        j = e + 1;
+    }
+    return statements > 0 ? end : -1;
+}
+
+/**
+ * A >80-line symbol with its runs of guard statements (≥ 3 statements or ≥ 4
+ * lines of requireX/assertX/`if (…) throw`) folded into one marked line each,
+ * when that brings it to VERBATIM_MAX_LINES; else null. In the 2026-11-25
+ * Codex A/B/C every NREKI session ran a `compress` on a 105-line function
+ * whose lines 19–67 were preconditions and whose bug sat at line 85.
+ */
+export function foldGuardStatements(rawCode: string, startLine: number, name: string): string | null {
+    const lines = rawCode.replace(/\r\n/g, "\n").split("\n");
+    const out: string[] = [];
+    let folded = false;
+    let i = 0;
+    while (i < lines.length) {
+        let end = i > 0 ? guardStatementEnd(lines, i) : -1;
+        if (end < 0) { out.push(lines[i]); i++; continue; }
+        const runStart = i;
+        let count = 0;
+        let lastEnd = end;
+        let j = i;
+        while (j < lines.length) {
+            if (lines[j].trim() === "") {
+                let k = j;
+                while (k < lines.length && lines[k].trim() === "") k++;
+                if (k >= lines.length || guardStatementEnd(lines, k) < 0) break;
+                j = k;
+                continue;
+            }
+            end = guardStatementEnd(lines, j);
+            if (end < 0) break;
+            count++;
+            lastEnd = end;
+            j = end + 1;
+        }
+        const span = lastEnd - runStart + 1;
+        if (count >= 3 || span >= 4) {
+            const indent = /^\s*/.exec(lines[runStart])?.[0] ?? "";
+            out.push(`${indent}// L${startLine + runStart}-L${startLine + lastEnd}: ${span} validation/guard lines omitted (full body: compress focus:"${name}")`);
+            folded = true;
+        } else {
+            out.push(...lines.slice(runStart, lastEnd + 1));
+        }
+        i = lastEnd + 1;
+    }
+    return folded && out.length <= VERBATIM_MAX_LINES ? out.join("\n") : null;
+}
+
+/**
+ * Topology pass over an issue's search hits:
+ *  1. Modules imported by the #1 hit (`coveredByTop`) are promoted to `primary`
+ *     so core domain helpers (e.g. local-calendar.ts) are shown whole instead
+ *     of being truncated as weak rank-2/3 noise.
+ *  2. When #1 is a concrete implementation (≥20L, non-type), lower-ranked hits
+ *     that merely import #1 without bridging any hit outside `coveredByTop` are
+ *     pruned (their paths already appear in `#1`'s `imported by` header).
+ *  3. Finds a `meetingFile` when an issue's hits are disjoint leaves (e.g.
+ *     rates.ts + days.ts -> late-fee.ts), ignoring adapters whose imported hits
+ *     are already united by #1.
+ */
+async function refineIssueHits(
+    engine: NrekiEngine,
+    root: string,
+    list: SearchResult[],
+    scope: Scope,
+): Promise<{ kept: SearchResult[]; primaryRels: string[]; epicenterRels: string[]; meeting: ChunkRecord | null }> {
+    if (list.length === 0) return { kept: [], primaryRels: [], epicenterRels: [], meeting: null };
+    const top = list[0];
+    const topRel = relOf(root, top.path);
     const hitRels = [...new Set(list.map(r => relOf(root, r.path)))];
-    if (hitRels.length < 2) return null;
-    const count = new Map<string, number>();
+    const importersByHit = new Map<string, Set<string>>();
+    const importedHitsOf = new Map<string, string[]>();
     for (const rel of hitRels) {
-        let importers: string[];
-        try { importers = await engine.findDependents(rel); } catch { return null; }
-        for (const imp of new Set(importers.map(i => i.replace(/\\/g, "/")))) count.set(imp, (count.get(imp) ?? 0) + 1);
+        let deps: string[] = [];
+        try { deps = await engine.findDependents(rel); } catch { deps = []; }
+        const normSet = new Set(deps.map(d => d.replace(/\\/g, "/")));
+        importersByHit.set(rel, normSet);
+        for (const imp of normSet) {
+            const arr = importedHitsOf.get(imp) ?? [];
+            arr.push(rel);
+            importedHitsOf.set(imp, arr);
+        }
     }
-    const ranked = [...count].filter(([rel, n]) => n >= 2 && !isSecondaryPath(rel) && (!scope || scope(path.resolve(root, rel))))
-        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
-    for (const [rel] of ranked) {
-        const text = readFileText(root, rel);
-        if (text === null) continue;
-        const body = text.trimEnd();
-        const lines = body.split("\n");
-        if (lines.length > WHOLE_FILE_LINES || estimateTokens(body) > WHOLE_FILE_TOKENS) continue;
-        const logic = lines.filter(l => l.trim() && !/^\s*(?:import\b|export\s+(?:\*|\{[^}]*\})\s+from\b|\/\/|\/\*|\*|#)/.test(l));
-        if (logic.length === 0) continue;
-        const hit = list.find(r => relOf(root, r.path) === rel);
-        if (hit) return fromSearch(hit);
-        return {
-            id: 0, path: path.resolve(root, rel), shorthand: "", raw_code: body, node_type: "file",
-            start_line: 1, end_line: lines.length, start_index: 0, end_index: 0, symbol_name: "",
-        };
+
+    const fileLines = (rel: string): number => readFileText(root, rel)?.trimEnd().split("\n").length ?? 0;
+    const isConcrete = (r: SearchResult, rel: string): boolean =>
+        r.nodeType !== "interface" && r.nodeType !== "type" && fileLines(rel) >= CONCRETE_PRIMARY_MIN_LINES;
+
+    // When #1 is a small leaf helper (e.g. 12L unit-share.ts) and #2 in `list` is
+    // the concrete service importing it (e.g. 117L reconcile-return.ts), treat that
+    // service as the issue's concrete anchor as well.
+    let anchorRel = topRel;
+    let anchorConcrete = isConcrete(top, topRel);
+    if (!anchorConcrete) {
+        const topDeps = importersByHit.get(topRel);
+        const caller = list.slice(1).find(r => {
+            const rel = relOf(root, r.path);
+            return topDeps?.has(rel) && isConcrete(r, rel);
+        });
+        if (caller) {
+            anchorRel = relOf(root, caller.path);
+            anchorConcrete = true;
+        }
     }
-    return null;
+
+    const epicenterRels = new Set<string>([topRel, anchorRel]);
+    const coveredByAnchor = new Set<string>([topRel, anchorRel]);
+    for (const rel of hitRels) {
+        if (importersByHit.get(rel)?.has(anchorRel)) coveredByAnchor.add(rel);
+    }
+    const primaryRels = [...coveredByAnchor];
+
+    const anchorImporters = importersByHit.get(anchorRel) ?? new Set<string>();
+    const kept = list.filter((r, idx) => {
+        if (idx === 0) return true;
+        const rRel = relOf(root, r.path);
+        if (rRel === topRel || rRel === anchorRel) return true;
+        if (anchorConcrete && anchorImporters.has(rRel)) {
+            const imports = importedHitsOf.get(rRel) ?? [];
+            if (imports.every(h => coveredByAnchor.has(h))) return false;
+        }
+        return true;
+    });
+
+    let meeting: ChunkRecord | null = null;
+    if (hitRels.length >= 2) {
+        const ranked = [...importedHitsOf.entries()]
+            .filter(([rel, hits]) =>
+                hits.length >= 2
+                && !hits.every(h => coveredByAnchor.has(h))
+                && !isSecondaryPath(rel)
+                && (!scope || scope(path.resolve(root, rel))),
+            )
+            .sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]));
+        for (const [rel] of ranked) {
+            const text = readFileText(root, rel);
+            if (text === null) continue;
+            const body = text.trimEnd();
+            const lines = body.split("\n");
+            if (lines.length > WHOLE_FILE_LINES || estimateTokens(body) > WHOLE_FILE_TOKENS) continue;
+            const logic = lines.filter(l => l.trim() && !/^\s*(?:import\b|export\s+(?:\*|\{[^}]*\})\s+from\b|\/\/|\/\*|\*|#)/.test(l));
+            if (logic.length === 0) continue;
+            const hit = kept.find(r => relOf(root, r.path) === rel) ?? list.find(r => relOf(root, r.path) === rel);
+            meeting = hit ? fromSearch(hit) : {
+                id: 0, path: path.resolve(root, rel), shorthand: "", raw_code: body, node_type: "file",
+                start_line: 1, end_line: lines.length, start_index: 0, end_index: 0, symbol_name: "",
+            };
+            break;
+        }
+    }
+    return { kept, primaryRels, epicenterRels: [...epicenterRels], meeting };
 }
 
 const fromSearch = (r: SearchResult): ChunkRecord => ({
@@ -326,6 +615,7 @@ function usedImports(root: string, file: string, fileText: string, code: string)
 async function importedHelpers(
     engine: NrekiEngine, root: string, file: string, fileText: string, code: string,
     skipFiles: Set<string>, seen: Set<string>,
+    allowDef: (def: ChunkRecord) => Promise<boolean>,
 ): Promise<string[]> {
     const out: string[] = [];
     const used = usedImports(root, file, fileText, code);
@@ -345,10 +635,20 @@ async function importedHelpers(
             c.symbol_name === symbol && !skipFiles.has(relOf(root, c.path)) && dep.holds(relOf(root, c.path)));
         if (defs.length !== 1) continue;
         const def = defs[0];
-        if (def.end_line - def.start_line + 1 > HELPER_MAX_LINES) continue;
         if (isSensitivePath(def.path) || isSensitiveSignature(def.raw_code)) continue;
-        seen.add(symbol);
+        if (!(await allowDef(def))) continue;
+        const defLines = def.end_line - def.start_line + 1;
         const alias = dep.localName !== symbol && !dep.localName.endsWith(`.${symbol}`) ? ` (imported as ${dep.localName})` : "";
+        if (defLines > HELPER_MAX_LINES) {
+            const isCalled = new RegExp(`(^|[^\\w$.])${escapeRegExp(dep.localName)}\\s*\\(`).test(code);
+            if (!isCalled && def.node_type !== "interface" && def.node_type !== "type") continue;
+            const sigLine = def.raw_code.replace(/\r\n/g, "\n").split("\n")[0]?.replace(/\s*\{\s*$/, "").trim();
+            if (!sigLine) continue;
+            seen.add(symbol);
+            out.push(`// ${relOf(root, def.path)}:L${def.start_line}-L${def.end_line}${alias} (${defLines}L; signature)\n${sigLine}`);
+            continue;
+        }
+        seen.add(symbol);
         out.push(`// ${relOf(root, def.path)}:L${def.start_line}-L${def.end_line}${alias}\n${def.raw_code.replace(/\r\n/g, "\n")}`);
     }
     return out;
@@ -380,7 +680,14 @@ export async function handleContext(params: NavigateParams, deps: RouterDependen
     const { strong, weak, pathHints, capitalized } = extractTaskIdentifiers(task);
     const order = definitionOrder(root, pathHints);
     const { scope, note: scopeNote } = resolveScope(root, params.path);
-    const inScope = (file: string): boolean => !scope || scope(file);
+    const forbiddenFiles = extractForbiddenFiles(task);
+    const isForbidden = (file: string): boolean => {
+        if (forbiddenFiles.size === 0) return false;
+        const rel = relOf(root, file).toLowerCase();
+        return forbiddenFiles.has(rel) || forbiddenFiles.has(path.posix.basename(rel));
+    };
+    const inScope = (file: string): boolean => !isForbidden(file) && (!scope || scope(file));
+    const effectiveScope: Scope = scope || forbiddenFiles.size > 0 ? inScope : null;
 
     const picked: Picked[] = [];
     const seen = new Set<string>();
@@ -389,7 +696,7 @@ export async function handleContext(params: NavigateParams, deps: RouterDependen
         const k = keyOf(c);
         if (seen.has(k)) return;
         seen.add(k);
-        picked.push({ chunk: c, via, rank });
+        picked.push({ chunk: c, via, rank, orderIdx: picked.length });
     };
 
     // 1. Symbols the task names. A code-shaped name, or a plain word defined
@@ -434,16 +741,20 @@ export async function handleContext(params: NavigateParams, deps: RouterDependen
     let conceptual = false;
     let searched: string[] = [];
     let unfound: string[] = [];
+    const primarySearch = new Set<string>(); // project-relative POSIX paths
+    const epicenterSearch = new Set<string>();
     if (picked.length > 0 && unnamed.length > 0) {
         conceptual = true;
         searched = unnamed;
-        const { hits, files, empty } = await searchTask(engine, root, unnamed, scope);
+        const { hits, files, empty, primary, epicenters } = await searchTask(engine, root, unnamed, effectiveScope);
+        for (const f of primary) primarySearch.add(f);
+        for (const e of epicenters) epicenterSearch.add(e);
         unfound = empty;
         const kept = picked.filter(p => p.rank === 2 || files.has(p.chunk.path));
         picked.length = 0;
         seen.clear();
         for (const p of kept) take(p.chunk, p.via, p.rank);
-        for (const r of hits) take(r, "search", 0);
+        for (const r of hits) take(r, "search", primarySearch.has(relOf(root, r.path)) ? 0.5 : 0);
     }
 
     // 2. Identifiers that are not symbols (fields, properties): where they occur.
@@ -495,9 +806,11 @@ export async function handleContext(params: NavigateParams, deps: RouterDependen
     if (picked.length === 0) {
         viaSearch = true;
         searched = issueTexts;
-        const { hits, empty } = await searchTask(engine, root, issueTexts, scope);
+        const { hits, empty, primary, epicenters } = await searchTask(engine, root, issueTexts, effectiveScope);
+        for (const f of primary) primarySearch.add(f);
+        for (const e of epicenters) epicenterSearch.add(e);
         unfound = empty;
-        for (const r of hits) take(r, "search", 0);
+        for (const r of hits) take(r, "search", primarySearch.has(relOf(root, r.path)) ? 0.5 : 0);
     }
 
     // A method inside a class that is also in the package is shown once, in the class.
@@ -510,7 +823,7 @@ export async function handleContext(params: NavigateParams, deps: RouterDependen
     // The default grows with the issues of the task (up to 3): one issue's worth each.
     const budget = Math.min(CONTEXT_MAX_BUDGET, Math.max(300, Math.floor(
         params.token_budget ?? CONTEXT_DEFAULT_BUDGET * Math.min(3, searched.length > 0 ? issueCount : 1))));
-    kept.sort((a, b) => b.rank - a.rank || order(a.chunk, b.chunk));
+    kept.sort((a, b) => b.rank - a.rank || (a.via === "search" && b.via === "search" ? a.orderIdx - b.orderIdx : order(a.chunk, b.chunk)));
     const byFile = new Map<string, Picked[]>();
     for (const p of kept) {
         const arr = byFile.get(relOf(root, p.chunk.path)) ?? [];
@@ -527,23 +840,38 @@ export async function handleContext(params: NavigateParams, deps: RouterDependen
     const shownByFile = new Map<string, string[]>();
     const wholeShown = new Set<string>();
     const shownCode: Array<{ file: string; text: string; code: string }> = [];
+    const windowQueryTerms = new Set(
+        (expandSpanishContextQuery(task).normalize("NFD").replace(/\p{M}/gu, "").toLowerCase().match(/[a-z_$][a-z0-9_$]*/g) ?? [])
+            .filter(w => w.length >= 3 && !GENERIC_WORDS.has(w) && !TASK_WORDS.has(w)),
+    );
     for (const [file, items] of byFile) { // file: project-relative, POSIX
         items.sort((a, b) => a.chunk.start_line - b.chunk.start_line);
         const rel = file;
         let importers = "";
         try {
-            const deps2 = await engine.findDependents(rel);
+            // A file the task forbids is not named either (its path is evidence too).
+            const deps2 = (await engine.findDependents(rel)).map(d => d.replace(/\\/g, "/"))
+                .filter(d => !isForbidden(path.resolve(root, d)));
             if (deps2.length > 0) {
-                importers = ` — imported by ${deps2.length > 4 ? `${deps2.length} files: ${deps2.slice(0, 4).join(", ")}, …` : deps2.join(", ")}`;
+                importers = deps2.length <= 4
+                    ? ` — imported by ${deps2.join(", ")}`
+                    : ` — imported by ${deps2.length} files: ${deps2.slice(0, 4).join(", ")}, …`;
             }
         } catch { /* graph unavailable: no importer line */ }
         const fileText = readFileText(root, file);
+        // Epicenters up to 135L whole; upstream helpers up to 80L whole; secondary tail up to 24L whole.
+        const isEpicenter = epicenterSearch.has(rel);
+        const secondaryOnly = items.every(p => p.via === "search" && !primarySearch.has(rel));
         if (searchLed && fileText !== null) {
             const body = fileText.trimEnd();
             const lines = body.split("\n").length;
             const header = `// ${rel} (whole file, ${lines}L)${importers}`;
             const cost = estimateTokens(header) + estimateTokens(body) + 2;
-            if (lines <= WHOLE_FILE_LINES && estimateTokens(body) <= WHOLE_FILE_TOKENS && (used + cost <= budget || blocks.length === 0)) {
+            const maxItemLines = items.reduce((max, p) => Math.max(max, p.chunk.end_line - p.chunk.start_line + 1), 0);
+            const dominantEpicenter = isEpicenter && maxItemLines >= lines * 0.85;
+            const wholeLimit = dominantEpicenter ? PRIMARY_WHOLE_FILE_LINES : secondaryOnly ? SECONDARY_WHOLE_FILE_LINES : WHOLE_FILE_LINES;
+            const wholeTokLimit = dominantEpicenter ? PRIMARY_WHOLE_FILE_TOKENS : WHOLE_FILE_TOKENS;
+            if (lines <= wholeLimit && estimateTokens(body) <= wholeTokLimit && (used + cost <= budget || blocks.length === 0)) {
                 used += cost;
                 blocks.push(`${header}\n${body}`);
                 wholeShown.add(file);
@@ -551,7 +879,7 @@ export async function handleContext(params: NavigateParams, deps: RouterDependen
                 deps.enforcer?.registerRawRead(absWhole);
                 deps.chronos?.markReadUncompressed(absWhole);
                 shownByFile.set(file, items.map(p => p.chunk.qualified_name || p.chunk.symbol_name).filter(Boolean));
-                shownCode.push({ file, text: fileText, code: body });
+                if (!secondaryOnly) shownCode.push({ file, text: fileText, code: body });
                 continue;
             }
         }
@@ -561,9 +889,30 @@ export async function handleContext(params: NavigateParams, deps: RouterDependen
             const name = c.symbol_name || "(top level)";
             const header = `// ${rel}:L${c.start_line}-L${c.end_line}${importers}`;
             importers = ""; // once per file
-            const body = lineCount <= VERBATIM_MAX_LINES
-                ? c.raw_code
-                : `${c.raw_code.split("\n")[0]}\n// … ${lineCount} lines: compress focus:"${name}"`;
+            const fallbackPointer = `${c.raw_code.split("\n")[0]}\n// … ${lineCount} lines: compress focus:"${name}"`;
+            let body: string;
+            let codeForImports: string | null = null;
+            if (lineCount <= VERBATIM_MAX_LINES) {
+                body = c.raw_code;
+                codeForImports = c.raw_code;
+            } else if (p.via === "search" || p.via === "occurrence") {
+                // Preconditions folded first: the whole algorithm, top to bottom, in one call.
+                const foldedBody = lineCount <= FOLD_MAX_SOURCE_LINES ? foldGuardStatements(c.raw_code, c.start_line, name) : null;
+                const foldCost = foldedBody !== null ? estimateTokens(header) + estimateTokens(foldedBody) + 2 : Infinity;
+                const win = foldedBody === null ? focusedLargeSymbolWindow(c.raw_code, c.start_line, name, windowQueryTerms) : null;
+                const winCost = win ? estimateTokens(header) + estimateTokens(win.body) + 2 : Infinity;
+                if (foldedBody !== null && (used + foldCost <= budget || blocks.length === 0)) {
+                    body = foldedBody;
+                    codeForImports = foldedBody;
+                } else if (win && win.matchedSlice !== null && (used + winCost <= budget || blocks.length === 0)) {
+                    body = win.body;
+                    codeForImports = win.body;
+                } else {
+                    body = fallbackPointer;
+                }
+            } else {
+                body = fallbackPointer;
+            }
             const cost = estimateTokens(header) + estimateTokens(body) + 2;
             if (used + cost > budget && blocks.length > 0) {
                 pointers.push(`${name} ${rel}:L${c.start_line}-L${c.end_line}`);
@@ -572,11 +921,13 @@ export async function handleContext(params: NavigateParams, deps: RouterDependen
             used += cost;
             blocks.push(`${header}\n${body}`);
             const names = shownByFile.get(file) ?? [];
-            // A symbol cut to its first line was not read: it must not unlock a blind replace.
+            // A symbol cut to its first line or a partial window was not read whole: it must not unlock a blind replace.
             const symKey = c.qualified_name || c.symbol_name;
             if (symKey && lineCount <= VERBATIM_MAX_LINES) names.push(symKey);
             shownByFile.set(file, names);
-            if (fileText !== null && lineCount <= VERBATIM_MAX_LINES) shownCode.push({ file, text: fileText, code: c.raw_code });
+            if (!secondaryOnly && fileText !== null && codeForImports !== null) {
+                shownCode.push({ file, text: fileText, code: codeForImports });
+            }
         }
     }
 
@@ -586,10 +937,26 @@ export async function handleContext(params: NavigateParams, deps: RouterDependen
     // the first two symbols' types took the whole cap, and the 3-line function
     // holding the third bug was never shown (measured pair of 2026-11-14).
     const helperSeen = new Set(kept.map(p => p.chunk.symbol_name).filter(Boolean));
+    // Never from a forbidden file; never a function from a module most of the
+    // project imports (fault.ts, logger.ts): it crowded out the domain helpers.
+    const dependentsOf = new Map<string, number>();
+    const allowDef = async (def: ChunkRecord): Promise<boolean> => {
+        if (isForbidden(def.path)) return false;
+        if (def.node_type === "interface" || def.node_type === "type") return true;
+        const defRel = relOf(root, def.path);
+        let n = dependentsOf.get(defRel);
+        if (n === undefined) {
+            try { n = (await engine.findDependents(defRel)).length; } catch { n = 0; }
+            dependentsOf.set(defRel, n);
+        }
+        return n < UBIQUITOUS_HELPER_IMPORTERS;
+    };
+    const stripImports = (src: string): string =>
+        src.replace(/^\s*import\b[\s\S]*?from\s+['"][^'"]+['"]\s*;?/gm, "")
+            .split("\n").filter(l => !/^\s*(?:import|from)\s/.test(l)).join("\n");
     const perSymbol: string[][] = [];
     for (const { file, text, code } of shownCode) {
-        const uses = code.split("\n").filter(l => !/^\s*(?:import|from)\s/.test(l)).join("\n");
-        perSymbol.push(await importedHelpers(engine, root, file, text, uses, wholeShown, helperSeen));
+        perSymbol.push(await importedHelpers(engine, root, file, text, stripImports(code), wholeShown, helperSeen, allowDef));
     }
     const helpers: string[] = [];
     for (let round = 0; helpers.length < HELPERS_MAX && perSymbol.some(list => list.length > round); round++) {
@@ -620,9 +987,10 @@ export async function handleContext(params: NavigateParams, deps: RouterDependen
     const nSymbols = blocks.length;
     // Say what the agent holds: in the A/B, agents re-read the four bodies
     // they had just received (one more turn, ~20k tokens re-sent).
-    const complete = pointers.length === 0 && !blocks.some(b => b.includes(" lines: compress focus:"));
+    const complete = pointers.length === 0
+        && !blocks.some(b => b.includes(" lines: compress focus:") || b.includes("full body: compress focus:"));
     const holding = complete
-        ? "current and complete code; edit it with batch_edit by these symbol names, no further read is needed"
+        ? "current and complete code; no further read is needed"
         : "current code; the ones marked with a line count or listed below were not shown whole";
     const wholeNote = wholeShown.size > 0 ? ` — a "whole file" block is the complete current file: no further read of it is needed` : "";
     parts.push(conceptual && naming.size > 0

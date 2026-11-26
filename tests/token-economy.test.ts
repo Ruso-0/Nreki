@@ -239,7 +239,7 @@ describe("results carry no decoration", () => {
         expect(text).toMatch(/amountCents at: cross-file-contract\/src\/(consumer|models)\.ts:L\d+/);
         expect(text).toContain("totalCents at: cross-file-contract/verify.mjs:L2");
         // It says the bodies are complete: in the A/B agents re-read them (one more turn).
-        expect(text.split("\n")[0]).toBe("context: 4 symbol(s) the task names — current and complete code; edit it with batch_edit by these symbol names, no further read is needed");
+        expect(text.split("\n")[0]).toBe("context: 4 symbol(s) the task names — current and complete code; no further read is needed");
         // In the 2026-11-13 holdout every NREKI agent sent batch_edit alone and ran the
         // checker on the next turn; with apply_patch the same agents chained both.
         expect(text.split("\n").at(-1)).toBe(CONTEXT_EDIT_HINT);

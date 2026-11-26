@@ -18,6 +18,7 @@
 import * as ts from "typescript";
 import * as path from "path";
 import * as crypto from "crypto";
+import picomatch from "picomatch";
 // ─── Inlined Types (formerly in language-backend.ts) ────────────────
 
 export interface BackendCapabilities {
@@ -50,6 +51,131 @@ export interface DeclarationSurface {
     programFiles: string;
     /** One of the files is a script (its top-level names are global), or has `declare global` / `declare module "x"`. */
     globalScope: boolean;
+    /** Per-file emitted .d.ts ("" when absent before creation, null on emit error / .d.ts). */
+    perFile?: ReadonlyMap<string, string | null>;
+    /** Set of non-default-lib SourceFile paths in the program. */
+    programFileSet?: ReadonlySet<string>;
+    /** True when any non-default-lib file in the program declares globals. */
+    anyGlobalInProgram?: boolean;
+}
+
+function collectDeclaredExportNames(stmt: ts.Statement): string[] {
+    const hasDefault = ts.canHaveModifiers(stmt)
+        && (ts.getModifiers(stmt)?.some(m => m.kind === ts.SyntaxKind.DefaultKeyword) ?? false);
+    if (ts.isVariableStatement(stmt)) {
+        const names: string[] = [];
+        for (const decl of stmt.declarationList.declarations) {
+            if (ts.isIdentifier(decl.name)) names.push(decl.name.text);
+        }
+        return names;
+    }
+    if (
+        ts.isFunctionDeclaration(stmt)
+        || ts.isClassDeclaration(stmt)
+        || ts.isInterfaceDeclaration(stmt)
+        || ts.isTypeAliasDeclaration(stmt)
+        || ts.isEnumDeclaration(stmt)
+        || ts.isModuleDeclaration(stmt)
+    ) {
+        const names: string[] = [];
+        if (hasDefault) names.push("default");
+        if (stmt.name && (ts.isIdentifier(stmt.name) || ts.isStringLiteral(stmt.name))) {
+            names.push(stmt.name.text);
+        }
+        return names;
+    }
+    if (ts.isExportDeclaration(stmt) && stmt.exportClause) {
+        if (ts.isNamedExports(stmt.exportClause)) {
+            return stmt.exportClause.elements.map(el => el.name.text);
+        }
+        if (ts.isNamespaceExport(stmt.exportClause)) {
+            return [stmt.exportClause.name.text];
+        }
+    }
+    if (ts.isExportAssignment(stmt) && !stmt.isExportEquals) {
+        return ["default"];
+    }
+    if (ts.isImportDeclaration(stmt) && stmt.importClause) {
+        const names: string[] = [];
+        if (stmt.importClause.name) names.push(stmt.importClause.name.text);
+        const bindings = stmt.importClause.namedBindings;
+        if (bindings) {
+            if (ts.isNamespaceImport(bindings)) names.push(bindings.name.text);
+            else for (const el of bindings.elements) names.push(el.name.text);
+        }
+        return names;
+    }
+    return [];
+}
+
+const dtsCommentStripPrinter = ts.createPrinter({
+    removeComments: true,
+    newLine: ts.NewLineKind.LineFeed,
+});
+
+/** Strip JSDoc/line/block comments from emitted .d.ts while preserving triple-slash directives. */
+function stripDtsComments(dts: string): string {
+    if (dts === "") return "";
+    const sf = ts.createSourceFile("surface.d.ts", dts, ts.ScriptTarget.Latest, false, ts.ScriptKind.TS);
+    const refs = [
+        ...sf.referencedFiles.map(r => `/// <reference path=${JSON.stringify(r.fileName)} />`),
+        ...sf.typeReferenceDirectives.map(r => {
+            const mode = r.resolutionMode === ts.ModuleKind.ESNext
+                ? ' resolution-mode="import"'
+                : r.resolutionMode === ts.ModuleKind.CommonJS
+                    ? ' resolution-mode="require"'
+                    : "";
+            return `/// <reference types=${JSON.stringify(r.fileName)}${mode} />`;
+        }),
+        ...sf.libReferenceDirectives.map(r => `/// <reference lib=${JSON.stringify(r.fileName)} />`),
+    ];
+    const body = dtsCommentStripPrinter.printFile(sf);
+    return refs.length > 0 ? `${refs.join("\n")}\n${body}` : body;
+}
+
+/**
+ * True when `postDts` keeps every top-level declaration from `preDts` verbatim
+ * and only adds disjoint new named declarations (no wildcard `export *`, no
+ * `export =`, and no overload/interface/namespace merging onto existing names).
+ */
+export function isAdditiveDeclarationChange(preDts: string, postDts: string): boolean {
+    const postSf = ts.createSourceFile("post.d.ts", postDts, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    if (preDts === "") {
+        for (const st of postSf.statements) {
+            if (ts.isExportDeclaration(st) && !st.exportClause) return false;
+            if (ts.isExportAssignment(st) && st.isExportEquals) return false;
+        }
+        return true;
+    }
+    const preSf = ts.createSourceFile("pre.d.ts", preDts, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    const preCounts = new Map<string, number>();
+    const preNames = new Set<string>();
+    for (const st of preSf.statements) {
+        if (ts.isExportDeclaration(st) && !st.exportClause) return false;
+        if (ts.isExportAssignment(st) && st.isExportEquals) return false;
+        const text = st.getText(preSf).trim();
+        preCounts.set(text, (preCounts.get(text) ?? 0) + 1);
+        for (const name of collectDeclaredExportNames(st)) preNames.add(name);
+    }
+    let addedCount = 0;
+    for (const st of postSf.statements) {
+        const text = st.getText(postSf).trim();
+        const remaining = preCounts.get(text) ?? 0;
+        if (remaining > 0) {
+            preCounts.set(text, remaining - 1);
+            continue;
+        }
+        if (ts.isExportDeclaration(st) && !st.exportClause) return false;
+        if (ts.isExportAssignment(st) && st.isExportEquals) return false;
+        if (ts.isImportEqualsDeclaration(st)) return false;
+        const names = collectDeclaredExportNames(st);
+        if (names.length === 0 || names.some(name => preNames.has(name))) return false;
+        addedCount++;
+    }
+    for (const remaining of preCounts.values()) {
+        if (remaining !== 0) return false;
+    }
+    return addedCount > 0;
 }
 
 /** The name a declaration gives its scope ("Class", "method", "CONFIG"), or null. */
@@ -370,20 +496,84 @@ export class TsCompilerWrapper {
      * Does the tsconfig select this file? False for excluded files and for a
      * solution-style root config (`"files": []` + `references`), where the
      * importers of the file are NOT in the program, so a "project-wide" check
-     * did not happen. Files created after boot are re-evaluated once.
+     * did not happen. Files created after boot are re-evaluated once; when
+     * `treatAsExisting` is true, non-existent candidate files are matched in O(1)
+     * against the parsed tsconfig without touching disk or mutating cached state.
      */
-    public isInConfiguredProgram(posixPath: string): boolean {
+    public isInConfiguredProgram(posixPath: string, treatAsExisting = false): boolean {
+        const nocase = !ts.sys.useCaseSensitiveFileNames;
+        const normKey = (p: string): string => nocase ? p.toLowerCase() : p;
         if (this.configuredFileNames.has(posixPath)) return true;
-        if (!this.configFile || !this.configBase || !ts.sys.fileExists(posixPath)) return false;
+        if (nocase) {
+            const targetKey = normKey(posixPath);
+            for (const f of this.configuredFileNames) {
+                if (normKey(f) === targetKey) return true;
+            }
+        }
+        if (!this.configFile || !this.configBase) return false;
+        if (ts.sys.fileExists(posixPath)) {
+            try {
+                const parsed = ts.parseJsonConfigFileContent(
+                    ts.readConfigFile(this.configFile, ts.sys.readFile).config, ts.sys, this.configBase,
+                );
+                this.configuredFileNames = new Set(
+                    parsed.fileNames.map((f) => this.toPosix(path.resolve(this.configBase!, f))),
+                );
+            } catch { return false; }
+            if (this.configuredFileNames.has(posixPath)) return true;
+            if (!nocase) return false;
+            const targetKey = normKey(posixPath);
+            for (const f of this.configuredFileNames) {
+                if (normKey(f) === targetKey) return true;
+            }
+            return false;
+        }
+        if (!treatAsExisting) return false;
         try {
-            const parsed = ts.parseJsonConfigFileContent(
-                ts.readConfigFile(this.configFile, ts.sys.readFile).config, ts.sys, this.configBase,
-            );
-            this.configuredFileNames = new Set(
-                parsed.fileNames.map((f) => this.toPosix(path.resolve(this.configBase!, f))),
-            );
-        } catch { return false; }
-        return this.configuredFileNames.has(posixPath);
+            const candidatePosix = this.toPosix(path.resolve(posixPath));
+            const candidateKey = normKey(candidatePosix);
+            const configBase = this.configBase;
+            const virtualHost: ts.ParseConfigHost = {
+                useCaseSensitiveFileNames: ts.sys.useCaseSensitiveFileNames,
+                readFile: (filePath: string) => ts.sys.readFile(filePath),
+                fileExists: (filePath: string) => {
+                    if (normKey(this.toPosix(path.resolve(filePath))) === candidateKey) return true;
+                    return ts.sys.fileExists(filePath);
+                },
+                readDirectory: (rootDir, extensions, excludes, includes) => {
+                    if (extensions.length > 0 && !extensions.some(ext => candidateKey.endsWith(ext.toLowerCase()))) {
+                        return [];
+                    }
+                    const rootKey = normKey(this.toPosix(path.resolve(rootDir))).replace(/\/+$/, "");
+                    const relCandidate = path.posix.relative(rootKey, candidateKey);
+                    if (!relCandidate || path.posix.isAbsolute(relCandidate)) return [];
+                    const matchesSpec = (spec: string): boolean => {
+                        const rawTrimmed = spec.replace(/[\\/]+$/, "");
+                        const resolvedKey = normKey(this.toPosix(path.resolve(rootDir, rawTrimmed || ".")));
+                        const relSpec = path.posix.relative(rootKey, resolvedKey);
+                        const lastSeg = path.posix.basename(relSpec);
+                        const isDirPattern = /[\\/]$/.test(spec)
+                            || relSpec === ""
+                            || (!lastSeg.includes("*") && !lastSeg.includes("?") && !/\.[^.]+$/.test(lastSeg));
+                        const pattern = relSpec === ""
+                            ? "**/*"
+                            : isDirPattern
+                                ? `${relSpec}/**/*`
+                                : relSpec;
+                        return picomatch.isMatch(relCandidate, pattern, { dot: false });
+                    };
+                    if (!includes.some(matchesSpec)) return [];
+                    if ((excludes ?? []).some(matchesSpec)) return [];
+                    return [candidatePosix];
+                },
+            };
+            const raw = ts.readConfigFile(this.configFile, ts.sys.readFile);
+            if (raw.error) return false;
+            const parsed = ts.parseJsonConfigFileContent(raw.config, virtualHost, configBase);
+            return parsed.fileNames.some(f => normKey(this.toPosix(path.resolve(configBase, f))) === candidateKey);
+        } catch {
+            return false;
+        }
     }
 
     /**
@@ -888,7 +1078,7 @@ export class TsCompilerWrapper {
      * `withDeclarations: false` only looks for globals (declarations stay null).
      * null: no program yet.
      */
-    public declarationSurface(files: ReadonlySet<string>, withDeclarations = true): DeclarationSurface | null {
+    public declarationSurface(files: ReadonlySet<string>, withDeclarations = true, allowMissing = false): DeclarationSurface | null {
         if (!this.builderProgram) return null;
         const program = this.builderProgram.getProgram();
         // Program.emit's 6th parameter, forceDtsEmit (public as LanguageService.getEmitOutput's
@@ -904,11 +1094,24 @@ export class TsCompilerWrapper {
 
         let declarations: string | null = withDeclarations ? "" : null;
         let globalScope = false;
+        const perFile = withDeclarations ? new Map<string, string | null>() : undefined;
         for (const file of [...files].sort()) {
             const sf = program.getSourceFile(file);
-            if (!sf) { declarations = null; continue; }
+            if (!sf) {
+                if (allowMissing) {
+                    perFile?.set(file, "");
+                } else {
+                    perFile?.set(file, null);
+                    declarations = null;
+                }
+                continue;
+            }
             if (declaresGlobals(sf)) globalScope = true;
-            if (declarations === null || sf.isDeclarationFile) { declarations = null; continue; }
+            if (declarations === null || sf.isDeclarationFile) {
+                perFile?.set(file, null);
+                declarations = null;
+                continue;
+            }
             let dts: string | undefined;
             try {
                 const result = emit(sf, (name, text) => { if (/\.d\.[cm]?ts$/i.test(name)) dts = text; }, undefined, true, undefined, true);
@@ -916,12 +1119,24 @@ export class TsCompilerWrapper {
             } catch {
                 dts = undefined;
             }
-            declarations = dts === undefined ? null : `${declarations}// ${file}\n${dts}\n`;
+            const normalizedDts = dts === undefined ? undefined : stripDtsComments(dts);
+            perFile?.set(file, normalizedDts ?? null);
+            declarations = normalizedDts === undefined ? null : `${declarations}// ${file}\n${normalizedDts}\n`;
         }
+        const nonLibFiles = withDeclarations
+            ? program.getSourceFiles().filter(sf => !program.isSourceFileDefaultLibrary(sf))
+            : [];
+        const sourceFileNames = nonLibFiles.map(sf => sf.fileName).sort();
+        const anyGlobalInProgram = withDeclarations
+            ? nonLibFiles.some(sf => declaresGlobals(sf))
+            : undefined;
         return {
             declarations,
-            programFiles: withDeclarations ? program.getSourceFiles().map(sf => sf.fileName).sort().join("\n") : "",
+            programFiles: withDeclarations ? sourceFileNames.join("\n") : "",
             globalScope,
+            perFile,
+            programFileSet: withDeclarations ? new Set(sourceFileNames) : undefined,
+            anyGlobalInProgram,
         };
     }
 

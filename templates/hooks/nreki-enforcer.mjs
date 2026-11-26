@@ -111,18 +111,25 @@ async function previewNativeEdit(tool, input) {
         if (!fs.lstatSync(path.dirname(dir)).isDirectory() || !fs.lstatSync(dir).isDirectory()) return null;
         entries = fs.readdirSync(dir);
     } catch { return null; }
-    let skipped = null;
+    const candidates = [];
     for (const name of entries) {
         if (!/^[1-9]\d*$/.test(name)) continue;
         const marker = path.join(dir, name);
-        let token;
         try {
             const stat = fs.lstatSync(marker);
             if (!stat.isFile() || stat.size > 4096) continue;
-            token = JSON.parse(fs.readFileSync(marker, "utf8")).token;
+            const parsed = JSON.parse(fs.readFileSync(marker, "utf8"));
+            const token = parsed?.token;
             if (typeof token !== "string" || !/^[a-f0-9]{64}$/.test(token)) continue;
-            process.kill(Number(name), 0);
+            const pid = Number(name);
+            process.kill(pid, 0);
+            const startedMs = typeof parsed?.startedAt === "string" ? (Date.parse(parsed.startedAt) || 0) : 0;
+            candidates.push({ pid, token, startedMs });
         } catch { continue; }
+    }
+    candidates.sort((a, b) => (b.startedMs - a.startedMs) || (b.pid - a.pid));
+    let skipped = null;
+    for (const { pid, token } of candidates) {
         const request = JSON.stringify({ token, tool_name: tool, tool_input: input }) + "\n";
         if (Buffer.byteLength(request) > 4 * 1024 * 1024) {
             return { status: "deny", error: "NREKI: native edit exceeds the 4 MiB IPC limit. Use batch_edit." };
@@ -131,7 +138,7 @@ async function previewNativeEdit(tool, input) {
             let connected = false;
             let settled = false;
             let data = "";
-            const socket = net.createConnection(ipcEndpoint(Number(name)));
+            const socket = net.createConnection(ipcEndpoint(pid));
             socket.setEncoding("utf8");
             const finish = result => {
                 if (settled) return;

@@ -9,7 +9,7 @@ import { captureFileTraits, withTraits, applyModeTraits, contentDigest, readSour
 import { toPosix as toPosixUtil } from "../utils/to-posix.js";
 import { logger, setTxId, clearTxId } from "../utils/logger.js";
 import { latencyTracker } from "../utils/latency-tracker.js";
-import { TsCompilerWrapper } from "./backends/ts-compiler-wrapper.js";
+import { TsCompilerWrapper, isAdditiveDeclarationChange } from "./backends/ts-compiler-wrapper.js";
 import type { LspSidecarBase } from "./backends/lsp-sidecar-base.js";
 import { AsyncMutex } from "./mutex.js";
 import type {
@@ -761,8 +761,12 @@ export class NrekiKernel {
                     if (edit.proposedContent !== null) {
                         const posixPath = this.toPosix(path.resolve(this.projectRoot, edit.targetFile));
                         this.currentEditTargets.add(posixPath);
-                        // Ensure edited file is in rootNames for hologram lazy subgraph
-                        if (this.isTypeScriptFile(posixPath) && !this.rootNames.has(posixPath)) {
+                        // Ensure existing edited file is in rootNames for hologram pre-edit baseline;
+                        // brand-new files enter rootNames in phase1_injectVfs once VFS holds content.
+                        const preExists = this.vfs.has(posixPath)
+                            ? this.vfs.get(posixPath) !== null
+                            : this.tsBackend.host.fileExists(posixPath);
+                        if (preExists && this.isTypeScriptFile(posixPath) && !this.rootNames.has(posixPath)) {
                             this.rootNames.add(posixPath);
                         }
                     }
@@ -824,26 +828,84 @@ export class NrekiKernel {
             // TTRD: Extract pre-mutation type contracts (before VFS injection)
             const preContracts = await this.tsBackend.extractCanonicalTypes(explicitlyEditedFiles);
 
-            // File/hologram mode check the edited files and their direct importers.
-            // What the others can see of the edit is compared after it: global
-            // declarations in both modes, the emitted .d.ts in file mode.
+            // File/hologram mode check the edited files and their direct importers;
+            // native previews (!allowHealing) also compare surface for external importers.
             const surfaceFiles = new Set([...explicitlyEditedFiles].filter(f => this.isTypeScriptFile(f)));
-            const preSurface = (this.mode === "file" || this.mode === "hologram")
+            const createdSurfaceFiles = new Set(
+                [...surfaceFiles].filter(f => !(this.vfs.has(f) ? this.vfs.get(f) !== null : this.tsBackend.host.fileExists(f))),
+            );
+            const withSurfaceDecls = this.mode === "file" || !allowHealing;
+            const preSurface = (this.mode === "file" || this.mode === "hologram" || !allowHealing)
                 && surfaceFiles.size > 0 && edits.every(e => e.proposedContent !== null)
-                ? this.tsBackend.declarationSurface(surfaceFiles, this.mode === "file" || !allowHealing)
+                ? this.tsBackend.declarationSurface(surfaceFiles, withSurfaceDecls, true)
                 : null;
-            const compareSurface = (): { exportedApiUnchanged?: boolean; declaresGlobals?: boolean; programChanged?: boolean } => {
-                const post = preSurface ? this.tsBackend.declarationSurface(surfaceFiles, this.mode === "file" || !allowHealing) : null;
+            const compareSurface = (): {
+                exportedApiUnchanged?: boolean;
+                exportedApiAdditive?: boolean;
+                declaresGlobals?: boolean;
+                programChanged?: boolean;
+            } => {
+                const post = preSurface ? this.tsBackend.declarationSurface(surfaceFiles, withSurfaceDecls, false) : null;
                 if (!preSurface || !post) return {};
-                // A file entering or leaving the program (an import added or removed)
-                // can change what every other file sees: nothing can be claimed.
-                const programChanged = (this.mode === "file" || !allowHealing) && preSurface.programFiles !== post.programFiles;
+                // A file entering or leaving the program (beyond newly created target files
+                // themselves) can change what unchecked files see in file/hologram modes.
+                const allTargetsNewlyCreated = surfaceFiles.size > 0 && createdSurfaceFiles.size === surfaceFiles.size;
+                let programChanged = false;
+                if (withSurfaceDecls && !(allTargetsNewlyCreated && !post.globalScope && !post.anyGlobalInProgram)) {
+                    const key = (p: string): string => ts.sys.useCaseSensitiveFileNames ? p : p.toLowerCase();
+                    const createdKeys = new Set([...createdSurfaceFiles].map(key));
+                    if (preSurface.programFileSet && post.programFileSet) {
+                        const preKeys = new Set([...preSurface.programFileSet].map(key));
+                        const postKeys = new Set([...post.programFileSet].map(key));
+                        for (const fk of preKeys) {
+                            if (!postKeys.has(fk)) { programChanged = true; break; }
+                        }
+                        if (!programChanged) {
+                            for (const fk of postKeys) {
+                                if (!preKeys.has(fk) && !createdKeys.has(fk)) {
+                                    programChanged = true;
+                                    break;
+                                }
+                            }
+                        }
+                    } else {
+                        programChanged = preSurface.programFiles !== post.programFiles;
+                    }
+                }
                 let exportedApiUnchanged: boolean | undefined;
                 if (preSurface.declarations !== null && post.declarations !== null && !programChanged) {
-                    exportedApiUnchanged = preSurface.declarations === post.declarations;
+                    exportedApiUnchanged = createdSurfaceFiles.size === 0 && preSurface.declarations === post.declarations;
                 }
                 const declaresGlobals = exportedApiUnchanged !== true && (preSurface.globalScope || post.globalScope);
-                return { exportedApiUnchanged, declaresGlobals: declaresGlobals || undefined, programChanged: programChanged || undefined };
+                let exportedApiAdditive: boolean | undefined;
+                if (
+                    exportedApiUnchanged !== true
+                    && !programChanged
+                    && !declaresGlobals
+                    && preSurface.perFile
+                    && post.perFile
+                ) {
+                    let allAdditiveOrSame = true;
+                    for (const f of surfaceFiles) {
+                        const preDts = preSurface.perFile.get(f);
+                        const postDts = post.perFile.get(f);
+                        if (preDts === null || preDts === undefined || postDts === null || postDts === undefined) {
+                            allAdditiveOrSame = false;
+                            break;
+                        }
+                        if (preDts !== postDts && !isAdditiveDeclarationChange(preDts, postDts)) {
+                            allAdditiveOrSame = false;
+                            break;
+                        }
+                    }
+                    if (allAdditiveOrSame) exportedApiAdditive = true;
+                }
+                return {
+                    exportedApiUnchanged,
+                    exportedApiAdditive,
+                    declaresGlobals: declaresGlobals || undefined,
+                    programChanged: programChanged || undefined,
+                };
             };
 
             // TTRD SINTÁCTICO PRE-SCAN: Python/Go
@@ -1174,7 +1236,10 @@ export class NrekiKernel {
             const files = [...edits.map(e => e.targetFile), ...dependents];
             for (const file of files) safePath(this.projectRoot, file);
             await this.flushExternalChangesLocked();
-            await this.notifyExternalChangeLocked(files);
+            const staleFiles = files.filter(file => this.isPreviewFileStale(file));
+            if (staleFiles.length > 0) {
+                await this.notifyExternalChangeLocked(staleFiles);
+            }
             try {
                 const result = await this.interceptAtomicBatchLocked(edits, dependents, false, false);
                 if (!result.safe) return result;
@@ -1187,7 +1252,10 @@ export class NrekiKernel {
                     errorText: "[NREKI] Native edit weakens type safety: " + result.regressions.map(r => r.symbol).join(", ") + ".",
                 };
                 const hasTypeScript = edits.some(e => this.isTypeScriptFile(this.resolvePosixPath(e.targetFile)));
-                if (hasTypeScript && this.mode !== "project" && (result.exportedApiUnchanged !== true || result.declaresGlobals || result.programChanged)) return {
+                const surfaceSafe = (result.exportedApiUnchanged === true || result.exportedApiAdditive === true)
+                    && !result.declaresGlobals
+                    && !result.programChanged;
+                if (hasTypeScript && this.mode !== "project" && !surfaceSafe) return {
                     ...result, safe: false, exitCode: 2,
                     errorText: "[NREKI] Native edit changes declarations beyond this validation mode's coverage. Use nreki_code action:\"batch_edit\" and run the project compiler.",
                 };
@@ -1195,7 +1263,7 @@ export class NrekiKernel {
             } finally {
                 // Validation, rollback and sidecar resync share one lock: a MCP
                 // commit can never materialize the native tool's preview.
-                await this.rollbackAllLocked();
+                await this.rollbackAllLocked(true);
             }
         });
     }
@@ -1867,7 +1935,7 @@ export class NrekiKernel {
         return this.mutex.withLock(() => this.rollbackAllLocked());
     }
 
-    private async rollbackAllLocked(): Promise<void> {
+    private async rollbackAllLocked(quiet = false): Promise<void> {
             const touched = [...this.mutatedFiles];
             this.vfs.clear();
             this.vfsClock.clear();
@@ -1922,7 +1990,7 @@ export class NrekiKernel {
             this.tsBackend.releaseMutatedDocuments(this.mutatedFiles);
             // LSP overlays of the discarded transaction go back to disk content (I-01).
             await this.resyncSidecarsFromDisk(touched);
-            logger.warn("Hard rollback executed. VFS purged.");
+            if (!quiet) logger.warn("Hard rollback executed. VFS purged.");
     }
 
     // ─── Utilities ─────────────────────────────────────────────────
@@ -2088,12 +2156,15 @@ export class NrekiKernel {
      * allowJs AND checkJs are on — with allowJs alone TS reports no semantic
      * diagnostics for .js files.
      */
-    public getSemanticCoverage(filePath: string): { backend: "typescript" | "lsp" | null; languageId?: string; outsideProgram?: boolean } {
+    public getSemanticCoverage(
+        filePath: string,
+        options?: { treatAsExisting?: boolean },
+    ): { backend: "typescript" | "lsp" | null; languageId?: string; outsideProgram?: boolean } {
         const posixPath = this.resolvePosixPath(filePath);
         // Not selected by the tsconfig (excluded, or a solution-style root config
         // with "files": [] + references): the file was checked, its importers were
         // not, so the banner must not claim a project-wide check (G-01).
-        const outsideProgram = () => !this.tsBackend.isInConfiguredProgram(posixPath);
+        const outsideProgram = () => !this.tsBackend.isInConfiguredProgram(posixPath, options?.treatAsExisting === true);
         if (/\.(d\.ts|d\.mts|d\.cts|tsx?|mts|cts)$/i.test(posixPath)) return { backend: "typescript", outsideProgram: outsideProgram() };
         if (/\.(jsx?|mjs|cjs)$/i.test(posixPath)) {
             return this.compilerOptions?.allowJs && this.compilerOptions?.checkJs
@@ -2103,6 +2174,29 @@ export class NrekiKernel {
         const sidecar = this.lspSidecars.get(path.extname(posixPath).toLowerCase());
         if (sidecar) return { backend: "lsp", languageId: sidecar.languageId };
         return { backend: null };
+    }
+
+    /** True only when the compiler/sidecar in-memory view of `filePath` lags current disk text. */
+    private isPreviewFileStale(filePath: string): boolean {
+        const p = this.resolvePosixPath(filePath);
+        const sidecar = this.lspSidecars.get(path.extname(p).toLowerCase());
+        if (sidecar && sidecar.isHealthy() && sidecar.hasOpenDocument(p)) return true;
+        if (!this.isTypeScriptFile(p)) return false;
+        const disk = this.diskContentOrNull(p);
+        const sf = this.tsBackend.tsProgram?.getSourceFile(p);
+        if (disk === null) {
+            return this.rootNames.has(p) || sf !== undefined;
+        }
+        if (this.mode === "hologram") {
+            if (this.jitClassifiedCache.has(p) || this.shadowContent.has(p) || this.prunedFiles.has(p)) {
+                return !sf || sf.text !== disk;
+            }
+            return sf !== undefined && sf.text !== disk;
+        }
+        if (!this.rootNames.has(p)) {
+            return this.tsBackend.isInConfiguredProgram(p);
+        }
+        return !sf || sf.text !== disk;
     }
 
     /**
@@ -2129,12 +2223,15 @@ export class NrekiKernel {
 
     private async notifyExternalChangeLocked(filePaths: string[]): Promise<void> {
             const changed = filePaths.map(p => this.resolvePosixPath(p));
+            let touchesTypeScript = false;
             for (const p of changed) {
                 this.vfs.delete(p);
                 this.vfsClock.delete(p);
                 this.mutatedFiles.delete(p);
                 this.diskExpectations.delete(p);
                 this.bumpDiskVersion(p);
+                const isTsRelated = this.isTypeScriptFile(p) || /\.json$/i.test(p);
+                if (isTsRelated) touchesTypeScript = true;
                 if (this.mode === "hologram") {
                     this.jitClassifiedCache.delete(p);
                     this.shadowContent.delete(p);
@@ -2144,11 +2241,13 @@ export class NrekiKernel {
                     else if (this.tsBackend.isInConfiguredProgram(p)) this.rootNames.add(p);
                 }
             }
-            if (this.mode === "hologram") this.buildShadowLookups();
-            this.tsBackend.releaseMutatedDocuments(new Set(changed));
-            this.logicalTime += 1000;
-            this.tsBackend.updateProgram();
-            if (this.mode === "project") this.tsBackend.captureBaseline(undefined, this.mode);
+            if (touchesTypeScript) {
+                if (this.mode === "hologram") this.buildShadowLookups();
+                this.tsBackend.releaseMutatedDocuments(new Set(changed));
+                this.logicalTime += 1000;
+                this.tsBackend.updateProgram();
+                if (this.mode === "project") this.tsBackend.captureBaseline(undefined, this.mode);
+            }
 
             await this.resyncSidecarsFromDisk(changed);
     }

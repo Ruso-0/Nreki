@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import Parser from "web-tree-sitter";
 import { NrekiKernel } from "../src/kernel/nreki-kernel.js";
 import { classifyAndGenerateShadow } from "../src/hologram/shadow-generator.js";
+import { logger } from "../src/utils/logger.js";
 
 const original = "export function value(): number { return 1; }";
 const changed = "export function value(): number { return 2; }";
@@ -256,6 +257,51 @@ describe("native edit preview", () => {
             const result = await kernel.previewAtomicBatch([{ targetFile: "app.ts", proposedContent }]);
             expect(result.safe).toBe(false);
             expect(kernel.getStagingSize()).toBe(0);
+        }
+    });
+
+    it("approves disjoint additive exports and new files in file and hologram modes while rejecting overload merging", async () => {
+        for (const mode of ["file", "hologram"] as const) {
+            const { kernel } = project({ "app.ts": original }, mode);
+            const addedExport = await kernel.previewAtomicBatch([{
+                targetFile: "app.ts",
+                proposedContent: `${original}\nexport function extraTag(): string { return "tag"; }`,
+            }]);
+            expect(addedExport.safe).toBe(true);
+            expect(addedExport.exportedApiAdditive).toBe(true);
+
+            const createdFile = await kernel.previewAtomicBatch([{
+                targetFile: "fresh.ts",
+                proposedContent: "export const freshCount: number = 42;",
+            }]);
+            expect(createdFile.safe).toBe(true);
+            expect(createdFile.exportedApiAdditive).toBe(true);
+
+            // Overload merging onto existing `value` symbol must still be rejected
+            const mergedOverload = await kernel.previewAtomicBatch([{
+                targetFile: "app.ts",
+                proposedContent: [
+                    "export function value(): number;",
+                    "export function value(label: string): string;",
+                    "export function value(label?: string): number | string { return label ?? 1; }",
+                ].join("\n"),
+            }]);
+            expect(mergedOverload.safe).toBe(false);
+        }
+    });
+
+    it("skips redundant baseline recapture on warm previews and suppresses Hard rollback warning", async () => {
+        const { kernel } = project({ "app.ts": original }, "project");
+        const captureSpy = vi.spyOn(kernel["tsBackend"], "captureBaseline");
+        const warnSpy = vi.spyOn(logger, "warn");
+        try {
+            const res = await kernel.previewAtomicBatch([{ targetFile: "app.ts", proposedContent: changed }]);
+            expect(res.safe).toBe(true);
+            expect(captureSpy).not.toHaveBeenCalled();
+            expect(warnSpy.mock.calls.some(args => String(args[0]).includes("Hard rollback executed"))).toBe(false);
+        } finally {
+            captureSpy.mockRestore();
+            warnSpy.mockRestore();
         }
     });
 });

@@ -52,7 +52,12 @@ describe("built MCP server native-edit integration", () => {
         // Mode selection is automatic; 201 tiny TS files exercise the real project-mode path.
         fs.mkdirSync(path.join(root, "padding"));
         for (let i = 0; i < 199; i++) fs.writeFileSync(path.join(root, "padding", `p${i}.ts`), "export {};\n");
-        const transport = new StdioClientTransport({ command: process.execPath, args: [builtServer], cwd: root, stderr: "pipe" });
+        const serverEnv: Record<string, string> = {};
+        for (const [k, v] of Object.entries(process.env)) {
+            if (typeof v === "string") serverEnv[k] = v;
+        }
+        serverEnv.NREKI_NATIVE_PREFLIGHT = "1";
+        const transport = new StdioClientTransport({ command: process.execPath, args: [builtServer], cwd: root, env: serverEnv, stderr: "pipe" });
         const client = new Client({ name: "native-edit-e2e", version: "1.0.0" });
         let serverStderr = "";
         transport.stderr?.on("data", chunk => serverStderr += String(chunk));

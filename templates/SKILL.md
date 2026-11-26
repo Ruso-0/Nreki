@@ -1,6 +1,6 @@
 ---
 name: nreki-optimizer
-description: Edit code through NREKI MCP tools (edits checked for syntax and types before writing) and read only the symbols a task needs.
+description: Read only the symbols a task needs and validate multi-file signature changes or renames in RAM before writing.
 ---
 
 # NREKI ACTIVE
@@ -15,10 +15,10 @@ Every tool result stays in your context for the rest of the session, so ask for 
 - `outline` lists a file's symbols. If it says `[BUDGET LIMIT REACHED]`, read the omitted symbols with `compress focus` before editing them.
 
 ## Edit
-- One `nreki_code action:"batch_edit"` with every change (all-or-nothing). A rejected edit writes nothing: fix it and resend.
-- `mode:"patch"`: search_text -> replace_text inside the symbol; indentation is matched loosely. Symbols over 100 lines require it (`NREKI_SYMBOL_LIMIT`). Payloads over 80 lines are rejected: split them. Several patches to one symbol go in one batch, each matching the ORIGINAL source.
-- Changing a signature: update its callers in the same batch. Rename: `nreki_navigate action:"prepare_refactor"` first.
-- Do not weaken types to `any`/`unknown`. Edits that add `@ts-ignore`/`@ts-expect-error`/`@ts-nocheck`, `# type: ignore`, `# pyright: ignore`, `# noqa` or a blanket `eslint-disable` are rejected. NREKI may add a missing import itself; keep it.
+- Single-file changes: use native `Edit`.
+- Signature changes touching callers across multiple files, or renames (`nreki_navigate action:"prepare_refactor"` first): use `nreki_code action:"batch_edit"` with every affected caller in the same batch (all-or-nothing; a rejected batch writes nothing: fix it and resend).
+- In `batch_edit`, use `mode:"patch"` (search_text -> replace_text inside the symbol; indentation is matched loosely). Symbols over 100 lines require it (`NREKI_SYMBOL_LIMIT`). `mode:"replace"` with `new_code:""` deletes a symbol. Payloads over 80 lines are rejected: split them. Several patches to one symbol go in one batch, each matching the ORIGINAL source.
+- Do not weaken types to `any`/`unknown`. `batch_edit` rejects `@ts-ignore`/`@ts-expect-error`/`@ts-nocheck`, `# type: ignore`, `# pyright: ignore`, `# noqa` or a blanket `eslint-disable`. NREKI may add a missing import itself; keep it.
 
 ## Verify
 - The `[Validated: …]` footer says what was checked. Skip tsc only when it says re-running is redundant; if it says syntax only, NOT checked or LSP offline, run the compiler/tests before finishing.

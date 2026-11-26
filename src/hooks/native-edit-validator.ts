@@ -1,5 +1,6 @@
 import fs from "fs";
 import path from "path";
+import * as ts from "typescript";
 import type { RouterDependencies } from "../router.js";
 import { safePath } from "../utils/path-jail.js";
 import { antiSweepMessage, findNewSuppressions } from "../utils/suppression-guard.js";
@@ -9,6 +10,72 @@ import type { NativeEditRequest, NativeEditResponse } from "./native-edit-ipc.js
 const MAX_SOURCE_BYTES = 4 * 1024 * 1024;
 const TEST_DIRS = new Set(["tests", "test", "__tests__", "__mocks__", "fixtures"]);
 const deny = (error: string): NativeEditResponse => ({ status: "deny", error });
+
+function tsScriptKindFor(filePath: string): ts.ScriptKind | null {
+    const lower = filePath.toLowerCase();
+    if (lower.endsWith(".tsx")) return ts.ScriptKind.TSX;
+    if (lower.endsWith(".ts") || lower.endsWith(".mts") || lower.endsWith(".cts")) return ts.ScriptKind.TS;
+    return null;
+}
+
+function collectAnyKeywordNodes(sf: ts.SourceFile): ts.Node[] {
+    const found: ts.Node[] = [];
+    const visit = (node: ts.Node): void => {
+        if (node.kind === ts.SyntaxKind.AnyKeyword) {
+            found.push(node);
+            return;
+        }
+        ts.forEachChild(node, visit);
+    };
+    ts.forEachChild(sf, visit);
+    return found;
+}
+
+/**
+ * Differential TypeScript AST check for newly introduced `any` type keywords.
+ * Inspects `ts.SyntaxKind.AnyKeyword` only, so `Promise.any(...)`, `z.any()`,
+ * `{ any: 1 }`, string literals, comments, and untouched legacy `any` never trigger.
+ */
+function findNewExplicitAny(
+    filePath: string,
+    original: string | null,
+    proposed: string,
+): { line: number; column: number } | null {
+    const kind = tsScriptKindFor(filePath);
+    if (kind === null) return null;
+    const postSf = ts.createSourceFile(filePath, proposed, ts.ScriptTarget.Latest, true, kind);
+    const afterNodes = collectAnyKeywordNodes(postSf);
+    if (afterNodes.length === 0) return null;
+    const beforeLineCounts = new Map<string, number>();
+    let beforeTotal = 0;
+    if (original !== null && original.length > 0) {
+        const preSf = ts.createSourceFile(filePath, original, ts.ScriptTarget.Latest, true, kind);
+        const beforeNodes = collectAnyKeywordNodes(preSf);
+        beforeTotal = beforeNodes.length;
+        if (afterNodes.length <= beforeTotal) return null;
+        const preLines = original.split(/\r?\n/);
+        for (const node of beforeNodes) {
+            const { line } = preSf.getLineAndCharacterOfPosition(node.getStart(preSf));
+            const lineText = (preLines[line] ?? "").trim();
+            beforeLineCounts.set(lineText, (beforeLineCounts.get(lineText) ?? 0) + 1);
+        }
+    }
+    const postLines = proposed.split(/\r?\n/);
+    let culprit = afterNodes[afterNodes.length - 1]!;
+    for (const node of afterNodes) {
+        const { line } = postSf.getLineAndCharacterOfPosition(node.getStart(postSf));
+        const lineText = (postLines[line] ?? "").trim();
+        const remaining = beforeLineCounts.get(lineText) ?? 0;
+        if (remaining > 0) {
+            beforeLineCounts.set(lineText, remaining - 1);
+        } else {
+            culprit = node;
+            break;
+        }
+    }
+    const pos = postSf.getLineAndCharacterOfPosition(culprit.getStart(postSf));
+    return { line: pos.line + 1, column: pos.character + 1 };
+}
 
 function isTestFile(relPath: string): boolean {
     const parts = relPath.replace(/\\/g, "/").toLowerCase().split("/");
@@ -57,7 +124,9 @@ export function nativeEditContent(request: NativeEditRequest, original: string |
         return input.content;
     }
     if (/^Edit(File)?$/i.test(request.tool_name)) {
-        if (original === null && input.old_string === "" && typeof input.new_string === "string") return input.new_string;
+        if ((original === null || original === "") && input.old_string === "" && typeof input.new_string === "string") {
+            return input.new_string;
+        }
         if (original === null) throw new Error("NREKI: edit target no longer exists. Read it again or use Write.");
         return replaceExact(original, input);
     }
@@ -121,33 +190,59 @@ export async function validateNativeEdit(request: NativeEditRequest, deps: Route
         if (addedSuppressions.length > 0) {
             return deny(antiSweepMessage(relative, addedSuppressions));
         }
+        const addedAny = findNewExplicitAny(file, original, proposed);
+        if (addedAny) {
+            return deny(
+                `NREKI: explicit 'any' type is forbidden (${relative}:${addedAny.line}:${addedAny.column}). ` +
+                `Model the concrete type, generic constraint, or narrowed 'unknown' instead.`,
+            );
+        }
         if (deps.kernel && deps.nrekiMode !== "syntax") {
             if (!await ensureKernelBooted(deps)) return deny("NREKI: semantic kernel unavailable. Use batch_edit to retry.");
-            const coverage = deps.kernel.getSemanticCoverage(file);
+            const coverage = deps.kernel.getSemanticCoverage(file, { treatAsExisting: original === null });
             // Match batch_edit's language coverage: Java/C/etc. and unchecked JS are syntax-only.
             if (coverage.backend !== null) {
                 if (coverage.outsideProgram) {
-                    return deny("NREKI: this file is outside the active tsconfig program. Use batch_edit and run its package/project compiler.");
-                }
-                await deps.engine.initialize();
-                const graphDependents = await deps.engine.findDependents(relative);
-                const compilerDependents = coverage.backend === "typescript"
-                    ? await deps.kernel.findTypeScriptImporters([file]) ?? [] : [];
-                const dependents = [...new Set([...graphDependents, ...compilerDependents])];
-                if (coverage.backend === "typescript" && dependents.some(dependent => {
-                    const c = deps.kernel!.getSemanticCoverage(dependent);
-                    return c.backend !== "typescript" || c.outsideProgram;
-                })) {
-                    return deny("NREKI: importers outside the active TypeScript program cannot be checked silently. Use batch_edit and run their build/tests.");
-                }
-                const result = await deps.kernel.previewAtomicBatch([{
-                    targetFile: file,
-                    proposedContent: proposed.replace(/^\uFEFF/, ""),
-                    baseContent: original?.replace(/^\uFEFF/, "") ?? null,
-                }], dependents);
-                if (!result.safe) return deny(result.errorText ?? "NREKI: native edit rejected by the kernel.");
-                if (result.degradedLanguages?.length || result.lspCoverage?.some(c => c.skipped > 0)) {
-                    return deny("NREKI: semantic coverage is incomplete (LSP unavailable or dependents skipped). Use batch_edit and run the language checker.");
+                    if (original !== null) {
+                        if (!isTestFile(relative)) {
+                            return deny("NREKI: this file is outside the active tsconfig program. Use batch_edit and run its package/project compiler.");
+                        }
+                        await deps.engine.initialize();
+                        if ((await deps.engine.findDependents(relative)).length > 0) {
+                            return deny("NREKI: this file is outside the active tsconfig program and has importers. Use batch_edit and run its package/project compiler.");
+                        }
+                    }
+                } else {
+                    await deps.engine.initialize();
+                    const graphDependents = await deps.engine.findDependents(relative);
+                    const compilerDependents = coverage.backend === "typescript"
+                        ? await deps.kernel.findTypeScriptImporters([file]) ?? [] : [];
+                    const allDependents = [...new Set([...graphDependents, ...compilerDependents])];
+                    let checkedDependents = allDependents;
+                    let hasOutsideDependents = false;
+                    if (coverage.backend === "typescript") {
+                        checkedDependents = allDependents.filter(dependent => {
+                            const c = deps.kernel!.getSemanticCoverage(dependent);
+                            const inside = c.backend === "typescript" && !c.outsideProgram;
+                            if (!inside) hasOutsideDependents = true;
+                            return inside;
+                        });
+                    }
+                    const result = await deps.kernel.previewAtomicBatch([{
+                        targetFile: file,
+                        proposedContent: proposed.replace(/^\uFEFF/, ""),
+                        baseContent: original?.replace(/^\uFEFF/, "") ?? null,
+                    }], checkedDependents);
+                    if (!result.safe) return deny(result.errorText ?? "NREKI: native edit rejected by the kernel.");
+                    const ttrdWarning = result.warnings?.find(w => w.includes("TTRD WARNING"));
+                    if (ttrdWarning) return deny(`NREKI: ${ttrdWarning}`);
+                    if (hasOutsideDependents) {
+                        const apiPreserved = (result.exportedApiUnchanged === true || result.exportedApiAdditive === true)
+                            && !result.declaresGlobals;
+                        if (!apiPreserved) {
+                            return deny("NREKI: importers outside the active TypeScript program cannot be checked silently when exported declarations change. Use batch_edit and run their build/tests.");
+                        }
+                    }
                 }
             }
         }

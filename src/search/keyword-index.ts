@@ -35,16 +35,12 @@ export class KeywordIndex {
         "each", "same", "some", "such", "than", "too", "very", "just", "also",
         "only", "both", "about", "between", "under", "over", "again", "further",
         "once", "here", "there", "out", "up", "down", "off", "two",
-        // Unambiguous Spanish function words (kept disjoint from short code/math/locale
-        // tokens such as `sin`, `el`, `lo`, `le`, `es`, `con`, `al`, `de`, `en`, `la`, `un`, `se`):
-        "del", "las", "los", "una", "uno", "unas", "unos",
-        "para", "por", "sobre", "entre", "hasta", "desde", "hacia",
+        // Unambiguous multi-letter Spanish connectors (kept strictly disjoint from
+        // code identifiers such as `todo`/`todos`, `del`, `para`, `por`, `que`, `uno`):
+        "sobre", "entre", "hasta", "desde", "hacia",
         "antes", "despues", "durante", "cuando", "donde", "como",
-        "quien", "cual", "cuales", "que", "porque", "aunque", "pero", "sino",
-        "tambien", "ademas", "este", "esta", "estos", "estas",
-        "ese", "esa", "esos", "esas", "todo", "toda", "todos", "todas",
-        "cada", "otro", "otra", "otros", "otras", "mismo", "misma", "mismos", "mismas",
-        "sus", "les", "muy", "mas",
+        "quien", "cual", "cuales", "porque", "aunque", "pero", "sino",
+        "tambien", "ademas", "mismo", "misma", "mismos", "mismas",
     ]);
 
     /** Tokenize text into normalized terms with code-aware splitting. */

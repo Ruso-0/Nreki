@@ -1178,8 +1178,8 @@ export class NrekiDB {
         else if (
             normalized.includes("/test") ||
             normalized.includes("/__test") ||
-            normalized.endsWith(".test.ts") ||
-            normalized.endsWith(".spec.ts")
+            /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(normalized) ||
+            /\/(?:verify|check|eval|benchmark)\.[cm]?[jt]sx?$/.test(normalized)
         ) boost = 0.5;
         else if (normalized.includes("/src/")) boost = 1.35;
         else if (normalized.includes("/lib/") || normalized.includes("/core/")) boost = 1.2;

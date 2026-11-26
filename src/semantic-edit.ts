@@ -459,6 +459,35 @@ export function applySemanticSplice(
     const indentMatch = content.slice(lineStart, startIdx).match(/^[ \t]*/);
     const baseIndent = indentMatch ? indentMatch[0] : "";
 
+    // Symbol deletion (`mode:"replace"` with `new_code:""`): remove the symbol's line(s),
+    // any immediately attached JSDoc comment, and one redundant blank separator line.
+    if (mode === "replace" && cleanNewCode === "") {
+        const onlyIndentBefore = lineStart + baseIndent.length === startIdx;
+        const lineTail = /^[ \t]*;?[ \t]*(?:\r?\n|$)/.exec(content.slice(endIdx));
+        if (onlyIndentBefore && lineTail) {
+            const beforeLine = content.slice(0, lineStart);
+            const jsdocMatch = /(?:^|\n)([ \t]*\/\*\*(?!\*)(?:(?!\*\/)[\s\S])*\*\/[ \t]*\r?\n)$/.exec(beforeLine);
+            let delStart = jsdocMatch ? beforeLine.length - jsdocMatch[1].length : lineStart;
+            let delEnd = endIdx + lineTail[0].length;
+            const blankAfter = /^[ \t]*\r?\n/.exec(content.slice(delEnd));
+            const preEndsBlank = delStart === 0 || /(?:^|\n)[ \t]*\r?\n$/.test(content.slice(0, delStart));
+            if (blankAfter && preEndsBlank) {
+                delEnd += blankAfter[0].length;
+            } else if (delEnd === content.length && delStart > 0) {
+                const trailingBlank = /\r?\n([ \t]*\r?\n)$/.exec(content.slice(0, delStart));
+                if (trailingBlank) delStart -= trailingBlank[1].length;
+            }
+            return {
+                newContent: content.slice(0, delStart) + content.slice(delEnd),
+                newRawCode: "",
+            };
+        }
+        return {
+            newContent: content.slice(0, startIdx) + content.slice(endIdx),
+            newRawCode: "",
+        };
+    }
+
     // Calculate minimum indentation in the new code (SKIP first line)
     const newLines = cleanNewCode.split("\n");
     const nonBlankInterior = newLines.filter((l, i) => i > 0 && l.trim().length > 0);
@@ -807,7 +836,7 @@ export async function batchSemanticEdit(
                     };
                 }
 
-                if ((batchMode === "replace") && batchOldLines > SYMBOL_REPLACE_LIMIT) {
+                if (batchMode === "replace" && edit.new_code !== "" && batchOldLines > SYMBOL_REPLACE_LIMIT) {
                     return {
                         success: false, editCount: edits.length, fileCount: editsByFile.size, files: [],
                         error: `Blocked: Symbol "${symName}" is ${batchOldLines}L (>${SYMBOL_REPLACE_LIMIT}L). Use mode:"patch" with search_text and replace_text, or override via NREKI_SYMBOL_LIMIT env.`,
@@ -1041,7 +1070,7 @@ export async function batchSemanticEdit(
             const key = `${safePath(projectRoot, edit.path)}::${edit.symbol}`;
             const oldRaw = oldRawCodes.get(key);
             const newRaw = newRawCodes.get(key);
-            if (oldRaw && newRaw && detectSignatureChange(oldRaw, newRaw)) {
+            if (oldRaw && (newRaw === "" || (newRaw && detectSignatureChange(oldRaw, newRaw)))) {
                 topologyChanged = true;
                 break;
             }
@@ -1247,8 +1276,8 @@ export async function semanticEdit(
             error: `Blocked: Generated payload is ${payloadLines}L (limit: 80L). Decompose into smaller functions.`,
         };
     }
-    // Filo 2: Bloquea rewrite de símbolos grandes
-    if ((mode === "replace" || !mode) && oldLines > SYMBOL_REPLACE_LIMIT) {
+    // Filo 2: Bloquea rewrite de símbolos grandes (excepto borrado explícito con new_code:"")
+    if ((mode === "replace" || !mode) && newCode !== "" && oldLines > SYMBOL_REPLACE_LIMIT) {
         return {
             success: false, filePath, symbolName, oldLines,
             newLines: 0, tokensAvoided: 0, syntaxValid: false,
@@ -1290,6 +1319,8 @@ export async function semanticEdit(
         };
     }
 
+    const payloadLineCount = (s: string): number => (s === "" ? 0 : s.split("\n").length);
+
     // Validate syntax of the edited file
     const language = detectLanguage(filePath);
     if (!language) {
@@ -1298,7 +1329,7 @@ export async function semanticEdit(
             filePath,
             symbolName,
             oldLines: rawCode.split("\n").length,
-            newLines: (newCode ?? spliceRes.newRawCode).split("\n").length,
+            newLines: payloadLineCount(newCode ?? spliceRes.newRawCode),
             tokensAvoided: 0,
             syntaxValid: false,
             error: "Unsupported file type for syntax validation.",
@@ -1410,7 +1441,7 @@ export async function semanticEdit(
     const tokensAvoided = Math.max(0, fullFileTokens + symbolTokens - newCodeTokens);
 
     let topologyChanged = false;
-    if (rawCode && spliceRes.newRawCode && detectSignatureChange(rawCode, spliceRes.newRawCode)) {
+    if (rawCode && (spliceRes.newRawCode === "" || (spliceRes.newRawCode && detectSignatureChange(rawCode, spliceRes.newRawCode)))) {
         topologyChanged = true;
     }
     if (!topologyChanged) {
@@ -1429,7 +1460,7 @@ export async function semanticEdit(
         filePath,
         symbolName,
         oldLines,
-        newLines: (newCode ?? spliceRes.newRawCode).split("\n").length,
+        newLines: payloadLineCount(newCode ?? spliceRes.newRawCode),
         tokensAvoided,
         syntaxValid: true,
         oldRawCode: rawCode,

@@ -386,15 +386,15 @@ if (kernel) {
 
 const enforcer = new CognitiveEnforcer(process.cwd());
 const deps: RouterDependencies = { engine, monitor, sandbox, circuitBreaker, kernel, chronos, nrekiMode, enforcer };
-engine.onExternalFileChange(async file => { await kernel?.notifyExternalChange([file]); });
+engine.onExternalBatchChange(async files => { await kernel?.notifyExternalChange(files); });
 
 const server = new McpServer({
     name: "NREKI",
     version: VERSION,
 }, {
     instructions: 'Start tasks with nreki_navigate action:"context" query:"<task>".\n'
-        + 'Edit with nreki_code action:"batch_edit"; include every affected caller in the same batch.\n'
-        + 'Validation rejects new errors before writing; follow its coverage footer and run required tests/checkers.',
+        + 'Use native Edit for single-file changes; use nreki_code action:"batch_edit" when changing signatures across files or renaming, including every affected caller in the same batch.\n'
+        + 'batch_edit rejects new errors before writing; follow its [Validated] footer and run required tests/checkers.',
 });
 
 logger.info(
@@ -455,7 +455,7 @@ server.registerTool(
     {
         description:
             "Read and edit code. read: whole file; with focus:\"a,b\" only those symbols (also compress focus). " +
-            "edit/batch_edit: change a symbol by name; syntax and types are checked before writing, nothing is written on error. " +
+            "edit/batch_edit: change or delete (new_code:\"\") a symbol by name; syntax and types are checked before writing, nothing is written on error. " +
             "mode patch: replace search_text with replace_text inside the symbol (cheapest). undo: revert the last edit of path. " +
             "filter_output: shrink terminal text (output). Also: compress:true or level for skeletons.",
         inputSchema: z.object({
@@ -640,7 +640,13 @@ async function main(): Promise<void> {
                     }
                 }
             }
-            nativeEdits = await startNativeEditServer(cwd, request => validateNativeEdit(request, deps));
+            if (process.env.NREKI_NATIVE_PREFLIGHT === "1") {
+                try {
+                    nativeEdits = await startNativeEditServer(cwd, request => validateNativeEdit(request, deps));
+                } catch (ipcErr) {
+                    logger.warn(`Native edit IPC server unavailable (falling back to session-only marker): ${(ipcErr as Error).message}`);
+                }
+            }
         }
         writeStateFile(cwd, sessionMarker, JSON.stringify({
             startedAt: new Date().toISOString(), token: nativeEdits?.token,

@@ -35,7 +35,11 @@ export const SECONDARY_DIRS: ReadonlySet<string> = new Set([
 export function isSecondaryPath(relPath: string): boolean {
     const parts = relPath.replace(/\\/g, "/").toLowerCase().split("/");
     const base = parts[parts.length - 1] ?? "";
-    if (/\.(test|spec)\.[cm]?[jt]sx?$/.test(base) || /^test_.*\.py$|_test\.(py|go)$/.test(base)) return true;
+    if (
+        /\.(test|spec)\.[cm]?[jt]sx?$/.test(base) ||
+        /^test_.*\.py$|_test\.(py|go)$/.test(base) ||
+        /^(?:verify|check|eval|benchmark)\.[cm]?[jt]sx?$/.test(base)
+    ) return true;
     return parts.slice(0, -1).some(seg => SECONDARY_DIRS.has(seg));
 }
 

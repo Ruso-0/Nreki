@@ -315,16 +315,22 @@ export class IndexPipeline {
 
         const files = this.walkDirectory(dirPath);
         const root = path.resolve(dirPath);
+        const watchRoots = this.config.watchPaths.map(w => path.resolve(w));
+        const isInsideDir = (parent: string, candidate: string): boolean => {
+            const rel = path.relative(parent, path.resolve(candidate));
+            return rel === "" || (rel !== ".." && !rel.startsWith(".." + path.sep) && !path.isAbsolute(rel));
+        };
         const key = (file: string) => {
             const absolute = path.resolve(file);
             return process.platform === "win32" ? absolute.toLowerCase() : absolute;
         };
         const current = new Set(files.map(key));
         for (const previous of this.db.getIndexedPaths()) {
-            const relative = path.relative(root, path.resolve(previous));
-            const inside = relative === "" ||
-                (relative !== ".." && !relative.startsWith(".." + path.sep) && !path.isAbsolute(relative));
-            if (inside && !current.has(key(previous))) this.db.clearChunks(previous);
+            const insideTarget = isInsideDir(root, previous);
+            const insideWatched = insideTarget || watchRoots.some(w => isInsideDir(w, previous));
+            if (!insideWatched || (insideTarget && !current.has(key(previous)))) {
+                this.db.clearChunks(previous);
+            }
         }
 
         for (const file of files) {
