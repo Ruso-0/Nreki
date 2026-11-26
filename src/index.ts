@@ -87,10 +87,10 @@ if (args.includes("--help") || args.includes("-h")) {
 NREKI v${VERSION} - Semantic validation MCP server for AI coding agents
 
 Usage:
-  npx @ruso-0/nreki                       Start MCP server (default)
-  npx @ruso-0/nreki init [options]        Install per-agent instructions
-  npx @ruso-0/nreki deinit                Safely remove NREKI hooks before uninstall
-  npx @ruso-0/nreki trust-db              Review and restore quarantined engrams/notes/pins
+  npx nreki                               Start MCP server (default)
+  npx nreki init [options]                Install per-agent instructions
+  npx nreki deinit                        Safely remove NREKI hooks before uninstall
+  npx nreki trust-db                      Review and restore quarantined engrams/notes/pins
                                           (interactive terminal only)
 
 \`init\` options:

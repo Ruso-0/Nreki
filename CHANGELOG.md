@@ -1,7 +1,8 @@
 # Changelog
 
-## Unreleased
+## [12.2.0] - 2026-11-26
 
+- The npm package is renamed to `nreki` (unscoped). Releases up to 12.0.0 were published as `@ruso-0/nreki`. `npx nreki` replaces `npx @ruso-0/nreki` in the README, the CLI help and the `trust-db` hints; the `nreki` bin name is unchanged.
 - Native edit preflight is opt-in (`NREKI_NATIVE_PREFLIGHT=1`). By default NREKI opens no local IPC socket or pipe, writes `.nreki/sessions/<pid>` without a token, preserves large-file `Read` steering, and lets native `Edit`/`MultiEdit`/`Write` pass silently. When `NREKI_NATIVE_PREFLIGHT=1` is set, Claude hook v5 validates native `Edit`/`MultiEdit`/`Write` through authenticated, project-scoped local IPC (including LF edits against CRLF files, newly created TypeScript files matched by `tsconfig.json`, opt-in-only differential TypeScript AST zero-`any` enforcement, and comment-only differential Anti-Sweep suppression checks). Previews never write or auto-heal, skip redundant baseline rebuilds when disk matches memory, restore state quietly under one kernel lock, and preserve pending MCP transactions.
 - Claude Code instructions (`templates/CLAUDE.md`, `templates/SKILL.md`, and MCP initialization instructions) steer single-file edits to native `Edit` and reserve `nreki_code action:"batch_edit"` for cross-file signature changes and renames, while `templates/AGENTS.md` keeps the `batch_edit` + checker workflow for Codex; `context` headers no longer push single-file edits into `batch_edit`.
 - `edit` and `batch_edit` support deleting a symbol via `mode:"replace"` with `new_code:""` (removing the symbol, any immediately attached JSDoc block, and redundant blank separator lines, validated through Layer 1 and Layer 2).

@@ -413,7 +413,7 @@ export class NrekiDB {
             (moved ? `Moved to ${moved}. ` : `It could not be moved and will be overwritten. `) +
             `Nothing from it is loaded (${engrams} engram(s)${hasNotes ? ", memorize notes" : ""}, plan, index); ` +
             `the index is rebuilt. If it is yours, restore its engrams and notes from an interactive terminal: ` +
-            `npx @ruso-0/nreki trust-db`,
+            `npx nreki trust-db`,
         );
     }
 

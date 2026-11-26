@@ -1,6 +1,6 @@
 {
-  "name": "@ruso-0/nreki",
-  "version": "12.1.2",
+  "name": "nreki",
+  "version": "12.2.0",
   "publishConfig": {
     "access": "public"
   },
@@ -101,7 +101,8 @@
     "scripts/download-wasm.js",
     "README.md",
     "LICENSE",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "!**/.nreki/**"
   ],
   "engines": {
     "node": ">=20.0.0"

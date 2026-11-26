@@ -60,7 +60,7 @@ function loadPins(projectRoot: string): PinnedRule[] {
         logger.warn(
             `[NREKI] ${pinsPath} is not signed by this machine (NREKI <= 12.0.0, another machine, or shipped with ` +
             `the repository); its rules are ignored${moved ? ` (moved to ${moved})` : ""}. ` +
-            `If they are yours: npx @ruso-0/nreki trust-db`,
+            `If they are yours: npx nreki trust-db`,
         );
         return [];
     }

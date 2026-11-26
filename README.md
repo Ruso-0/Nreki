@@ -1,7 +1,7 @@
 # NREKI - Bulletproof Shield for AI Coding Agents
 
 <p align="center">
-  <img src="https://img.shields.io/npm/v/@ruso-0/nreki?style=for-the-badge&color=blue" alt="npm version">
+  <img src="https://img.shields.io/npm/v/nreki?style=for-the-badge&color=blue" alt="npm version">
   <img src="https://img.shields.io/badge/Tests-1825-brightgreen?style=for-the-badge" alt="1825 Tests">
   <img src="https://img.shields.io/badge/AHI-9.7%2F10-brightgreen?style=for-the-badge" alt="AHI 9.7/10">
   <img src="https://img.shields.io/badge/Languages-TS%20%7C%20JS%20%7C%20Go%20%7C%20Python%20%7C%20Kotlin%20%7C%20Java%20%7C%20C%2B%2B-blue?style=for-the-badge" alt="Multi-language">
@@ -11,7 +11,7 @@
 
 **MCP plugin that validates AI agent edits in RAM before they touch disk.** When Claude Code, Cursor, or Copilot changes a function signature in one file and breaks 30 others, NREKI catches it in milliseconds - the file is never written. If the error is structural (missing import, forgotten `await`), NREKI auto-fixes it in RAM. Zero tokens wasted on fix-retry doom loops.
 
-**Unreleased — Spanish/hybrid recall, symbol deletion, and opt-in native edit preflight.** By default, NREKI writes its session marker without opening any local IPC socket or pipe: the Claude hook keeps large-file `Read` steering active and lets native `Edit`, `MultiEdit` and `Write` pass silently. Claude instructions (`CLAUDE.md`, `SKILL.md`, and MCP initialization) use native `Edit` for single-file changes and reserve `nreki_code action:"batch_edit"` for cross-file signature changes and renames (`AGENTS.md` keeps the `batch_edit` + checker workflow for Codex). `edit` and `batch_edit` also accept `mode:"replace"` with `new_code:""` to delete a symbol under full AST and compiler validation, and `context` / hybrid search bridges Spanish software/business terms into English on the lexical side while keeping exact names, paths and Voyage queries unchanged.
+**v12.2.0 — Spanish/hybrid recall, symbol deletion, and opt-in native edit preflight.** By default, NREKI writes its session marker without opening any local IPC socket or pipe: the Claude hook keeps large-file `Read` steering active and lets native `Edit`, `MultiEdit` and `Write` pass silently. Claude instructions (`CLAUDE.md`, `SKILL.md`, and MCP initialization) use native `Edit` for single-file changes and reserve `nreki_code action:"batch_edit"` for cross-file signature changes and renames (`AGENTS.md` keeps the `batch_edit` + checker workflow for Codex). `edit` and `batch_edit` also accept `mode:"replace"` with `new_code:""` to delete a symbol under full AST and compiler validation, and `context` / hybrid search bridges Spanish software/business terms into English on the lexical side while keeping exact names, paths and Voyage queries unchanged.
 
 Opting in with `NREKI_NATIVE_PREFLIGHT=1` enables the Claude hook v5 authenticated local IPC preview for native `Edit`, `MultiEdit` and `Write`: accepted edits add no hook output, and rejected edits return diagnostics before the native tool writes. That opt-in preview never writes proposed code or auto-heals, restores the kernel under the same lock, enforces comment-only Anti-Sweep checks plus an opt-in-only differential TypeScript AST zero-`any` check (`batch_edit` does not enforce zero-`any` by default), and batches external watcher refreshes without redundant compiler baseline rebuilds. Declaration surface checks strip JSDoc/comments (preserving triple-slash directives) so comment-only edits report an unchanged exported API in both `batch_edit` footers and preflight, while modules containing `export *` or `export =` are never treated as purely additive so new exports cannot silently shadow re-exported names in consumers outside the active `tsconfig`. This preflight cannot make the later native write atomic with validation: use `batch_edit` for transactional multi-file writes. The hook does not intercept shell writes.
 
@@ -41,25 +41,27 @@ Opting in with `NREKI_NATIVE_PREFLIGHT=1` enables the Claude hook v5 authenticat
 
 ## Install
 
+Since 12.2.0 the npm package is **`nreki`**. Releases up to 12.0.0 were published as `@ruso-0/nreki`; if you configured that name, replace it with `nreki` in your MCP config.
+
 ```bash
 # Claude Code (macOS / Linux)
-claude mcp add nreki -- npx -y @ruso-0/nreki
+claude mcp add nreki -- npx -y nreki
 
 # Claude Code (Windows) — wrap with `cmd /c`, otherwise Claude Code warns
 # that the server failed to start (npx is a .cmd shim on Windows):
-claude mcp add nreki -- cmd /c npx -y @ruso-0/nreki
+claude mcp add nreki -- cmd /c npx -y nreki
 
 # Cursor / any MCP client - add to mcp.json:
 # macOS/Linux:
-{ "mcpServers": { "nreki": { "command": "npx", "args": ["-y", "@ruso-0/nreki"] } } }
+{ "mcpServers": { "nreki": { "command": "npx", "args": ["-y", "nreki"] } } }
 # Windows:
-{ "mcpServers": { "nreki": { "command": "cmd", "args": ["/c", "npx", "-y", "@ruso-0/nreki"] } } }
+{ "mcpServers": { "nreki": { "command": "cmd", "args": ["/c", "npx", "-y", "nreki"] } } }
 
 # Optional: agent-aware instructions install (v11.3.0+)
-npx @ruso-0/nreki init               # auto-detect agent (Claude Code / Cursor / Cline / Copilot / generic)
-npx @ruso-0/nreki init --agent cursor # explicit; valid: claude, cursor, cline, copilot, generic
-npx @ruso-0/nreki init --dry-run     # preview the plan, write nothing
-npx @ruso-0/nreki init --force       # rewrite an existing NREKI block (your own content in the file is kept)
+npx nreki init               # auto-detect agent (Claude Code / Cursor / Cline / Copilot / generic)
+npx nreki init --agent cursor # explicit; valid: claude, cursor, cline, copilot, generic
+npx nreki init --dry-run     # preview the plan, write nothing
+npx nreki init --force       # rewrite an existing NREKI block (your own content in the file is kept)
 ```
 
 What `nreki init` writes per agent:
@@ -204,12 +206,12 @@ NREKI_VOYAGE_MAX_TOKENS=20000000   # optional per-process embedding budget
 
 NREKI's memory lives in the project folder: engrams, `memorize` notes and the plan pointer (`.nreki.db`), pinned rules (`.nreki/pins.json`), file history and the map cache (`.nreki/`). The agent reads parts of it as its own notes, and a repository could ship such files, so each one is signed with a key kept in your user folder (`~/.nreki/trust.key`, never in a project). A file without a valid signature is never loaded: it is moved to `.nreki/quarantine/` and the index is rebuilt.
 
-Upgrading from 12.0.0 or earlier quarantines your old memory once. To restore it, run `npx @ruso-0/nreki trust-db` in a terminal with the agent session closed: it lists the engrams, notes and pins it found and restores them only after you type `yes`. Without an interactive terminal it refuses, so an agent cannot run it on its own.
+Upgrading from 12.0.0 or earlier quarantines your old memory once. To restore it, run `npx nreki trust-db` in a terminal with the agent session closed: it lists the engrams, notes and pins it found and restores them only after you type `yes`. Without an interactive terminal it refuses, so an agent cannot run it on its own.
 
 ## Docs & links
 
 - **[CHANGELOG.md](CHANGELOG.md)** - full version history (every patch, every release, every test count).
-- **[templates/CLAUDE.md](templates/CLAUDE.md)** - optimized instructions auto-installed by `npx @ruso-0/nreki init`.
+- **[templates/CLAUDE.md](templates/CLAUDE.md)** - optimized instructions auto-installed by `npx nreki init`.
 - **Issues / ideas** - GitHub Issues on this repo.
 
 ## License
