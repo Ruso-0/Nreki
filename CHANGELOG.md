@@ -16,7 +16,7 @@
 - **Session marker removed before the native-edit endpoint closes.** A reader never finds a marker pointing at a closed endpoint. This also fixes a race in the built-server test, which failed on slow Linux CI runners.
 - **CI:**
   - Each failed test becomes a GitHub annotation (`scripts/ci-test-report.mjs`); annotations are readable without signing in, unlike job logs. That is how the two failures of 12.3.0 were found:
-    - On Windows, the `NREKI_PROJECT_ROOT` server test started the server through `tsx`. A child process outlived the client and kept the project folder locked (`EBUSY`). The test now starts the built server and waits for it to exit.
+    - On Windows, the `NREKI_PROJECT_ROOT` server test started the server through `tsx`. A child process outlived the client and kept the project folder locked (`EBUSY`). The test now starts the built server, waits for it to exit, and retries removing the folder while Windows still holds it: on Node 20/22 the synchronous `fs.rmSync` does not retry `EBUSY` at all, whatever `maxRetries` says; Node 24 does.
     - On Linux, the race above.
   - `actions/checkout@v5` and `actions/setup-node@v5`.
   - Node 24 no longer runs as `continue-on-error`, which reported its failures as green.

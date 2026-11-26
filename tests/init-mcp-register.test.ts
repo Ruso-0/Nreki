@@ -35,9 +35,27 @@ beforeEach(() => {
     scratch = fs.mkdtempSync(path.join(os.tmpdir(), "nreki-mcp-other-"));
 });
 
-afterEach(() => {
-    // The server test leaves a process exiting inside `project` for a moment (Windows locks its cwd).
-    for (const dir of [project, home, scratch]) fs.rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+/**
+ * Remove a folder, retrying while Windows still holds it. A process that just
+ * exited keeps its working folder busy for a moment, and on Node 20/22 the
+ * synchronous fs.rmSync does not retry EBUSY at all (maxRetries only covers
+ * ENOTEMPTY/EPERM there); Node 24 does. Measured on GitHub's Windows runners.
+ */
+async function removeDir(dir: string): Promise<void> {
+    for (let attempt = 0; ; attempt++) {
+        try {
+            fs.rmSync(dir, { recursive: true, force: true });
+            return;
+        } catch (err) {
+            const code = (err as NodeJS.ErrnoException).code ?? "";
+            if (attempt >= 60 || !["EBUSY", "EPERM", "ENOTEMPTY", "EACCES"].includes(code)) throw err;
+            await new Promise((resolve) => setTimeout(resolve, 250));
+        }
+    }
+}
+
+afterEach(async () => {
+    for (const dir of [project, home, scratch]) await removeDir(dir);
 });
 
 const read = (rel: string): string => fs.readFileSync(path.join(project, rel), "utf-8");
