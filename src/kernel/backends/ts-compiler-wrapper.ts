@@ -478,15 +478,48 @@ export class TsCompilerWrapper {
             return;
         }
 
-        const parsed = ts.parseJsonConfigFileContent(
-            ts.readConfigFile(configPath, ts.sys.readFile).config, ts.sys, projectRoot
+        let effectiveConfig = configPath;
+        const configDir = path.resolve(path.dirname(configPath));
+        let parsed = ts.parseJsonConfigFileContent(
+            ts.readConfigFile(configPath, ts.sys.readFile).config, ts.sys, configDir, undefined, configPath,
         );
+        // Vite / Vue / single-project split configs put `"files": []` + `"references": [{"path":"./tsconfig.app.json"}, ...]`
+        // in the root tsconfig.json while all real compilerOptions (jsx, bundler, paths) and `include: ["src"]` live in a
+        // sibling root config. Follow only root-level app/source configs so monorepo subpackage references (`./packages/a`)
+        // keep `outsideProgram: true` (G-01).
+        if (parsed.fileNames.length === 0 && (parsed.projectReferences?.length ?? 0) > 0) {
+            const normDir = (d: string): string => {
+                const p = this.toPosix(path.resolve(d));
+                return ts.sys.useCaseSensitiveFileNames ? p : p.toLowerCase();
+            };
+            const rootDirKey = normDir(configDir);
+            const isAuxConfig = (name: string): boolean =>
+                /\.(?:node|test|tests|spec|specs|vitest|jest|cypress|playwright|e2e|storybook|eslint)\./i.test(name);
+            const isPrimaryApp = (name: string): boolean =>
+                /\.(?:app|web|client|src|browser|dom)\./i.test(name);
+            const candidates: Array<{ file: string; parsed: ts.ParsedCommandLine; tier: number }> = [];
+            for (const ref of parsed.projectReferences!) {
+                const refFile = path.resolve(ts.resolveProjectReferencePath(ref));
+                if (normDir(path.dirname(refFile)) !== rootDirKey || !ts.sys.fileExists(refFile)) continue;
+                const base = path.basename(refFile);
+                if (isAuxConfig(base)) continue;
+                const refRaw = ts.readConfigFile(refFile, ts.sys.readFile);
+                if (refRaw.error) continue;
+                const refParsed = ts.parseJsonConfigFileContent(refRaw.config, ts.sys, configDir, undefined, refFile);
+                candidates.push({ file: refFile, parsed: refParsed, tier: isPrimaryApp(base) ? 2 : 1 });
+            }
+            candidates.sort((a, b) => b.tier - a.tier || b.parsed.fileNames.length - a.parsed.fileNames.length);
+            if (candidates.length > 0) {
+                effectiveConfig = candidates[0].file;
+                parsed = candidates[0].parsed;
+            }
+        }
         this.compilerOptions = parsed.options;
         this.rootNames = new Set(
-            parsed.fileNames.map((f) => this.toPosix(path.resolve(projectRoot, f)))
+            parsed.fileNames.map((f) => this.toPosix(path.resolve(configDir, f)))
         );
-        this.configFile = configPath;
-        this.configBase = projectRoot; // same base parseJsonConfigFileContent used above
+        this.configFile = effectiveConfig;
+        this.configBase = configDir; // same base parseJsonConfigFileContent used above
         this.configuredFileNames = new Set(this.rootNames);
         this.compilerOptions.tsBuildInfoFile = this.tsBuildInfoPath;
         this.compilerOptions.incremental = true;
@@ -514,7 +547,7 @@ export class TsCompilerWrapper {
         if (ts.sys.fileExists(posixPath)) {
             try {
                 const parsed = ts.parseJsonConfigFileContent(
-                    ts.readConfigFile(this.configFile, ts.sys.readFile).config, ts.sys, this.configBase,
+                    ts.readConfigFile(this.configFile, ts.sys.readFile).config, ts.sys, this.configBase, undefined, this.configFile,
                 );
                 this.configuredFileNames = new Set(
                     parsed.fileNames.map((f) => this.toPosix(path.resolve(this.configBase!, f))),
@@ -569,7 +602,7 @@ export class TsCompilerWrapper {
             };
             const raw = ts.readConfigFile(this.configFile, ts.sys.readFile);
             if (raw.error) return false;
-            const parsed = ts.parseJsonConfigFileContent(raw.config, virtualHost, configBase);
+            const parsed = ts.parseJsonConfigFileContent(raw.config, virtualHost, configBase, undefined, this.configFile);
             return parsed.fileNames.some(f => normKey(this.toPosix(path.resolve(configBase, f))) === candidateKey);
         } catch {
             return false;

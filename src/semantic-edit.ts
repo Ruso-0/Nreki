@@ -146,7 +146,7 @@ function detectLanguage(filePath: string): string | null {
     const ext = path.extname(filePath).toLowerCase();
     const map: Record<string, string> = {
         ".ts": "typescript",
-        ".tsx": "typescript",
+        ".tsx": "tsx",
         ".mts": "typescript",
         ".cts": "typescript",
         ".js": "javascript",
@@ -945,7 +945,7 @@ export async function batchSemanticEdit(
         }
 
         // ─── NREKI L1.5: REACT/JSX SEMANTIC SHIELD (BATCH) ───
-        if (language === "typescript" || language === "javascript") {
+        if (language === "typescript" || language === "tsx" || language === "javascript") {
             try {
                 const { reactEslintSidecar } = await import("./eslint-sidecar.js");
 
@@ -1382,7 +1382,7 @@ export async function semanticEdit(
     }
 
     // ─── NREKI L1.5: REACT/JSX SEMANTIC SHIELD ───
-    if (language === "typescript" || language === "javascript") {
+    if (language === "typescript" || language === "tsx" || language === "javascript") {
         try {
             const { reactEslintSidecar } = await import("./eslint-sidecar.js");
             const payload = newCode ?? spliceRes.newRawCode ?? "";

@@ -92,21 +92,57 @@ export function jsImportBindings(file: string, text: string): ImportBinding[] {
 
 const optionsCache = new Map<string, { stamp: string; options: ts.CompilerOptions }>();
 
-/** The project's compiler options (tsconfig.json or jsconfig.json at the root), for module resolution only. */
+/** The project's compiler options (tsconfig.json/tsconfig.app.json or jsconfig.json at the root), for module resolution only. */
 function compilerOptions(root: string): ts.CompilerOptions {
     const config = ["tsconfig.json", "jsconfig.json"].map(n => path.join(root, n)).find(p => fs.existsSync(p));
-    let stamp = "";
-    try { stamp = config ? `${config}:${fs.statSync(config).mtimeMs}` : ""; } catch { /* gone meanwhile */ }
-    const cached = optionsCache.get(root);
-    if (cached && cached.stamp === stamp) return cached.options;
-    let options: ts.CompilerOptions = {};
+    const host: ts.ParseConfigHost = { ...ts.sys, readDirectory: () => [] };
+    let effective = config;
+    let rawConfig: unknown;
     if (config) {
         const read = ts.readConfigFile(config, ts.sys.readFile);
         if (!read.error) {
-            // Options only: `include` is not enumerated.
-            const host: ts.ParseConfigHost = { ...ts.sys, readDirectory: () => [] };
-            options = ts.parseJsonConfigFileContent(read.config, host, root).options;
+            rawConfig = read.config;
+            const rec = read.config as { files?: unknown; include?: unknown; references?: unknown } | null;
+            const delegatesOnly = rec !== null && typeof rec === "object"
+                && Array.isArray(rec.files) && rec.files.length === 0
+                && rec.include === undefined && Array.isArray(rec.references) && rec.references.length > 0;
+            if (delegatesOnly) {
+                const rootDir = path.resolve(path.dirname(config));
+                const normDir = (d: string): string =>
+                    ts.sys.useCaseSensitiveFileNames ? path.resolve(d) : path.resolve(d).toLowerCase();
+                const rootKey = normDir(rootDir);
+                const parsedRefs = ts.parseJsonConfigFileContent(read.config, host, rootDir, undefined, config).projectReferences ?? [];
+                const isAux = (n: string): boolean =>
+                    /\.(?:node|test|tests|spec|specs|vitest|jest|cypress|playwright|e2e|storybook|eslint)\./i.test(n);
+                const isApp = (n: string): boolean => /\.(?:app|web|client|src|browser|dom)\./i.test(n);
+                const candidates: Array<{ file: string; raw: unknown; tier: number }> = [];
+                for (const ref of parsedRefs) {
+                    const refFile = path.resolve(ts.resolveProjectReferencePath(ref));
+                    if (normDir(path.dirname(refFile)) !== rootKey || !fs.existsSync(refFile)) continue;
+                    const base = path.basename(refFile);
+                    if (isAux(base)) continue;
+                    const refRead = ts.readConfigFile(refFile, ts.sys.readFile);
+                    if (!refRead.error) candidates.push({ file: refFile, raw: refRead.config, tier: isApp(base) ? 2 : 1 });
+                }
+                candidates.sort((a, b) => b.tier - a.tier);
+                if (candidates.length > 0) {
+                    effective = candidates[0].file;
+                    rawConfig = candidates[0].raw;
+                }
+            }
         }
+    }
+    let stamp = "";
+    try {
+        const m1 = config ? fs.statSync(config).mtimeMs : 0;
+        const m2 = effective && effective !== config ? fs.statSync(effective).mtimeMs : 0;
+        stamp = config ? `${config}:${m1}->${effective}:${m2}` : "";
+    } catch { /* gone meanwhile */ }
+    const cached = optionsCache.get(root);
+    if (cached && cached.stamp === stamp) return cached.options;
+    let options: ts.CompilerOptions = {};
+    if (effective && rawConfig !== undefined) {
+        options = ts.parseJsonConfigFileContent(rawConfig, host, path.dirname(effective), undefined, effective).options;
     }
     options = { allowJs: true, ...options };
     optionsCache.set(root, { stamp, options });

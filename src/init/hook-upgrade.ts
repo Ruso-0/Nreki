@@ -22,12 +22,14 @@ export function upgradeEnforcerHook(cwd: string, upstreamHook: () => string): Ho
     if (unsafeWriteTarget(cwd, HOOK_REL_PATH)) return fs.existsSync(hookPath) ? "unsafe-path" : "absent";
     if (!fs.existsSync(hookPath)) return "absent";
     const current = fs.readFileSync(hookPath, "utf-8");
-    if (current.includes("nreki-enforcer:v5")) return "current";
+    const up = upstreamHook();
+    const needsLinkedPkgPatch = up.includes("isLinkedPackageRead") && !current.includes("isLinkedPackageRead");
+    if (current.includes("nreki-enforcer:v5") && !needsLinkedPkgPatch) return "current";
     // Tagged v2-v4 hooks are stock; v3 wrote state through a `.nreki` link,
-    // v4 fixed that, and v5 adds native-edit validation.
+    // v4 fixed that, and v5 adds native-edit validation + linked-package Read support.
     const isStockV1 = !current.includes("nreki-enforcer:v") && current.includes("/^(Write|Edit|Replace)(File)?$/i");
-    const isTagged = /nreki-enforcer:v[234]\b/.test(current);
+    const isTagged = /nreki-enforcer:v[2345]\b/.test(current);
     if (!isStockV1 && !isTagged) return "not-nreki";
-    fs.writeFileSync(hookPath, upstreamHook(), "utf-8");
+    fs.writeFileSync(hookPath, up, "utf-8");
     return "upgraded";
 }

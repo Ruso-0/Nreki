@@ -78,6 +78,28 @@ function realish(p) {
 const isInside = (child, parent) =>
     child === parent || child.startsWith(parent.endsWith("/") ? parent : parent + "/");
 
+/**
+ * Installed dependencies under `node_modules/` often live outside `projectDir`
+ * via pnpm's content-addressable store, workspace links, or shared junctions.
+ * Reading a package file is safe when the package directory itself carries a
+ * real `package.json` and the resolved file stays inside that package root
+ * (blocking internal symlink escapes and writes).
+ */
+function isLinkedPackageRead(projectRoot, absPath, realTargetPosix) {
+    const rel = path.relative(projectRoot, absPath).replace(/\\/g, "/");
+    if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) return false;
+    const m = /^((?:.+\/)?node_modules\/(?:@[^/]+\/[^/]+|[^/@][^/]*))\/(.+)$/i.exec(rel);
+    if (!m) return false;
+    if (/(?:^|\/)\.env(?:\.|$)|\.(?:pem|key|pfx|p12|kdbx)$/i.test(m[2])) return false;
+    try {
+        const realPkgDir = fs.realpathSync(path.join(projectRoot, m[1]));
+        if (!fs.statSync(path.join(realPkgDir, "package.json")).isFile()) return false;
+        return isInside(realTargetPosix, norm(realPkgDir));
+    } catch {
+        return false;
+    }
+}
+
 /** Is any NREKI MCP server for this project alive? (sessions written by the server) */
 function nrekiIsRunning() {
     const dir = path.join(projectDir, ".nreki", "sessions");
@@ -295,12 +317,14 @@ process.stdin.on("end", async () => {
         // No NREKI server → nothing to redirect to: allow the native tool.
         if (!nrekiIsRunning()) allow();
 
-        const absPath = path.resolve(projectDir, targetPath);
-        const cwdPosix = norm(path.resolve(projectDir));
+        const resolvedProject = path.resolve(projectDir);
+        const absPath = path.resolve(resolvedProject, targetPath);
+        const cwdPosix = norm(resolvedProject);
+        const realTargetPosix = norm(realish(absPath));
         const lexInside = isInside(norm(absPath), cwdPosix);
-        const realInside = isInside(norm(realish(absPath)), norm(realish(path.resolve(projectDir))));
+        const realInside = isInside(realTargetPosix, norm(realish(resolvedProject)));
         if (!lexInside && !realInside) allow(); // not a project file: Claude Code's permissions apply
-        if (lexInside && !realInside) {
+        if (lexInside && !realInside && !(kind === "read" && isLinkedPackageRead(resolvedProject, absPath, realTargetPosix))) {
             deny(`NREKI: blocked — ${targetPath} is inside the project but resolves outside it (symlink).`);
         }
 
