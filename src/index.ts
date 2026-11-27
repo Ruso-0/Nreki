@@ -21,7 +21,9 @@
 import "./bootstrap-root.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { RootsListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
+import os from "os";
 import path from "path";
 import fs from "fs";
 
@@ -49,6 +51,12 @@ import { detectMode as detectModePure } from "./detect-mode.js";
 import { startNativeEditServer, type NativeEditServer } from "./hooks/native-edit-ipc.js";
 import { validateNativeEdit } from "./hooks/native-edit-validator.js";
 import { ensureHologramReady } from "./handlers/code/kernel-bridge.js";
+import {
+    decideProjectRoot,
+    inferProjectRootFromPath,
+    isNonProjectLaunchDir,
+    pickRootFromMcpRoots,
+} from "./project-root.js";
 
 // Patch 7 (v10.6.1): shape of .claude/settings.json. Kept loose on unknown
 // keys because Anthropic may add fields; the init command only reads/writes
@@ -90,30 +98,31 @@ NREKI v${VERSION} - Semantic validation MCP server for AI coding agents
 
 Usage:
   npx nreki                               Start MCP server (default)
-  npx nreki init [options]                Install NREKI in this project: instructions for
-                                          each agent + its MCP server registration
-  npx nreki deinit                        Safely remove NREKI hooks and MCP registrations
+  npx nreki init [options]                Install NREKI globally for your user across
+                                          Claude Code, Antigravity, Cursor, Codex & VS Code
+                                          (opens a setup box for your Voyage API key)
+  npx nreki key                           Open the Voyage API key setup box anytime
+  npx nreki deinit [--global]             Safely remove NREKI hooks and MCP registrations
   npx nreki trust-db                      Review and restore quarantined engrams/notes/pins
                                           (interactive terminal only)
 
 \`init\` options:
+  --global, -g          Install globally at user scope for all agents (default in a terminal;
+                        no per-project .mcp.json approval needed)
+  --project, --local    Install inside this project folder only
   --agent <names>       Agents to install for, comma-separated:
                         claude | codex | antigravity | cursor | cline | copilot | generic
-                        (default: every agent configured in this project; without any,
-                         every agent installed on this computer; else generic AGENTS.md)
   --voyage              Turn on Voyage semantic search in the registrations
-                        (this project's code is sent to Voyage once to be indexed)
   --no-voyage           Turn it off again
-  --no-prompt           Do not show the Voyage key box (it only appears in an
-                        interactive terminal; the key is saved in ~/.nreki/voyage.key)
+  --prompt              Always open the Voyage API key setup box
+  --no-prompt           Never open the Voyage API key setup box
   --no-mcp              Write the instructions only, do not register the MCP server
-  --force               Rewrite existing NREKI blocks and replace a "nreki" MCP entry
-                        NREKI did not write
+  --force               Rewrite existing NREKI blocks and replace custom "nreki" MCP entries
   --dry-run             Print plan only, no filesystem writes
 
 Environment:
-  NREKI_PROJECT_ROOT    Absolute path of the project folder, for MCP hosts that start
-                        servers in another folder (set by \`init\` for Cursor and VS Code)
+  NREKI_PROJECT_ROOT    Absolute path of the project folder (optional; global servers auto-detect
+                        the open workspace via MCP roots/list or project_root)
 
 Global flags:
   --help, -h            Show this help message
@@ -266,6 +275,24 @@ if (args[0] === "deinit") {
         }
     }
 
+    // 8. When `--global` / `-g` / `--all` is passed, also remove user-scoped registrations.
+    if (args.includes("--global") || args.includes("-g") || args.includes("--all")) {
+        try {
+            const { unregisterGlobalAll } = await import("./init/global-register.js");
+            const userHome = process.env.NREKI_USER_HOME ? path.resolve(process.env.NREKI_USER_HOME) : os.homedir();
+            for (const removed of unregisterGlobalAll(userHome)) {
+                if (removed.op === "removed") {
+                    logger.info(`Removed global registration ${removed.path} (${removed.note})`);
+                    modified = true;
+                } else {
+                    logger.warn(`${removed.path}: ${removed.note}`);
+                }
+            }
+        } catch (err) {
+            logger.error(`Failed to clean global registrations: ${(err as Error).message}`);
+        }
+    }
+
     if (modified) {
         logger.info("NREKI deinit complete. Your environment is clean.");
     } else {
@@ -283,34 +310,65 @@ if (args[0] === "trust-db") {
     process.exit(await runTrustDbCli(process.cwd()));
 }
 
+// ─── Voyage Key Subcommand (`npx nreki key`) ────────────────────────
+if (args[0] === "key") {
+    try {
+        const { promptForVoyage } = await import("./init/voyage-prompt.js");
+        const { runInit, formatAction } = await import("./init/init-runner.js");
+        const answer = await promptForVoyage();
+        for (const line of answer.lines) process.stderr.write(`${line}\n`);
+        if (answer.voyage !== undefined) {
+            const userHome = process.env.NREKI_USER_HOME ? path.resolve(process.env.NREKI_USER_HOME) : os.homedir();
+            const result = runInit({ global: true, home: userHome, voyage: answer.voyage });
+            for (const action of result.actions) {
+                if (action.op !== "skipped") process.stderr.write(`  ${formatAction(action)}\n`);
+            }
+        }
+        process.exit(0);
+    } catch (err) {
+        process.stderr.write(`nreki key failed: ${(err as Error).message}\n`);
+        process.exit(1);
+    }
+}
+
 // ─── Init Subcommand ────────────────────────────────────────────────
 
 if (args[0] === "init") {
-    // v11.3.0: agent-aware init. Detects Claude Code / Cursor / Cline /
-    // Copilot via filesystem signals and only writes the files that
-    // agent actually reads. --agent overrides detection, --force
-    // rewrites existing NREKI blocks, --dry-run previews the plan.
     const { parseInitArgs, runInit, formatAction } = await import("./init/init-runner.js");
     const parsed = parseInitArgs(args.slice(1));
     if (parsed.error) {
         process.stderr.write(`nreki init: ${parsed.error}\n`);
         process.stderr.write(
-            "\nUsage: nreki init [--agent <claude,codex,antigravity,cursor,cline,copilot,generic>]" +
-            " [--voyage|--no-voyage] [--no-prompt] [--no-mcp] [--force] [--dry-run]\n",
+            "\nUsage: nreki init [--global|--project] [--agent <claude,codex,antigravity,cursor,cline,copilot,generic>]" +
+            " [--voyage|--no-voyage] [--prompt|--no-prompt] [--no-mcp] [--force] [--dry-run]\n",
         );
         process.exit(2);
     }
 
     try {
-        // The Voyage box: only in an interactive terminal (an agent running init
-        // must never get a window it cannot answer), and only when it matters.
         const opts = parsed.opts;
+        const userHome = process.env.NREKI_USER_HOME ? path.resolve(process.env.NREKI_USER_HOME) : os.homedir();
+        opts.home = userHome;
+
+        const { isHumanInteractiveSession, promptForVoyage } = await import("./init/voyage-prompt.js");
+        const interactive = isHumanInteractiveSession(
+            process.env,
+            Boolean(process.stdin.isTTY),
+            Boolean(process.stderr.isTTY),
+            opts.prompt,
+        );
+
+        // In an interactive user terminal, default to global user-scope install
+        // so Claude Code, Antigravity, Cursor, and Codex work across all projects
+        // without per-repo `.mcp.json` approval prompts (`--project` opts into repo-local).
+        if (opts.global === undefined && interactive) {
+            opts.global = true;
+        }
+
         const voyageLines: string[] = [];
-        const interactive = Boolean(process.stdin.isTTY && process.stderr.isTTY) && !process.env.CI;
-        if (interactive && opts.prompt !== false && !opts.dryRun && opts.mcp !== false && opts.voyage !== false) {
+        if (interactive && !opts.dryRun && opts.mcp !== false && opts.voyage !== false) {
             const { availableVoyageKey } = await import("./utils/voyage-key.js");
             if (!(opts.voyage === true && availableVoyageKey() !== null)) {
-                const { promptForVoyage } = await import("./init/voyage-prompt.js");
                 const answer = await promptForVoyage();
                 if (answer.voyage !== undefined) opts.voyage = answer.voyage;
                 voyageLines.push(...answer.lines);
@@ -341,82 +399,222 @@ if (args[0] === "init") {
     }
 }
 
-// ─── Initialization ─────────────────────────────────────────────────
+// ─── Dynamic Workspace Runtime (supports Global MCP + MCP roots/list) ───────
 
-const engine = new NrekiEngine({
-    dbPath: path.join(process.cwd(), ".nreki.db"),
-    watchPaths: [process.cwd()],
-});
+interface WorkspaceRuntime {
+    root: string;
+    deps: RouterDependencies;
+    liveBooted: boolean;
+    bootLive: () => Promise<void>;
+    shutdown: () => void;
+}
 
-// Track session start so pressure is per-session, not historical.
-engine.setMetadata("nreki_session_start", new Date().toISOString());
+const pinnedByEnv = decideProjectRoot(process.env.NREKI_PROJECT_ROOT).kind === "apply";
+let currentWorkspace: WorkspaceRuntime | null = null;
+let liveTransportConnected = false;
+let switchChain: Promise<void> = Promise.resolve();
+let initialRootsPromise: Promise<void> | null = null;
 
-const monitor = new TokenMonitor();
-const sandbox = new AstSandbox();
-const circuitBreaker = new CircuitBreaker();
-const chronos = new ChronosMemory(process.cwd());
+async function buildWorkspaceRuntime(targetDir: string): Promise<WorkspaceRuntime> {
+    const root = path.resolve(targetDir);
+    if (path.resolve(process.cwd()) !== root) process.chdir(root);
 
-// ─── NREKI Kernel & Sidecars (Multi-Language Auto-Detect) ──────────
-let kernel: NrekiKernel | undefined;
-let nrekiMode: "syntax" | "file" | "project" | "hologram" = "syntax";
+    const engine = new NrekiEngine({
+        dbPath: path.join(root, ".nreki.db"),
+        watchPaths: [root],
+    });
+    engine.setMetadata("nreki_session_start", new Date().toISOString());
 
-const cwd = process.cwd();
-const hasTsConfig = fs.existsSync(path.join(cwd, "tsconfig.json")) ||
-                    fs.existsSync(path.join(cwd, "jsconfig.json"));
-const hasGoProject = fs.existsSync(path.join(cwd, "go.mod"));
-const pyMarkers = ["pyproject.toml", "requirements.txt", "setup.py", "Pipfile"];
-const hasPyProject = pyMarkers.some(f => fs.existsSync(path.join(cwd, f)));
+    const monitor = new TokenMonitor();
+    const sandbox = new AstSandbox();
+    const circuitBreaker = new CircuitBreaker(root);
+    const chronos = new ChronosMemory(root);
 
-if (hasTsConfig || hasPyProject || hasGoProject) {
-    nrekiMode = detectMode(cwd);
+    let kernel: NrekiKernel | undefined;
+    let nrekiMode: "syntax" | "file" | "project" | "hologram" = "syntax";
 
-    if (nrekiMode === "syntax") {
-        logger.info("SYNTAX mode. Kernel disabled. Layer 1 AST only.");
+    const hasTsConfig = fs.existsSync(path.join(root, "tsconfig.json")) ||
+                        fs.existsSync(path.join(root, "jsconfig.json"));
+    const hasGoProject = fs.existsSync(path.join(root, "go.mod"));
+    const pyMarkers = ["pyproject.toml", "requirements.txt", "setup.py", "Pipfile"];
+    const hasPyProject = pyMarkers.some(f => fs.existsSync(path.join(root, f)));
+
+    if (hasTsConfig || hasPyProject || hasGoProject) {
+        nrekiMode = detectMode(root);
+        if (nrekiMode === "syntax") {
+            logger.info("SYNTAX mode. Kernel disabled. Layer 1 AST only.");
+        } else {
+            const envs = [
+                hasTsConfig ? "TS/JS" : "",
+                hasPyProject ? "Python" : "",
+                hasGoProject ? "Go" : "",
+            ].filter(Boolean).join(", ");
+            logger.info(`${nrekiMode.toUpperCase()} mode detected (${envs}). Kernel boots on first edit.`);
+            kernel = new NrekiKernel();
+        }
     } else {
-        const envs = [
-            hasTsConfig ? "TS/JS" : "",
-            hasPyProject ? "Python" : "",
-            hasGoProject ? "Go" : "",
-        ].filter(Boolean).join(", ");
-        logger.info(`${nrekiMode.toUpperCase()} mode detected (${envs}). Kernel boots on first edit.`);
-        kernel = new NrekiKernel();
+        logger.info(
+            "No project markers found (tsconfig.json / pyproject.toml / go.mod). " +
+            "Semantic verification disabled. Operating in Tree-sitter-only mode (Layer 1).",
+        );
     }
-} else {
-    logger.info(
-        "No project markers found (tsconfig.json / pyproject.toml / go.mod). " +
-        "Semantic verification disabled. Operating in Tree-sitter-only mode (Layer 1)."
-    );
-}
 
-// ─── LSP Sidecars (auto-detect Go and Python projects) ──────────
-// Keep awaited sequential imports — prevents race condition where
-// first edit arrives before sidecar is registered.
-if (kernel) {
-    if (hasGoProject) {
-        try {
-            const { GoLspSidecar } = await import("./kernel/backends/go-sidecar.js");
-            kernel.registerSidecar(".go", new GoLspSidecar(cwd));
-            logger.info("Go project detected (go.mod). gopls sidecar registered.");
-        } catch (err) {
-            logger.error(`Failed to load Go sidecar: ${(err as Error).message}`);
+    if (kernel) {
+        if (hasGoProject) {
+            try {
+                const { GoLspSidecar } = await import("./kernel/backends/go-sidecar.js");
+                kernel.registerSidecar(".go", new GoLspSidecar(root));
+                logger.info("Go project detected (go.mod). gopls sidecar registered.");
+            } catch (err) {
+                logger.error(`Failed to load Go sidecar: ${(err as Error).message}`);
+            }
+        }
+        if (hasPyProject) {
+            try {
+                const { PythonLspSidecar } = await import("./kernel/backends/python-sidecar.js");
+                const pySidecar = new PythonLspSidecar(root);
+                kernel.registerSidecar(".py", pySidecar);
+                logger.info(`Python project detected. ${pySidecar.command[0]} sidecar registered.`);
+            } catch (err) {
+                logger.error(`Failed to load Python sidecar: ${(err as Error).message}`);
+            }
         }
     }
 
-    if (hasPyProject) {
-        try {
-            const { PythonLspSidecar } = await import("./kernel/backends/python-sidecar.js");
-            const pySidecar = new PythonLspSidecar(cwd);
-            kernel.registerSidecar(".py", pySidecar);
-            logger.info(`Python project detected. ${pySidecar.command[0]} sidecar registered.`);
-        } catch (err) {
-            logger.error(`Failed to load Python sidecar: ${(err as Error).message}`);
-        }
-    }
+    const enforcer = new CognitiveEnforcer(root);
+    const deps: RouterDependencies = { engine, monitor, sandbox, circuitBreaker, kernel, chronos, nrekiMode, enforcer };
+    engine.onExternalBatchChange(async files => { await kernel?.notifyExternalChange(files); });
+
+    let nativeEdits: NativeEditServer | undefined;
+    let removeSessionMarker: (() => void) | null = null;
+    let closed = false;
+
+    const runtime: WorkspaceRuntime = {
+        root,
+        deps,
+        liveBooted: false,
+        bootLive: async () => {
+            if (runtime.liveBooted || closed) return;
+            runtime.liveBooted = true;
+
+            // ─── SESSION MARKER (read by the Claude Code enforcer hook) ───
+            const sessionMarker = path.join(root, ".nreki", "sessions", String(process.pid));
+            try {
+                if (!unsafeWriteTarget(root, sessionMarker)) {
+                    const sessionsDir = path.dirname(sessionMarker);
+                    if (fs.existsSync(sessionsDir)) {
+                        for (const entry of fs.readdirSync(sessionsDir)) {
+                            if (!/^\d+$/.test(entry)) continue;
+                            const pid = Number(entry);
+                            if (!Number.isSafeInteger(pid) || pid <= 0 || pid === process.pid) continue;
+                            try {
+                                process.kill(pid, 0);
+                            } catch (err) {
+                                if ((err as NodeJS.ErrnoException).code === "ESRCH") {
+                                    const stale = path.join(sessionsDir, entry);
+                                    if (!unsafeWriteTarget(root, stale)) {
+                                        try { fs.unlinkSync(stale); } catch { /* raced */ }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if (process.env.NREKI_NATIVE_PREFLIGHT === "1") {
+                        try {
+                            nativeEdits = await startNativeEditServer(root, request => validateNativeEdit(request, deps));
+                        } catch (ipcErr) {
+                            logger.warn(`Native edit IPC server unavailable (falling back to session-only marker): ${(ipcErr as Error).message}`);
+                        }
+                    }
+                }
+                writeStateFile(root, sessionMarker, JSON.stringify({
+                    startedAt: new Date().toISOString(), token: nativeEdits?.token,
+                }));
+                fs.chmodSync(sessionMarker, 0o600);
+                removeSessionMarker = () => { try { fs.unlinkSync(sessionMarker); } catch { /* already gone */ } };
+            } catch {
+                try { nativeEdits?.close(); } catch { /* already closed */ }
+            }
+
+            // ─── AUTO-PATCH SECURITY HOOK (v10.x) ───
+            try {
+                const upgrade = upgradeEnforcerHook(root, () => fs.readFileSync(
+                    new URL("../templates/hooks/nreki-enforcer.mjs", import.meta.url), "utf-8",
+                ));
+                if (upgrade === "upgraded") logger.info("Auto-patched legacy nreki-enforcer hook for security.");
+                if (upgrade === "unsafe-path") logger.warn(".claude/hooks/nreki-enforcer.mjs is a symbolic link or leaves the project: not upgraded.");
+            } catch { /* Fail silently, never block boot */ }
+
+            const watcherReady = engine.startWatcher();
+            watcherReady.then(
+                () => logger.info("File watcher started (reactive mode)."),
+                (err: Error) => logger.error(`File watcher failed (non-fatal): ${err.message}`),
+            );
+
+            if (nrekiMode === "hologram" && kernel) {
+                setImmediate(async () => {
+                    if (closed) return;
+                    try {
+                        await ensureHologramReady(kernel!, nrekiMode, root);
+                        logger.info("WASM parser pre-loaded. JIT Holography ready.");
+                    } catch (err) {
+                        logger.warn(`WASM pre-load failed: ${(err as Error).message}`);
+                    }
+                });
+            }
+        },
+        shutdown: () => {
+            if (closed) return;
+            closed = true;
+            try {
+                if (kernel && kernel.isBooted()) {
+                    chronos.syncTechDebt(
+                        kernel.getInitialErrorCount(),
+                        kernel.getCurrentErrorCount(),
+                    );
+                }
+                chronos.forcePersist();
+            } catch { /* never block shutdown on telemetry */ }
+            try { removeSessionMarker?.(); } catch { /* already gone */ }
+            try { nativeEdits?.close(); } catch { /* already closed */ }
+            try { engine.shutdown(); } catch { /* swallow */ }
+        },
+    };
+    return runtime;
 }
 
-const enforcer = new CognitiveEnforcer(process.cwd());
-const deps: RouterDependencies = { engine, monitor, sandbox, circuitBreaker, kernel, chronos, nrekiMode, enforcer };
-engine.onExternalBatchChange(async files => { await kernel?.notifyExternalChange(files); });
+function switchWorkspace(targetDir: string): Promise<void> {
+    const next = switchChain.then(async () => {
+        const resolved = path.resolve(targetDir);
+        if (currentWorkspace && path.resolve(currentWorkspace.root) === resolved) {
+            if (liveTransportConnected && !currentWorkspace.liveBooted) {
+                await currentWorkspace.bootLive();
+            }
+            return;
+        }
+        if (currentWorkspace) {
+            currentWorkspace.shutdown();
+            currentWorkspace = null;
+        }
+        currentWorkspace = await buildWorkspaceRuntime(resolved);
+        if (liveTransportConnected) {
+            await currentWorkspace.bootLive();
+        }
+        logger.info(`Workspace bound to ${resolved}`);
+    });
+    switchChain = next.catch((err) => {
+        logger.error(`Workspace switch failed: ${(err as Error).message}`);
+    });
+    return next;
+}
+
+// Boot immediately when started inside an actual project folder (or pinned by
+// NREKI_PROJECT_ROOT). When a global host launches NREKI inside its own config
+// dir (`~/.gemini/config/plugins/nreki`, `~`, etc.), defer until MCP roots/list
+// or `project_root` arrives so the host's config folder is never polluted.
+if (pinnedByEnv || !isNonProjectLaunchDir(process.cwd())) {
+    currentWorkspace = await buildWorkspaceRuntime(process.cwd());
+}
 
 const server = new McpServer({
     name: "NREKI",
@@ -434,14 +632,35 @@ logger.info(
 
 // ─── Tool 1: nreki_navigate ───────────────────────────────────────────
 
-// Tool definitions are paid on EVERY model request (Claude Code) or printed by
-// the agent to learn the calls (Codex code mode: ~1k tokens each time in the
-// 2026-11-13 A/B). Only everyday parameters are declared; the advanced ones are
-// still accepted (passthrough), validated by the handlers, and named in the
-// descriptions. Usage guidance lives in AGENTS.md/CLAUDE.md.
 const optStr = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
 const optNum = (v: unknown): number | undefined => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
 const optBool = (v: unknown): boolean | undefined => (typeof v === "boolean" ? v : undefined);
+
+async function resolveWorkspaceDeps(rawArgs: Record<string, unknown>): Promise<RouterDependencies | null> {
+    if (initialRootsPromise) await initialRootsPromise;
+    if (!pinnedByEnv) {
+        const explicit = optStr(rawArgs.project_root);
+        if (explicit) {
+            const d = decideProjectRoot(explicit);
+            if (d.kind === "apply") await switchWorkspace(d.dir);
+        } else if (!currentWorkspace) {
+            const firstEditPath = Array.isArray(rawArgs.edits) && rawArgs.edits[0] && typeof rawArgs.edits[0] === "object"
+                ? optStr((rawArgs.edits[0] as Record<string, unknown>).path)
+                : undefined;
+            const inferred = inferProjectRootFromPath(optStr(rawArgs.path) ?? firstEditPath);
+            if (inferred) await switchWorkspace(inferred);
+        }
+    }
+    return currentWorkspace?.deps ?? null;
+}
+
+const MISSING_WORKSPACE_RESPONSE = {
+    isError: true,
+    content: [{
+        type: "text" as const,
+        text: "NREKI was started outside a workspace without MCP roots. Re-run this call with project_root:\"<absolute workspace path>\" once to bind the active project.",
+    }],
+};
 
 server.registerTool(
     "nreki_navigate",
@@ -450,17 +669,20 @@ server.registerTool(
             "Find code. context: query = the task; returns the code it names (symbols verbatim, other mentions, importers) in one call. " +
             "fast_grep: exact text -> file:line [symbol]. search: concept search. definition/references: by symbol. outline: symbols of path. " +
             "type_shape: resolved TS type. prepare_refactor: occurrences to rename. map: repo overview (large). " +
-            "orphan_oracle: unreachable files. type_graph: code using type_name. Also: token_budget (context), depth, kind.",
+            "orphan_oracle: unreachable files. type_graph: code using type_name. Also: token_budget (context), depth, kind, project_root.",
         inputSchema: z.object({
             action: z.enum(["context", "search", "definition", "references", "outline", "map", "prepare_refactor", "orphan_oracle", "type_shape", "fast_grep", "type_graph"]),
             query: z.string().optional(),
             symbol: z.string().optional(),
             path: z.string().optional(),
             limit: z.number().optional(),
+            project_root: z.string().optional(),
         }).passthrough(),
     },
     async (args) => {
         const a: Record<string, unknown> = args;
+        const activeDeps = await resolveWorkspaceDeps(a);
+        if (!activeDeps) return MISSING_WORKSPACE_RESPONSE;
         const params: NavigateParams = {
             action: args.action, query: args.query, symbol: args.symbol, path: args.path, limit: args.limit,
             include_raw: optBool(a.include_raw), kind: optStr(a.kind), signatures: optBool(a.signatures),
@@ -469,11 +691,11 @@ server.registerTool(
             max_nodes: optNum(a.max_nodes), token_budget: optNum(a.token_budget),
         };
         return wrapWithCircuitBreaker(
-            circuitBreaker,
+            activeDeps.circuitBreaker,
             "nreki_navigate",
             args.action,
-            () => handleNavigate(args.action, params, deps),
-            undefined, undefined, chronos,
+            () => handleNavigate(args.action, params, activeDeps),
+            undefined, undefined, activeDeps.chronos,
         );
     },
 );
@@ -487,7 +709,7 @@ server.registerTool(
             "Read and edit code. read: whole file; with focus:\"a,b\" only those symbols (also compress focus). " +
             "edit/batch_edit: change or delete (new_code:\"\") a symbol by name; syntax and types are checked before writing, nothing is written on error. " +
             "mode patch: replace search_text with replace_text inside the symbol (cheapest). undo: revert the last edit of path. " +
-            "filter_output: shrink terminal text (output). Also: compress:true or level for skeletons.",
+            "filter_output: shrink terminal text (output). Also: compress:true or level for skeletons, project_root.",
         inputSchema: z.object({
             action: z.enum(["read", "compress", "edit", "batch_edit", "undo", "filter_output"]),
             path: z.string().optional(),
@@ -509,10 +731,13 @@ server.registerTool(
                 }))
             ).optional(),
             output: z.string().optional(),
+            project_root: z.string().optional(),
         }).passthrough(),
     },
     async (args) => {
         const a: Record<string, unknown> = args;
+        const activeDeps = await resolveWorkspaceDeps(a);
+        if (!activeDeps) return MISSING_WORKSPACE_RESPONSE;
         const params: CodeParams = {
             action: args.action, path: args.path, symbol: args.symbol, focus: args.focus, mode: args.mode,
             new_code: args.new_code, search_text: args.search_text, replace_text: args.replace_text,
@@ -522,15 +747,13 @@ server.registerTool(
             _nreki_bypass: optStr(a._nreki_bypass), max_cross_file: optNum(a.max_cross_file),
         };
         return wrapWithCircuitBreaker(
-            circuitBreaker,
+            activeDeps.circuitBreaker,
             "nreki_code",
             args.action,
-            () => handleCode(args.action, params, deps),
-            // batch_edit names its targets in edits: without them the breaker told
-            // the agent to rewrite "the failing symbol" in "the current file".
+            () => handleCode(args.action, params, activeDeps),
             args.path ?? args.edits?.[0]?.path,
             args.symbol ?? args.edits?.[0]?.symbol,
-            chronos,
+            activeDeps.chronos,
         );
     },
 );
@@ -542,25 +765,28 @@ server.registerTool(
     {
         description:
             "Session memory. pin/unpin (index): standing rules. set_plan (text = plan file). memorize (text): notes that survive context compaction. " +
-            "engram (path, symbol, text): note on a symbol. status/report: token use. reset: clear the circuit breaker. audit.",
+            "engram (path, symbol, text): note on a symbol. status/report: token use. reset: clear the circuit breaker. audit. Also: project_root.",
         inputSchema: z.object({
             action: z.enum(["pin", "unpin", "status", "report", "reset", "set_plan", "memorize", "audit", "engram"]),
             text: z.string().optional(),
             path: z.string().optional(),
             symbol: z.string().optional(),
             index: z.number().optional(),
+            project_root: z.string().optional(),
         }).passthrough(),
     },
     async (args) => {
         const a: Record<string, unknown> = args;
+        const activeDeps = await resolveWorkspaceDeps(a);
+        if (!activeDeps) return MISSING_WORKSPACE_RESPONSE;
         const { action, text, index, path: guardPath, symbol } = args;
         const params: GuardParams = { action, text, index, id: optStr(a.id), path: guardPath, symbol };
         return wrapWithCircuitBreaker(
-            circuitBreaker,
+            activeDeps.circuitBreaker,
             "nreki_guard",
             action,
-            () => handleGuard(action, params, deps),
-            undefined, undefined, chronos,
+            () => handleGuard(action, params, activeDeps),
+            undefined, undefined, activeDeps.chronos,
         );
     },
 );
@@ -569,57 +795,24 @@ server.registerTool(
 
 async function main(): Promise<void> {
     const transport = new StdioServerTransport();
-    let nativeEdits: NativeEditServer | undefined;
-
-    // Graceful shutdown 100% SÍNCRONO.
-    // Async en shutdown path = riesgo de zombie atascado en event loop.
-    // El verdadero GC es process.exit(0) — el SO mata in-flight
-    // requests instantáneo (post v11.0.0 amputación: ya sin ONNX).
     let _shuttingDown = false;
-    // Set once the session marker is written (below). The marker announces the
-    // native-edit endpoint, so it is removed BEFORE the endpoint closes: a reader
-    // never finds a marker pointing at a closed endpoint, and "endpoint gone"
-    // implies "marker gone" (the built-server test raced on slow CI runners).
-    let removeSessionMarker: (() => void) | null = null;
 
     const gracefulShutdown = () => {
         if (_shuttingDown) return;
         _shuttingDown = true;
-
-        try {
-            if (kernel && kernel.isBooted()) {
-                chronos.syncTechDebt(
-                    kernel.getInitialErrorCount(),
-                    kernel.getCurrentErrorCount(),
-                );
-            }
-            chronos.forcePersist();  // sync, ~2-5ms, dentro de ventana de gracia del SO
-        } catch { /* never block shutdown on telemetry */ }
-
-        try { removeSessionMarker?.(); } catch { /* already gone */ }
-        try { nativeEdits?.close(); } catch { /* already closed */ }
-        try { engine.shutdown(); } catch { /* swallow */ }
-
+        try { currentWorkspace?.shutdown(); } catch { /* swallow */ }
         process.exit(0);
     };
 
     process.on("SIGINT",  gracefulShutdown);
     process.on("SIGTERM", gracefulShutdown);
-    process.on("SIGHUP",  gracefulShutdown);  // higiene POSIX
+    process.on("SIGHUP",  gracefulShutdown);
+    process.on("exit", () => { try { currentWorkspace?.shutdown(); } catch { /* swallow */ } });
 
-    // Bala de plata multiplataforma: detecta orfandad cuando padre
-    // cierra terminal en Windows (donde SIGHUP no llega). stdin es
-    // EventEmitter — múltiples listeners sin colisión con SDK.
     process.stdin.on("close", gracefulShutdown);
     process.stdin.on("end",   gracefulShutdown);
 
     // ─── Parent Process Watchdog ────────────────────────────────────
-    // Fallback final cuando los signals/events del SO fallan en
-    // X-close de Windows o SIGKILL abrupto del cliente MCP.
-    // Verificado empíricamente: process.stdin EOF y SIGHUP NO se
-    // disparan al cerrar consola PowerShell con X (PID 16696
-    // sobrevivió al test manual). Polling activo del ppid es el
-    // único mecanismo confiable cross-platform.
     const initialPpid = process.ppid;
     if (initialPpid && initialPpid !== 1) {
         const PARENT_CHECK_MS = 3000;
@@ -629,125 +822,50 @@ async function main(): Promise<void> {
                 return;
             }
             try {
-                // kill(0) verifica existencia sin enviar señal de terminación.
                 process.kill(initialPpid, 0);
             } catch (err) {
                 const code = (err as NodeJS.ErrnoException).code;
-                // EPERM/EACCES: padre VIVO pero SO/AV deniega inspección.
-                // NO disparar shutdown — falso positivo letal.
                 if (code === "EPERM" || code === "EACCES") {
                     return;
                 }
-                // ESRCH (No such process) o cualquier otro: padre muerto.
                 clearInterval(parentWatchdog);
                 gracefulShutdown();
             }
         }, PARENT_CHECK_MS);
-
-        // Vital: permite que el event loop termine si MCP cierra limpio.
-        // Sin unref(), el setInterval mantiene NREKI vivo eternamente
-        // bloqueando el shutdown ordenado del cliente.
         parentWatchdog.unref();
     }
 
-    // ─── SESSION MARKER (read by the Claude Code enforcer hook) ───
-    // The hook only steers native reads while a NREKI server is alive for this
-    // project; without a live marker it fails open (NREKI-SEC-04).
-    const sessionMarker = path.join(process.cwd(), ".nreki", "sessions", String(process.pid));
-    try {
-        // Never through a `.nreki` link shipped with the repository (writeStateFile).
-        // No TCP port: a project-scoped pipe/socket with a fresh session secret.
-        if (!unsafeWriteTarget(cwd, sessionMarker)) {
-            const sessionsDir = path.dirname(sessionMarker);
-            if (fs.existsSync(sessionsDir)) {
-                for (const entry of fs.readdirSync(sessionsDir)) {
-                    if (!/^\d+$/.test(entry)) continue;
-                    const pid = Number(entry);
-                    if (!Number.isSafeInteger(pid) || pid <= 0 || pid === process.pid) continue;
-                    try {
-                        process.kill(pid, 0);
-                    } catch (err) {
-                        if ((err as NodeJS.ErrnoException).code === "ESRCH") {
-                            const stale = path.join(sessionsDir, entry);
-                            if (!unsafeWriteTarget(cwd, stale)) {
-                                try { fs.unlinkSync(stale); } catch { /* raced */ }
-                            }
-                        }
-                    }
-                }
-            }
-            if (process.env.NREKI_NATIVE_PREFLIGHT === "1") {
-                try {
-                    nativeEdits = await startNativeEditServer(cwd, request => validateNativeEdit(request, deps));
-                } catch (ipcErr) {
-                    logger.warn(`Native edit IPC server unavailable (falling back to session-only marker): ${(ipcErr as Error).message}`);
-                }
-            }
+    const syncClientRoots = async (): Promise<void> => {
+        if (pinnedByEnv) return;
+        if (!server.server.getClientCapabilities()?.roots) return;
+        try {
+            const res = await server.server.listRoots({}, { timeout: 2500 });
+            const rootDir = pickRootFromMcpRoots(res?.roots);
+            if (rootDir) await switchWorkspace(rootDir);
+        } catch (err) {
+            logger.warn(`MCP roots/list unavailable: ${(err as Error).message}`);
         }
-        writeStateFile(cwd, sessionMarker, JSON.stringify({
-            startedAt: new Date().toISOString(), token: nativeEdits?.token,
-        }));
-        fs.chmodSync(sessionMarker, 0o600);
-        removeSessionMarker = () => { try { fs.unlinkSync(sessionMarker); } catch { /* already gone */ } };
-        process.on("exit", () => {
-            removeSessionMarker?.();
-            try { nativeEdits?.close(); } catch { /* already closed */ }
-        });
-    } catch {
-        try { nativeEdits?.close(); } catch { /* already closed */ }
-        // Read-only checkout or linked .nreki: retain the hook's legacy fail-open behavior.
+    };
+
+    server.server.oninitialized = () => {
+        if (!pinnedByEnv && server.server.getClientCapabilities()?.roots) {
+            const p = syncClientRoots().finally(() => {
+                if (initialRootsPromise === p) initialRootsPromise = null;
+            });
+            initialRootsPromise = p;
+        }
+    };
+
+    server.server.setNotificationHandler(RootsListChangedNotificationSchema, async () => {
+        await syncClientRoots();
+    });
+
+    liveTransportConnected = true;
+    if (currentWorkspace) {
+        await currentWorkspace.bootLive();
     }
 
-    // ─── AUTO-PATCH SECURITY HOOK (v10.x) ───
-    // v11.3.0: enforcer template now lives at templates/hooks/nreki-enforcer.mjs
-    // (read at runtime) instead of being inlined as a TS string literal.
-    // v12.1.0: also upgrade the unmodified v1 enforcer (MultiEdit bypass, symlinks,
-    // hard block when NREKI is down) and the unreleased v2 (blocked edits and
-    // partial reads, costing turns) to v3. Hooks the user customized are left alone.
-    // Only a stock NREKI hook, never through a symbolic link (see hook-upgrade.ts).
-    try {
-        const upgrade = upgradeEnforcerHook(process.cwd(), () => fs.readFileSync(
-            new URL("../templates/hooks/nreki-enforcer.mjs", import.meta.url), "utf-8",
-        ));
-        if (upgrade === "upgraded") logger.info("Auto-patched legacy nreki-enforcer hook for security.");
-        if (upgrade === "unsafe-path") logger.warn(".claude/hooks/nreki-enforcer.mjs is a symbolic link or leaves the project: not upgraded.");
-    } catch { /* Fail silently, never block boot */ }
-
-    // Connect and serve
     await server.connect(transport);
-
-    // v11.2.1: do NOT block server startup on the file watcher's initial
-    // scan. chokidar's ready event waits for the directory walk to settle,
-    // which on real projects with heavy non-ignored trees can take tens of
-    // seconds — during which the MCP transport is alive but the watcher
-    // CPU work prevents tool handlers from making forward progress, and
-    // Claude Code surfaces the silence as "connection closed: EOF". The
-    // watcher is for reactive re-indexing; tool handlers call
-    // engine.indexDirectory() directly on first use and do not depend on
-    // it being ready.
-    if (engine) {
-        const watcherReady = engine.startWatcher();
-        watcherReady.then(
-            () => logger.info("File watcher started (reactive mode)."),
-            (err: Error) => logger.error(`File watcher failed (non-fatal): ${err.message}`),
-        );
-    }
-
-    // Engine initialization is lazy - each tool calls engine.initialize()
-    // (db + parser). v11.0.0: single init path post-embeddings amputation.
-    // This keeps the MCP handshake under 100ms.
-
-    // JIT Holography: pre-load WASM parser (~50ms) without scanning project
-    if (nrekiMode === "hologram" && kernel) {
-        setImmediate(async () => {
-            try {
-                await ensureHologramReady(kernel!, nrekiMode, cwd);
-                logger.info("WASM parser pre-loaded. JIT Holography ready.");
-            } catch (err) {
-                logger.warn(`WASM pre-load failed: ${(err as Error).message}`);
-            }
-        });
-    }
 }
 
 // v11.2.1: defensive process-level handlers. The MCP transport speaks

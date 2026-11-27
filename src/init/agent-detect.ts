@@ -70,7 +70,11 @@ export function detectInstalledAgents(home: string): DetectedAgent[] {
     const found: DetectedAgent[] = [];
     if (exists(path.join(home, ".claude")) || exists(path.join(home, ".claude.json"))) found.push("claude");
     if (exists(path.join(home, ".codex"))) found.push("codex");
-    if (exists(path.join(home, ".gemini", "antigravity")) || exists(path.join(home, ".gemini", "antigravity-ide"))) {
+    if (
+        exists(path.join(home, ".gemini", "antigravity")) ||
+        exists(path.join(home, ".gemini", "antigravity-ide")) ||
+        exists(path.join(home, ".gemini", "config"))
+    ) {
         found.push("antigravity");
     }
     if (exists(path.join(home, ".cursor"))) found.push("cursor");

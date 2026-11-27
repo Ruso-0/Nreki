@@ -1,5 +1,12 @@
 # Changelog
 
+## [12.5.0] - 2026-11-27
+
+- **Zero-approval global install (`npx nreki init`).** In an interactive terminal (including Git Bash on Windows), `npx nreki init` now registers NREKI at **user scope** across Claude Code (`~/.claude.json` + `~/.claude/`), Antigravity (`~/.gemini/config/plugins/nreki/`), Cursor (`~/.cursor/mcp.json` + `~/.cursor/rules/nreki.mdc`), Codex (`~/.codex/config.toml` + `~/.codex/AGENTS.md`), and VS Code (`Code/User/mcp.json` when installed), migrating away stale NREKI `.mcp.json` project entries while preserving other servers. `--project` keeps repo-scoped installs, and `npx nreki deinit --global` removes user-scoped registrations cleanly.
+- **Local browser Voyage setup card (`127.0.0.1`) + `npx nreki key`.** `init` opens a token-protected local setup card in the user's browser on Windows, macOS, and Linux with inline Voyage API key verification (`~/.nreki/voyage.key`), falling back automatically to the Windows dialog or hidden terminal prompt when no browser opens.
+- **Dynamic workspace binding for global MCP servers.** Global servers stay idle when started in a host config directory (`~/.gemini/config/plugins/nreki`, `~`, etc.) without polluting it, and bind to the open project via MCP `roots/list` (`notifications/roots/list_changed`), `project_root`, or absolute file paths.
+- **Standalone `npm install nreki`.** `typescript` is now bundled in `dependencies` instead of a strict `peerDependencies` constraint so `npm i nreki` and `npm i -g nreki` succeed across Python, Go, C++, JS, and global installs.
+
 ## [12.4.1] - 2026-11-26
 
 - **The Voyage box opens visibly on Windows.** In 12.4.0 (tagged, never published to npm) it opened invisible: `spawnSync`'s `windowsHide` sets `SW_HIDE` in the child's startup info, and Windows applies it to the first window the child shows, here the box itself. UI Automation found no window for the dialog process, so `init` waited for an answer nobody could give.

@@ -62,4 +62,8 @@ if (existsSync(WASMS_PKG)) {
     console.warn("  Then re-run this script: node scripts/download-wasm.js");
 }
 
-console.log("\n✅ WASM grammars ready.\n");
+console.log("\n✅ WASM grammars ready.");
+if (!process.env.CI) {
+    console.log("👉 Next: run `npx nreki init` to activate NREKI globally across Claude Code, Antigravity, Cursor, and Codex (and set your Voyage API key).\n");
+}
+

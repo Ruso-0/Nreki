@@ -1,6 +1,6 @@
 {
   "name": "nreki",
-  "version": "12.4.1",
+  "version": "12.5.0",
   "publishConfig": {
     "access": "public"
   },
@@ -72,16 +72,9 @@
     "sql.js": "1.14.1",
     "tiktoken": "1.0.22",
     "tree-sitter-wasms": "0.1.13",
+    "typescript": "^5.9.3",
     "web-tree-sitter": "0.24.7",
     "zod": "3.25.76"
-  },
-  "peerDependencies": {
-    "typescript": ">=5.5.0 <6.0.0"
-  },
-  "peerDependenciesMeta": {
-    "typescript": {
-      "optional": false
-    }
   },
   "devDependencies": {
     "@types/node": "^22.13.10",

@@ -11,6 +11,8 @@
 
 **MCP plugin that validates AI agent edits in RAM before they touch disk.** When Claude Code, Cursor, or Copilot changes a function signature in one file and breaks 30 others, NREKI catches it in milliseconds - the file is never written. If the error is structural (missing import, forgotten `await`), NREKI auto-fixes it in RAM. Zero tokens wasted on fix-retry doom loops.
 
+**v12.5.0 — zero-approval global install + local Voyage setup box.** Run `npm i -g nreki` (or `npm i nreki`) then `npx nreki init`: a local setup card opens in your browser (`127.0.0.1`, falling back to the Windows dialog or hidden terminal prompt) so each user can paste and verify their Voyage API key (`~/.nreki/voyage.key`), and NREKI registers globally at **user scope** across Claude Code (`~/.claude.json`), Antigravity (`~/.gemini/config/plugins/nreki/`), Cursor (`~/.cursor/mcp.json`), Codex (`~/.codex/config.toml`), and VS Code (`Code/User/mcp.json`). Global servers auto-detect the open workspace via MCP `roots/list` + `project_root`, so every project works out of the box with zero `.mcp.json` approval prompts.
+
 **v12.4.1 — a box for the Voyage key.** `npx nreki init` asks for your Voyage API key (a small window on Windows, a hidden prompt elsewhere), checks it with Voyage, saves it outside every project (`~/.nreki/voyage.key`) and turns semantic search on for the project. It never asks when an agent runs `init`.
 
 **v12.3.0 — one command installs NREKI.** Run `npx nreki init` in a project: it writes each agent's instructions and registers NREKI as that agent's MCP server (Claude Code, Codex, Antigravity, Cursor, VS Code/Copilot), with the project folder pinned so NREKI indexes the right code. Without agent files in the project it installs for the agents found on your computer. `--voyage` turns on semantic search. `NREKI_PROJECT_ROOT` names the project for hosts that start servers in another folder (measured: Antigravity starts a global plugin's server in the plugin folder). `npx nreki deinit` removes the registrations too.
@@ -45,16 +47,17 @@ Opting in with `NREKI_NATIVE_PREFLIGHT=1` enables the Claude hook v5 authenticat
 
 ## Install
 
-In the project folder:
-
 ```bash
-npx nreki init            # instructions + MCP registration for each agent, project folder pinned
-npx nreki init --voyage   # same, with Voyage semantic search on (sends this project's code to Voyage once)
+npm i -g nreki            # installs NREKI, TypeScript compiler API, and Tree-sitter WASM grammars
+npx nreki init            # opens the Voyage API key setup box + installs globally for Claude, Antigravity, Cursor, Codex & VS Code
+npx nreki key             # re-open the Voyage API key setup box anytime
+npx nreki init --project  # install inside the current project folder only (.mcp.json, .codex/config.toml, etc.)
+npx nreki init --voyage   # turn Voyage semantic search on explicitly
 npx nreki init --no-prompt   # never show the Voyage key box
-npx nreki init --agent codex,antigravity   # choose the agents (claude, codex, antigravity, cursor, cline, copilot, generic)
+npx nreki init --agent codex,antigravity   # choose specific agents (claude, codex, antigravity, cursor, cline, copilot, generic)
 npx nreki init --dry-run  # preview the plan, write nothing
 npx nreki init --no-mcp   # instructions only
-npx nreki deinit          # remove NREKI's hooks, instructions and MCP registrations
+npx nreki deinit --global # remove NREKI's global + local hooks, instructions and MCP registrations
 ```
 
 In a terminal, `init` first shows a box for your Voyage API key (optional): on Windows a small window, elsewhere a hidden prompt. A typed key is checked with Voyage and saved in `~/.nreki/voyage.key` (outside every project, readable only by you), and Voyage is turned on for the project; "No Voyage" keeps local search only. With a key already set, leave the field empty to use it. NREKI reads `NREKI_VOYAGE_API_KEY`, then `VOYAGE_API_KEY`, then that file.

@@ -48,6 +48,37 @@ export function isSpanish(locale: string = defaultLocale()): boolean {
     return /^es\b/i.test(locale);
 }
 
+/**
+ * True when `nreki init` is run by a human in a terminal (including Git Bash
+ * / mintty on Windows where `stdin.isTTY` is false), and NEVER when run by CI,
+ * Vitest, or an AI coding agent subprocess.
+ */
+export function isHumanInteractiveSession(
+    env: NodeJS.ProcessEnv = process.env,
+    stdinIsTty: boolean = Boolean(process.stdin.isTTY),
+    stderrIsTty: boolean = Boolean(process.stderr.isTTY),
+    explicitPrompt?: boolean,
+): boolean {
+    if (explicitPrompt === false) return false;
+    if (explicitPrompt === true) return true;
+    if (
+        env.CI ||
+        env.VITEST ||
+        env.NODE_ENV === "test" ||
+        env.CLAUDECODE ||
+        env.CLAUDE_CODE_ENTRYPOINT ||
+        env.CODEX_SANDBOX ||
+        env.ANTIGRAVITY_CLI_ALIAS ||
+        env.ANTIGRAVITY_AGENT
+    ) {
+        return false;
+    }
+    if (stdinIsTty && stderrIsTty) return true;
+    // Git Bash (mintty) on Windows uses pipes so isTTY is false even for humans.
+    if (Boolean(env.MSYSTEM) && Boolean(env.TERM) && env.TERM !== "dumb") return true;
+    return false;
+}
+
 function defaultLocale(): string {
     return process.env.LC_ALL || process.env.LANG || Intl.DateTimeFormat().resolvedOptions().locale || "en";
 }
@@ -183,26 +214,49 @@ export interface VoyagePromptResult {
     lines: string[];
 }
 
-function defaultUi(t: DialogTexts): Promise<VoyageChoice> {
-    if (process.platform === "win32") {
-        const choice = askViaWindowsDialog(t);
-        if (choice) return Promise.resolve(choice);
-    }
-    return askViaTerminal(t);
-}
-
 /**
  * Ask for the key (up to three tries when Voyage rejects it), save it, and
  * say whether this project's registrations should turn Voyage on.
+ *
+ * Default UI priority:
+ *   1. Local browser Setup Box (`127.0.0.1` card — cross-platform Win/Mac/Linux,
+ *      verifies the key inline before closing)
+ *   2. Windows native WinForms dialog (`templates/voyage-key-dialog.ps1`)
+ *   3. Hidden terminal prompt (`readline`)
  */
 export async function promptForVoyage(deps: VoyagePromptDeps = {}): Promise<VoyagePromptResult> {
     const env = deps.env ?? process.env;
-    const ui = deps.ui ?? defaultUi;
     const check = deps.check ?? ((key: string) => checkVoyageKey(key));
     const save = deps.save ?? saveVoyageKey;
     const syncEnv = deps.syncEnv ?? syncWindowsUserVariable;
     const es = isSpanish(deps.locale);
     const lines: string[] = [];
+
+    const verifiedCache = new Map<string, VoyageKeyCheck>();
+    const defaultUi = async (t: DialogTexts): Promise<VoyageChoice> => {
+        try {
+            const { askViaBrowserSetupUi } = await import("./setup-ui.js");
+            const browserOutcome = await askViaBrowserSetupUi({
+                texts: t,
+                locale: deps.locale,
+                check,
+            });
+            if (browserOutcome) {
+                if (browserOutcome.choice.kind === "key" && browserOutcome.verified) {
+                    verifiedCache.set(browserOutcome.choice.key, browserOutcome.verified);
+                }
+                return browserOutcome.choice;
+            }
+        } catch {
+            // Fall through to native Windows dialog / terminal prompt
+        }
+        if (process.platform === "win32") {
+            const choice = askViaWindowsDialog(t);
+            if (choice) return choice;
+        }
+        return askViaTerminal(t);
+    };
+    const ui = deps.ui ?? defaultUi;
 
     let error: string | undefined;
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -210,16 +264,16 @@ export async function promptForVoyage(deps: VoyagePromptDeps = {}): Promise<Voya
         const choice = await ui(dialogTexts(available !== null, error, deps.locale));
         if (choice.kind === "skip") return { voyage: undefined, lines };
         if (choice.kind === "local") {
-            lines.push("Voyage: off for this project (local search only).");
+            lines.push("Voyage: off (local search only).");
             return { voyage: false, lines };
         }
         if (choice.kind === "use-saved") {
             if (!available) return { voyage: undefined, lines };
-            lines.push(`Voyage: on for this project, with the key from ${available.source === "env" ? "your environment" : "~/.nreki/voyage.key"}.`);
+            lines.push(`Voyage: on, with the key from ${available.source === "env" ? "your environment" : "~/.nreki/voyage.key"}.`);
             return { voyage: true, lines };
         }
 
-        const result = await check(choice.key);
+        const result = verifiedCache.get(choice.key) ?? await check(choice.key);
         if (result.status === "invalid") {
             error = es
                 ? `Voyage rechazó esa clave (HTTP ${result.httpStatus}). Crea una nueva y cópiala completa.`
@@ -228,8 +282,8 @@ export async function promptForVoyage(deps: VoyagePromptDeps = {}): Promise<Voya
         }
         const file = save(choice.key);
         lines.push(result.status === "valid"
-            ? `Voyage: key verified and saved to ${file}; on for this project.`
-            : `Voyage: could not reach Voyage to check the key (${result.reason}); saved to ${file} anyway; on for this project.`);
+            ? `Voyage: key verified and saved to ${file}; semantic search enabled.`
+            : `Voyage: could not reach Voyage to check the key (${result.reason}); saved to ${file} anyway; semantic search enabled.`);
         const synced = syncEnv(choice.key);
         if (synced === "updated") {
             lines.push("Voyage: your Windows variable NREKI_VOYAGE_API_KEY was updated too. Restart your agents (Codex, Antigravity…) so they pick it up.");

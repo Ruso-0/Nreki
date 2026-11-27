@@ -249,10 +249,15 @@ describe("registerMcp — JSON hosts", () => {
         expect(fs.readdirSync(project)).toEqual([]);
     });
 
-    it("never writes through a linked config folder", () => {
+    it("never writes through a linked config folder", (ctx) => {
         const outside = fs.mkdtempSync(path.join(os.tmpdir(), "nreki-mcp-outside-"));
         try {
-            fs.symlinkSync(outside, path.join(project, ".cursor"), "junction");
+            try {
+                fs.symlinkSync(outside, path.join(project, ".cursor"), process.platform === "win32" ? "junction" : "dir");
+            } catch (err) {
+                if ((err as NodeJS.ErrnoException).code === "EPERM") ctx.skip("environment blocks directory junctions");
+                throw err;
+            }
             const r = registerMcp("cursor", { cwd: project, ...base });
             expect(r.op).toBe("skipped");
             expect(fs.readdirSync(outside)).toEqual([]);

@@ -25,7 +25,13 @@ import path from "path";
 import { fileURLToPath } from "url";
 import type { DetectedAgent } from "./agent-detect.js";
 import { detectAgent, isKnownAgent, KNOWN_AGENTS } from "./agent-detect.js";
-import { isMcpHost, launchCommand, registerMcp, removeEmptyDirs, type McpAction } from "./mcp-register.js";
+import {
+    defaultGlobalAgents,
+    isGlobalAgent,
+    registerGlobalAgent,
+} from "./global-register.js";
+import { isMcpHost, launchCommand, registerMcp, removeEmptyDirs, unregisterMcp, type McpAction } from "./mcp-register.js";
+import { isNonProjectLaunchDir } from "../project-root.js";
 import { unsafeWriteTarget } from "../utils/path-jail.js";
 import { availableVoyageKey } from "../utils/voyage-key.js";
 
@@ -67,8 +73,14 @@ export interface InitOptions {
     voyage?: boolean;
     /** Version pinned in the registrations. Defaults to this package's version. */
     version?: string;
-    /** CLI only: `--no-prompt` never shows the Voyage key box. */
+    /** CLI only: `--no-prompt` never shows the Voyage key box; `--prompt` forces it. */
     prompt?: boolean;
+    /**
+     * Install globally at user scope (`~/.claude.json`, `~/.gemini/config/plugins/nreki/`,
+     * `~/.cursor/mcp.json`, `~/.codex/config.toml`, VS Code `Code/User/mcp.json`) so every
+     * project works automatically without per-repo `.mcp.json` approval prompts.
+     */
+    global?: boolean;
 }
 
 export interface InitResult {
@@ -422,9 +434,79 @@ function mergeClaudeSettings(cwd: string, dryRun: boolean): InitResult["actions"
  */
 export function runInit(opts: InitOptions = {}): InitResult {
     const cwd = path.resolve(opts.cwd ?? process.cwd());
+    const home = path.resolve(opts.home ?? os.homedir());
     const force = opts.force === true;
     const dryRun = opts.dryRun === true;
+    const version = opts.version ?? packageVersion();
 
+    // ─── User-scoped (Global) installation ────────────────────────────────
+    if (opts.global === true) {
+        const explicit = [...(opts.agents ?? []), ...(opts.agent ? [opts.agent] : [])];
+        const agents: DetectedAgent[] = explicit.length > 0
+            ? KNOWN_AGENTS.filter((a) => explicit.includes(a))
+            : defaultGlobalAgents(home);
+        const reason = explicit.length > 0
+            ? "global install (--agent override)"
+            : `global user-scope install for ${agents.join(", ")} (active across all projects, zero per-repo approval needed)`;
+
+        const actions: InitResult["actions"] = [];
+        const notes: string[] = [];
+
+        if (opts.mcp !== false) {
+            for (const agent of agents) {
+                if (isGlobalAgent(agent)) {
+                    actions.push(...registerGlobalAgent(agent, {
+                        home,
+                        version,
+                        voyage: opts.voyage,
+                        force,
+                        dryRun,
+                    }));
+                }
+            }
+            // If `cwd` had an older unapproved repo `.mcp.json` entry written by
+            // NREKI, clean it up so Claude Code uses user-scoped `~/.claude.json`
+            // without showing an unapproved `.mcp.json` banner.
+            if (agents.includes("claude") && !isNonProjectLaunchDir(cwd, home)) {
+                const cleaned = unregisterMcp("claude", cwd, dryRun);
+                if (cleaned && cleaned.op === "removed") {
+                    actions.push({
+                        path: cleaned.path,
+                        op: "removed",
+                        note: "migrated to ~/.claude.json (user scope — no per-project approval needed)",
+                    });
+                }
+            }
+        }
+
+        // Non-global agents explicitly requested (e.g. cline / generic) still
+        // get their project instruction files when run inside a project folder.
+        const projectOnly = agents.filter((a) => !isGlobalAgent(a));
+        if (!isNonProjectLaunchDir(cwd, home)) {
+            const planned = new Set<string>();
+            for (const agent of projectOnly) {
+                for (const action of planForAgent(agent)) {
+                    if (planned.has(action.targetRel)) continue;
+                    planned.add(action.targetRel);
+                    actions.push(applyFileAction(cwd, action, force, dryRun));
+                }
+            }
+        }
+
+        const configuredGlobal = agents.filter(isGlobalAgent);
+        if (configuredGlobal.length > 0 && opts.mcp !== false) {
+            notes.push(
+                `Global MCP ready for ${configuredGlobal.join(", ")}: reload or restart open editor windows once; ` +
+                "every project now loads nreki_navigate, nreki_code, and nreki_guard automatically without per-project approval.",
+            );
+        }
+        if (opts.voyage === undefined && availableVoyageKey() !== null) {
+            notes.push("A Voyage key is saved: run `npx nreki init --voyage` to enable semantic search globally.");
+        }
+        return { agent: agents[0] ?? "generic", agents, reason, actions, notes };
+    }
+
+    // ─── Project-scoped installation ──────────────────────────────────────
     let agents: DetectedAgent[];
     let reason: string;
     const explicit = [...(opts.agents ?? []), ...(opts.agent ? [opts.agent] : [])];
@@ -432,7 +514,7 @@ export function runInit(opts: InitOptions = {}): InitResult {
         agents = KNOWN_AGENTS.filter((a) => explicit.includes(a));
         reason = "--agent override";
     } else {
-        const detection = detectAgent(cwd, opts.home ?? os.homedir());
+        const detection = detectAgent(cwd, home);
         agents = detection.agents;
         reason = detection.reason;
     }
@@ -450,7 +532,6 @@ export function runInit(opts: InitOptions = {}): InitResult {
     }
 
     const notes: string[] = [];
-    const version = opts.version ?? packageVersion();
     if (opts.mcp !== false) {
         for (const agent of agents) {
             if (!isMcpHost(agent)) continue;
@@ -483,7 +564,7 @@ export function runInit(opts: InitOptions = {}): InitResult {
 
 /** What the user still has to do after the registration, per host. */
 const NEXT_STEP: Record<"claude" | "codex" | "antigravity" | "cursor" | "copilot", string> = {
-    claude: "Claude Code: start it in this folder and approve the project server \"nreki\" when asked (.mcp.json).",
+    claude: "Claude Code: start it in this folder and approve the project server \"nreki\" when asked (.mcp.json), or run `npx nreki init --global` to skip per-project approval.",
     codex: "Codex: restart Codex and open this folder as a trusted project; Codex ignores .codex/config.toml in untrusted projects.",
     antigravity: "Antigravity: open \"Manage MCP servers\" and press Refresh (the server is in .agents/mcp_config.json).",
     cursor: "Cursor: restart Cursor and enable \"nreki\" in its MCP settings if it is off (.cursor/mcp.json).",
@@ -515,6 +596,9 @@ export function parseInitArgs(argv: string[]): { opts: InitOptions; error?: stri
         if (a === "--voyage") { opts.voyage = true; continue; }
         if (a === "--no-voyage") { opts.voyage = false; continue; }
         if (a === "--no-prompt") { opts.prompt = false; continue; }
+        if (a === "--prompt") { opts.prompt = true; continue; }
+        if (a === "--global" || a === "-g") { opts.global = true; continue; }
+        if (a === "--project" || a === "--local") { opts.global = false; continue; }
         if (a === "--agent") {
             const error = addAgents(argv[++i]);
             if (error) return { opts, error };
