@@ -25,7 +25,7 @@ import { TokenMonitor } from "../src/monitor.js";
 import { CircuitBreaker } from "../src/circuit-breaker.js";
 import { extractLiteralTerms, handleContext } from "../src/handlers/context-pack.js";
 import { safePath } from "../src/utils/path-jail.js";
-import { onDiskCase } from "../src/utils/path-case.js";
+import { onDiskCase, onDiskCaseUnder } from "../src/utils/path-case.js";
 import { latencyTracker } from "../src/utils/latency-tracker.js";
 import { trackedNrekiState } from "../src/utils/state-hygiene.js";
 import { runInit } from "../src/init/init-runner.js";
@@ -273,6 +273,23 @@ describe("F5. below a root reached through a junction, files are spelled as on d
         expect(safePath(link, "src/app.tsx")).toBe(path.join(link, "Src", "App.tsx"));
         expect(safePath(link, "src/New.tsx")).toBe(path.join(link, "Src", "New.tsx"));
         expect(onDiskCase(path.join(parent, "proj", "src"))).toBe(path.join(link, "Src"));
+    });
+});
+
+describe("F5b. a spelling the disk cannot confirm is never re-spelled into the root", () => {
+    it("a typed root part that differs in case and does not exist keeps its spelling (macOS CI, /home/X vs /home/x)", () => {
+        const tmp = mkTmp("nreki-f5b-");
+        const root = path.join(tmp, "missing-Root");
+        const typed = path.join(tmp, "MISSING-root", "y.ts");
+        for (const platform of ["darwin", "win32"] as const) {
+            expect(onDiskCaseUnder(root, typed, platform)).toBe(path.resolve(typed));
+        }
+    });
+
+    it.runIf(isWin)("where the disk answers to the typed name it still takes the disk's spelling", () => {
+        const tmp = mkTmp("nreki-f5b-sib-");
+        fs.mkdirSync(path.join(tmp, "Data"));
+        expect(onDiskCase(path.join(tmp, "data", "new.ts"))).toBe(path.join(onDiskCase(tmp), "Data", "new.ts"));
     });
 });
 

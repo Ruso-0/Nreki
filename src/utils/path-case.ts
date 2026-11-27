@@ -49,6 +49,8 @@ function entrySpelling(dir: string, name: string): string {
     let names: string[];
     try { names = fs.readdirSync(dir); } catch { return name; }
     if (names.includes(name)) return name;
+    // Only when the folder answers to the typed name: on a case-sensitive volume `p` is not `P`.
+    if (!fs.existsSync(path.join(dir, name))) return name;
     return names.find(n => sameButCase(n, name)) ?? name;
 }
 
@@ -79,6 +81,17 @@ export function onDiskCase(p: string, platform: NodeJS.Platform = process.platfo
     return platform === "win32" ? upperDrive(resolved) : resolved;
 }
 
+/** True when `a` and `b` are the same existing file or folder (device + file id). */
+function sameEntry(a: string, b: string): boolean {
+    try {
+        const x = fs.statSync(a, { bigint: true });
+        const y = fs.statSync(b, { bigint: true });
+        return x.ino !== 0n && x.dev === y.dev && x.ino === y.ino;
+    } catch {
+        return false;
+    }
+}
+
 const realRoots = new Map<string, string | null>();
 function realRootOf(root: string): string | null {
     let real = realRoots.get(root);
@@ -106,9 +119,13 @@ export function onDiskCaseUnder(root: string, p: string, platform: NodeJS.Platfo
     if (whole !== null) return whole;
     const lowerRoot = root.toLowerCase();
     const lower = resolved.toLowerCase();
-    if (lower === lowerRoot) return root;
     const prefix = lowerRoot.endsWith(path.sep) ? lowerRoot : lowerRoot + path.sep;
-    if (!lower.startsWith(prefix)) return onDiskCase(resolved, platform);
+    if (lower !== lowerRoot && !lower.startsWith(prefix)) return onDiskCase(resolved, platform);
+    // The typed root part takes the root's spelling only when the disk says it IS
+    // the root: a case-sensitive volume (APFS can be one) has /p and /P side by side.
+    const head = resolved.slice(0, root.length);
+    if (head !== root && !sameEntry(head, root)) return resolved;
+    if (lower === lowerRoot) return root;
     const typed = root + resolved.slice(root.length);
     const realRoot = realRootOf(root);
     if (realRoot === null) return typed;
