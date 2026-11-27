@@ -26,14 +26,19 @@ import { fileURLToPath } from "url";
 import type { DetectedAgent } from "./agent-detect.js";
 import { detectAgent, isKnownAgent, KNOWN_AGENTS } from "./agent-detect.js";
 import {
+    CLAUDE_HOOK_TOOLS,
     defaultGlobalAgents,
     isGlobalAgent,
     registerGlobalAgent,
+    sameText,
+    sentinelBlockOf,
 } from "./global-register.js";
+import { hookVersion } from "./hook-upgrade.js";
 import { isMcpHost, launchCommand, registerMcp, removeEmptyDirs, unregisterMcp, type McpAction } from "./mcp-register.js";
-import { isNonProjectLaunchDir } from "../project-root.js";
+import { isNonProjectLaunchDir, sameDir } from "../project-root.js";
 import { unsafeWriteTarget } from "../utils/path-jail.js";
 import { availableVoyageKey } from "../utils/voyage-key.js";
+import { trackedAmong } from "../utils/state-hygiene.js";
 
 type WriteMode = "write" | "append" | "skip-if-marked";
 
@@ -155,7 +160,8 @@ function planForAgent(agent: DetectedAgent): FileAction[] {
                     // fail-open when NREKI is not running). v4: its state file is never
                     // written through a link. Older enforcers on disk are upgraded; a
                     // current one is left alone. v5 previews native edits over local IPC.
-                    marker: "nreki-enforcer:v5",
+                    // v6 measures shell file dumps and defers to the user-level copy.
+                    marker: "nreki-enforcer:v6",
                     mode: "write",
                     executable: true,
                 },
@@ -264,9 +270,10 @@ const NREKI_OWNED_TARGETS: Array<{ rel: string; marker: string }> = [
  * text after the block and leaving the begin sentinel), never matched the
  * current AGENTS.md header, and left the Claude skill behind.
  */
-export function removeInstructions(cwd: string, dryRun = false): InitResult["actions"] {
+export function removeInstructions(cwd: string, dryRun = false, only?: (rel: string) => boolean): InitResult["actions"] {
     const actions: InitResult["actions"] = [];
     for (const target of USER_OWNED_TARGETS) {
+        if (only && !only(target.rel)) continue;
         const abs = path.join(cwd, target.rel);
         if (!fs.existsSync(abs)) continue;
         const unsafe = unsafeWriteTarget(cwd, target.rel);
@@ -286,6 +293,7 @@ export function removeInstructions(cwd: string, dryRun = false): InitResult["act
         actions.push({ path: target.rel, op: "removed", note: rest === "" ? "file deleted (it only held NREKI's block)" : "NREKI block removed; your content kept" });
     }
     for (const target of NREKI_OWNED_TARGETS) {
+        if (only && !only(target.rel)) continue;
         const abs = path.join(cwd, target.rel);
         if (!fs.existsSync(abs)) continue;
         const unsafe = unsafeWriteTarget(cwd, target.rel);
@@ -318,8 +326,31 @@ function applyFileAction(
     if (exists) {
         const current = fs.readFileSync(abs, "utf-8");
         const hasMarker = current.includes(action.marker);
+        // A hook written by a newer NREKI is never downgraded by an older `init` (the server's upgrade does the same).
+        const mine = hookVersion(current);
+        const theirs = hookVersion(payload);
+        if (!userOwned && !force && mine !== null && theirs !== null && mine > theirs) {
+            return { path: action.targetRel, op: "skipped", note: `a newer NREKI hook (v${mine}) is installed` };
+        }
 
         if (hasMarker && !force) {
+            // NREKI's own text (its sentinel block, or a file it owns) is brought up
+            // to date; without --force an upgrade used to keep the old instructions.
+            if (userOwned) {
+                const existing = sentinelBlockOf(current);
+                const replaced = existing !== null && !sameText(existing, payload)
+                    ? replaceNrekiBlock(current, action.marker, payload) : null;
+                if (replaced !== null) {
+                    if (!dryRun) fs.writeFileSync(abs, replaced, "utf-8");
+                    return { path: action.targetRel, op: "rewritten", note: "NREKI block updated to this version; your content kept" };
+                }
+            } else if (!sameText(current, payload)) {
+                if (!dryRun) {
+                    fs.writeFileSync(abs, payload, "utf-8");
+                    if (action.executable) chmodExec(abs);
+                }
+                return { path: action.targetRel, op: "rewritten", note: "updated to this version" };
+            }
             return { path: action.targetRel, op: "skipped", note: "NREKI block already present (use --force to rewrite)" };
         }
 
@@ -404,15 +435,18 @@ function mergeClaudeSettings(cwd: string, dryRun: boolean): InitResult["actions"
     if (!settings.hooks) settings.hooks = {};
     if (!settings.hooks.PreToolUse) settings.hooks.PreToolUse = [];
 
-    const toolsToBlock = ["Read", "ReadFile", "View", "ViewFile", "Write", "WriteFile", "Edit", "EditFile", "MultiEdit", "Replace"];
+    // Bash/PowerShell: the hook measures only plain whole-file dumps (`cat big.ts`) and lets the rest pass.
+    const toolsToBlock = [...CLAUDE_HOOK_TOOLS];
+    const command = "node .claude/hooks/nreki-enforcer.mjs";
     let added = 0;
     for (const tool of toolsToBlock) {
-        const exists = settings.hooks.PreToolUse.some(h => h.matcher === tool);
-        if (!exists) {
-            settings.hooks.PreToolUse.push({
-                matcher: tool,
-                hooks: [{ type: "command", command: "node .claude/hooks/nreki-enforcer.mjs" }],
-            });
+        const entry = settings.hooks.PreToolUse.find(h => h.matcher === tool);
+        if (!entry) {
+            settings.hooks.PreToolUse.push({ matcher: tool, hooks: [{ type: "command", command }] });
+            added++;
+        } else if (Array.isArray(entry.hooks) && !entry.hooks.some(isNrekiHookCommand)) {
+            // The user's own hook for this tool (a Bash guard, say) keeps running beside NREKI's.
+            entry.hooks.push({ type: "command", command });
             added++;
         }
     }
@@ -426,6 +460,137 @@ function mergeClaudeSettings(cwd: string, dryRun: boolean): InitResult["actions"
         fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), "utf-8");
     }
     return { path: targetRel, op: "merged", note: `added ${added} PreToolUse matcher(s)` };
+}
+
+const isPlainObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
+const isNrekiHookCommand = (h: unknown): boolean =>
+    isPlainObject(h) && typeof h.command === "string" && h.command.includes("nreki-enforcer.mjs");
+
+/** True when `settingsAbs` runs NREKI's hook for each of `tools`. */
+function settingsRunNrekiHook(settingsAbs: string, tools: readonly string[]): boolean {
+    let parsed: unknown;
+    try { parsed = JSON.parse(fs.readFileSync(settingsAbs, "utf-8").replace(/^﻿/, "")); } catch { return false; }
+    const pre = isPlainObject(parsed) && isPlainObject(parsed.hooks) ? parsed.hooks.PreToolUse : undefined;
+    if (!Array.isArray(pre)) return false;
+    return tools.every(tool => pre.some(e => isPlainObject(e) && e.matcher === tool && Array.isArray(e.hooks) && e.hooks.some(isNrekiHookCommand)));
+}
+
+/**
+ * Remove NREKI's hook commands from a Claude settings file (`rel`), keeping
+ * every other hook, also one that shares NREKI's matcher entry; a file left
+ * empty is deleted. `references`: the file still runs nreki-enforcer.mjs (also
+ * true when it cannot be parsed: then nothing may delete the hook file).
+ */
+export function stripNrekiHookCommands(cwd: string, rel: string, dryRun: boolean, why: string):
+    { action: InitResult["actions"][number] | null; references: boolean } {
+    const abs = path.join(cwd, rel);
+    if (!fs.existsSync(abs)) return { action: null, references: false };
+    const unsafe = unsafeWriteTarget(cwd, rel);
+    if (unsafe) return { action: { path: rel, op: "skipped", note: `${unsafe}: not touched` }, references: true };
+    const raw = fs.readFileSync(abs, "utf-8");
+    let parsed: unknown = null;
+    try { parsed = JSON.parse(raw.replace(/^﻿/, "")); } catch { parsed = null; }
+    if (!isPlainObject(parsed)) {
+        return { action: { path: rel, op: "skipped", note: "not a JSON object: not touched" }, references: raw.includes("nreki-enforcer.mjs") };
+    }
+    const hooks = isPlainObject(parsed.hooks) ? parsed.hooks : null;
+    const pre = hooks && Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse : null;
+    let removed = 0;
+    if (hooks && pre) {
+        const kept: unknown[] = [];
+        for (const entry of pre) {
+            if (!isPlainObject(entry) || !Array.isArray(entry.hooks)) { kept.push(entry); continue; }
+            const others = entry.hooks.filter(h => !isNrekiHookCommand(h));
+            removed += entry.hooks.length - others.length;
+            if (others.length > 0) kept.push({ ...entry, hooks: others });
+        }
+        if (removed > 0) {
+            if (kept.length > 0) hooks.PreToolUse = kept;
+            else delete hooks.PreToolUse;
+            if (Object.keys(hooks).length === 0) delete parsed.hooks;
+        }
+    }
+    const references = JSON.stringify(parsed).includes("nreki-enforcer.mjs");
+    if (removed === 0) return { action: null, references };
+    const empty = Object.keys(parsed).length === 0;
+    if (!dryRun) {
+        if (empty) fs.unlinkSync(abs);
+        else {
+            const eol = raw.includes("\r\n") ? "\r\n" : "\n";
+            fs.writeFileSync(abs, JSON.stringify(parsed, null, 2).replace(/\n/g, eol) + eol, "utf-8");
+        }
+    }
+    return {
+        action: { path: rel, op: "removed", note: `${removed} NREKI hook command(s) ${why}${empty ? "; file deleted (it only held them)" : "; your hooks kept"}` },
+        references,
+    };
+}
+
+/**
+ * The user-scope install replaces this project's Claude Code install. Kept
+ * side by side, the project's registration ran NREKI's hook a second time on
+ * every Read/Edit (a project `init`, then the user-scope one: measured on a real
+ * project, 2026-11-27), and its CLAUDE.md block and skill put the same
+ * instructions in every prompt twice. Only what NREKI wrote goes (its hook
+ * command, a stock hook file, its CLAUDE.md block, its skill), and only once the
+ * user-scope copy of each is in place; the user's own hooks and text stay.
+ */
+function migrateProjectClaudeInstall(cwd: string, home: string, dryRun: boolean, globalActions: McpAction[]): InitResult["actions"] {
+    const actions: InitResult["actions"] = [];
+    const moved = "now in the user-scope install (~/.claude): the project copy ran twice";
+    const globalOk = (label: string): boolean => {
+        const a = globalActions.find(x => x.path.replace(/\\/g, "/") === label);
+        if (!a) return false;
+        if (dryRun) return a.op !== "skipped" || /up to date|already/.test(a.note ?? "");
+        return true;
+    };
+
+    // Claude Code started with CLAUDE_CONFIG_DIR reads another folder than the
+    // ~/.claude this install wrote: there the project's copy is the only one.
+    const configDir = process.env.CLAUDE_CONFIG_DIR;
+    if (configDir && !sameDir(configDir, path.join(home, ".claude"))) {
+        return [{ path: ".claude", op: "skipped", note: "CLAUDE_CONFIG_DIR points Claude Code at another folder than ~/.claude: this project's install is kept" }];
+    }
+
+    // 1. NREKI's hook commands in .claude/settings.json and settings.local.json (the user's hooks stay).
+    const userHookAbs = path.join(home, ".claude", "hooks", "nreki-enforcer.mjs");
+    const userHooksReady = dryRun
+        ? globalOk("~/.claude/settings.json") && globalOk("~/.claude/hooks/nreki-enforcer.mjs")
+        : fs.existsSync(userHookAbs) && settingsRunNrekiHook(path.join(home, ".claude", "settings.json"), CLAUDE_HOOK_TOOLS);
+    let projectHookUnreferenced = userHooksReady;
+    if (userHooksReady) {
+        for (const rel of [path.join(".claude", "settings.json"), path.join(".claude", "settings.local.json")]) {
+            const { action, references } = stripNrekiHookCommands(cwd, rel, dryRun, moved);
+            if (action) actions.push(action);
+            if (references) projectHookUnreferenced = false;
+        }
+    }
+
+    // 2. The project's stock hook file, once nothing in the project runs it.
+    const hookRel = path.join(".claude", "hooks", "nreki-enforcer.mjs");
+    const hookAbs = path.join(cwd, hookRel);
+    if (projectHookUnreferenced && fs.existsSync(hookAbs) && !unsafeWriteTarget(cwd, hookRel)) {
+        const text = fs.readFileSync(hookAbs, "utf-8");
+        if (hookVersion(text) !== null || text.includes("/^(Write|Edit|Replace)(File)?$/i")) {
+            if (!dryRun) {
+                fs.unlinkSync(hookAbs);
+                removeEmptyDirs(cwd, path.dirname(hookAbs));
+            }
+            actions.push({ path: hookRel, op: "removed", note: `stock NREKI hook ${moved}` });
+        }
+    }
+
+    // 3. CLAUDE.md block and skill, once the user-scope copies exist.
+    const claudeMdReady = dryRun ? globalOk("~/.claude/CLAUDE.md")
+        : (() => { try { return fs.readFileSync(path.join(home, ".claude", "CLAUDE.md"), "utf-8").includes("# NREKI ACTIVE"); } catch { return false; } })();
+    const skillReady = dryRun ? globalOk("~/.claude/skills/nreki-optimizer/SKILL.md")
+        : fs.existsSync(path.join(home, ".claude", "skills", "nreki-optimizer", "SKILL.md"));
+    const only = (rel: string): boolean => (rel === "CLAUDE.md" && claudeMdReady)
+        || (rel === path.join(".claude", "skills", "nreki-optimizer", "SKILL.md") && skillReady);
+    for (const action of removeInstructions(cwd, dryRun, only)) {
+        actions.push(action.op === "removed" ? { ...action, note: `${action.note}; ${moved}` } : action);
+    }
+    return actions;
 }
 
 /**
@@ -455,13 +620,18 @@ export function runInit(opts: InitOptions = {}): InitResult {
         if (opts.mcp !== false) {
             for (const agent of agents) {
                 if (isGlobalAgent(agent)) {
-                    actions.push(...registerGlobalAgent(agent, {
+                    const globalActions = registerGlobalAgent(agent, {
                         home,
                         version,
                         voyage: opts.voyage,
                         force,
                         dryRun,
-                    }));
+                    });
+                    actions.push(...globalActions);
+                    // This folder's own Claude install would keep running beside the user-scope one.
+                    if (agent === "claude" && !isNonProjectLaunchDir(cwd, home)) {
+                        actions.push(...migrateProjectClaudeInstall(cwd, home, dryRun, globalActions));
+                    }
                 }
             }
             // If `cwd` had an older unapproved repo `.mcp.json` entry written by
@@ -475,6 +645,19 @@ export function runInit(opts: InitOptions = {}): InitResult {
                         op: "removed",
                         note: "migrated to ~/.claude.json (user scope — no per-project approval needed)",
                     });
+                }
+            }
+            // A team may share the project install through git: say so before the removal is committed.
+            if (!isNonProjectLaunchDir(cwd, home)) {
+                const removed = actions.filter(a => a.op === "removed" && !a.path.startsWith("~"))
+                    .map(a => a.path.replace(/\\/g, "/"));
+                const tracked = trackedAmong(cwd, removed);
+                if (tracked.length > 0) {
+                    notes.push(
+                        `${tracked.join(", ")} ${tracked.length === 1 ? "is" : "are"} tracked by git: committing ` +
+                        "the removal also removes NREKI from this repository for teammates without the user-scope install " +
+                        "(git checkout -- <file> restores one).",
+                    );
                 }
             }
         }

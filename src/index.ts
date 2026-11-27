@@ -46,6 +46,9 @@ import { NrekiKernel } from "./kernel/nreki-kernel.js";
 import { ChronosMemory } from "./chronos-memory.js";
 import { logger } from "./utils/logger.js";
 import { unsafeWriteTarget, writeStateFile } from "./utils/path-jail.js";
+import { onDiskCase } from "./utils/path-case.js";
+import { ensureGitExcludes, removeStaleTemps } from "./utils/state-hygiene.js";
+import { latencyTracker } from "./utils/latency-tracker.js";
 import { upgradeEnforcerHook } from "./init/hook-upgrade.js";
 import { detectMode as detectModePure } from "./detect-mode.js";
 import { startNativeEditServer, type NativeEditServer } from "./hooks/native-edit-ipc.js";
@@ -61,18 +64,6 @@ import {
     sameDir,
 } from "./project-root.js";
 
-// Patch 7 (v10.6.1): shape of .claude/settings.json. Kept loose on unknown
-// keys because Anthropic may add fields; the init command only reads/writes
-// the `hooks.PreToolUse` matcher list.
-interface ClaudeSettings {
-    hooks?: {
-        PreToolUse?: Array<{
-            matcher: string;
-            hooks: Array<{ type: string; command: string }>;
-        }>;
-    };
-    [key: string]: unknown;
-}
 
 // ─── Performance Mode Auto-Detection ────────────────────────────────
 
@@ -149,39 +140,25 @@ if (args[0] === "deinit") {
         return why === null;
     };
 
-    // 1. Clean settings.json — remove PreToolUse entries referencing nreki-enforcer
-    const claudeSettingsPath = path.join(cwd, ".claude", "settings.json");
-    if (fs.existsSync(claudeSettingsPath) && touchable(claudeSettingsPath)) {
-        try {
-            const raw = fs.readFileSync(claudeSettingsPath, "utf-8").replace(/^\uFEFF/, "");
-            const settings = JSON.parse(raw) as ClaudeSettings;
-
-            if (settings?.hooks?.PreToolUse && Array.isArray(settings.hooks.PreToolUse)) {
-                const originalLen = settings.hooks.PreToolUse.length;
-                settings.hooks.PreToolUse = settings.hooks.PreToolUse.filter((h) => {
-                    if (!h.hooks || !Array.isArray(h.hooks)) return true;
-                    return !h.hooks.some((cmd) =>
-                        typeof cmd.command === "string" && cmd.command.includes("nreki-enforcer.mjs")
-                    );
-                });
-
-                if (settings.hooks.PreToolUse.length !== originalLen) {
-                    if (settings.hooks.PreToolUse.length === 0) delete settings.hooks.PreToolUse;
-                    if (settings.hooks && Object.keys(settings.hooks).length === 0) delete settings.hooks;
-
-                    if (Object.keys(settings).length === 0) {
-                        // Only NREKI's hooks were in it (init creates it when absent).
-                        fs.unlinkSync(claudeSettingsPath);
-                        logger.info("Deleted .claude/settings.json (it only held NREKI's hooks)");
-                    } else {
-                        fs.writeFileSync(claudeSettingsPath, JSON.stringify(settings, null, 2), "utf-8");
-                        logger.info("Removed NREKI hooks from .claude/settings.json");
-                    }
+    // 1. Remove NREKI's hook commands from .claude/settings.json and
+    //    settings.local.json. Only NREKI's command goes: a hook of the user's
+    //    that shares its matcher entry (a Bash guard, say) stays. The whole
+    //    entry used to go, the user's hook with it (fixed for --global in 12.5.1).
+    {
+        const { stripNrekiHookCommands } = await import("./init/init-runner.js");
+        for (const rel of [path.join(".claude", "settings.json"), path.join(".claude", "settings.local.json")]) {
+            try {
+                const { action } = stripNrekiHookCommands(cwd, rel, false, "removed");
+                if (!action) continue;
+                if (action.op === "removed") {
+                    logger.info(`${rel}: ${action.note}`);
                     modified = true;
+                } else {
+                    logger.warn(`${rel}: ${action.note}`);
                 }
+            } catch (err) {
+                logger.error(`Failed to clean ${rel}: ${(err as Error).message}`);
             }
-        } catch (err) {
-            logger.error(`Failed to clean settings.json: ${(err as Error).message}`);
         }
     }
 
@@ -430,14 +407,19 @@ let switchChain: Promise<void> = Promise.resolve();
 let rootsSync: Promise<void> | null = null;
 
 async function buildWorkspaceRuntime(targetDir: string, source: WorkspaceSource): Promise<WorkspaceRuntime> {
-    const root = path.resolve(targetDir);
+    // VS Code starts servers in d:\p and terminals in D:\p: one spelling for the
+    // index, the session marker and every path NREKI prints (utils/path-case.ts).
+    const root = onDiskCase(targetDir);
     if (path.resolve(process.cwd()) !== root) process.chdir(root);
 
     const engine = new NrekiEngine({
         dbPath: path.join(root, ".nreki.db"),
         watchPaths: [root],
     });
-    engine.setMetadata("nreki_session_start", new Date().toISOString());
+    // The session starts with this engine (engine.getSessionStart()). The old
+    // setMetadata("nreki_session_start") here ran before the DB was open: a no-op.
+    // A new workspace is a new session for status/report as well.
+    latencyTracker.reset();
 
     const monitor = new TokenMonitor();
     const sandbox = new AstSandbox();
@@ -551,6 +533,15 @@ async function buildWorkspaceRuntime(targetDir: string, source: WorkspaceSource)
             } catch {
                 try { nativeEdits?.close(); } catch { /* already closed */ }
             }
+
+            // ─── STATE HYGIENE: abandoned temporaries; keep .nreki.db and .nreki/ out of git ───
+            try {
+                const stale = removeStaleTemps(root);
+                if (stale > 0) logger.info(`Removed ${stale} abandoned NREKI temporary file(s).`);
+                if (ensureGitExcludes(root) === "added") {
+                    logger.info("Listed .nreki.db and .nreki/ in .git/info/exclude (this clone only; .gitignore untouched).");
+                }
+            } catch { /* never block boot */ }
 
             // ─── AUTO-PATCH SECURITY HOOK (v10.x) ───
             try {
@@ -744,7 +735,7 @@ server.registerTool(
             "Find code. context: query = the task; returns the code it names (symbols verbatim, other mentions, importers) in one call. " +
             "fast_grep: exact text -> file:line [symbol]. search: concept search. definition/references: by symbol. outline: symbols of path. " +
             "type_shape: resolved TS type. prepare_refactor: occurrences to rename. map: repo overview (large). " +
-            "orphan_oracle: unreachable files. type_graph: code using type_name. Also: token_budget (context), depth, kind, project_root.",
+            "orphan_oracle: unreachable files. type_graph: code using type_name. Also: token_budget (context), ignore_case (fast_grep), depth, kind, project_root.",
         inputSchema: z.object({
             action: z.enum(["context", "search", "definition", "references", "outline", "map", "prepare_refactor", "orphan_oracle", "type_shape", "fast_grep", "type_graph"]),
             query: z.string().optional(),
@@ -764,6 +755,7 @@ server.registerTool(
             refresh: optBool(a.refresh), auto_context: optBool(a.auto_context), depth: optStr(a.depth),
             type_name: optStr(a.type_name), walk_depth: optNum(a.walk_depth), direction: optStr(a.direction),
             max_nodes: optNum(a.max_nodes), token_budget: optNum(a.token_budget),
+            ignore_case: optBool(a.ignore_case),
         };
         return wrapWithCircuitBreaker(
             activeDeps.circuitBreaker,

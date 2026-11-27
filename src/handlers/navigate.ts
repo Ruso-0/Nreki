@@ -28,6 +28,7 @@ import { runDefectRadar } from "../utils/defect-radar.js";
 import { engramHash, isImmortalEngram, placeEngrams } from "../utils/engram-identity.js";
 import { isSecondaryPath } from "../utils/file-filter.js";
 import { splitQualifiedName } from "../utils/qualified-name.js";
+import { declaredEntries, isConventionalEntry } from "../utils/entry-points.js";
 import { ensureKernelBooted } from "./code/kernel-bridge.js";
 
 /** Default cap on fast_grep output lines (~4k tokens); `limit` can raise it. */
@@ -838,16 +839,10 @@ export async function handleOrphanOracle(
     const { map } = await engine.getRepoMap();
     const graph = await engine.getDependencyGraph();
 
-    const ROOT_PATTERNS = [
-        /^(index|main|app|setup|server|cli|vite-env)\./i,
-        /^(next|vite|webpack|rollup|jest|vitest|tailwind|eslint|babel|playwright|cypress)\.config\./i,
-        /[/\\](pages|app|api|routes|bin|scripts|test|__tests__|tests|e2e)[/\\]/i,
-        /\.(test|spec|cy)\./i,
-        /^(middleware|instrumentation)\./i,
-        /\.(stories|story)\./i,
-        /[/\\](migrations?|seeds?|fixtures)[/\\]/i,
-        /^(sw|service-worker)\./i,
-    ];
+    // Roots: conventional entry names/folders (matched on the file NAME: the old
+    // patterns ran on the whole path, so src/main.tsx and src/App.tsx were never
+    // roots) plus what HTML pages and package.json declare (utils/entry-points.ts).
+    const declared = declaredEntries(engine.getProjectRoot(), map.entries.map(e => e.filePath));
 
     const reachable = new Set<string>();
     const roots: string[] = [];
@@ -868,8 +863,7 @@ export async function handleOrphanOracle(
     // 1. Identify structural roots
     for (const entry of map.entries) {
         const file = entry.filePath;
-        const base = path.basename(file);
-        if (ROOT_PATTERNS.some(p => p.test(file)) || base.endsWith(".d.ts")) {
+        if (isConventionalEntry(file) || declared.has(file)) {
             roots.push(file);
             reachable.add(file);
         }
@@ -914,10 +908,15 @@ export async function handleOrphanOracle(
     }
 
     orphanFiles.sort((a, b) => b.lines - a.lines);
-    const formatted = orphanFiles.map(df =>
-        `- \`${df.file}\` (${df.lines} lines)\n  *Exports:* ` +
-        `${df.exports.slice(0, 4).join(", ")}${df.exports.length > 4 ? "..." : ""}`
-    );
+    // A candidate that is imported is only as dead as its importers: say who they are.
+    const formatted = orphanFiles.map(df => {
+        const importers = [...(graph.importedBy.get(df.file) ?? [])];
+        const via = importers.length > 0
+            ? `; imported only by unreachable ${importers.slice(0, 2).map(i => `\`${i}\``).join(", ")}${importers.length > 2 ? ` +${importers.length - 2}` : ""}`
+            : "";
+        return `- \`${df.file}\` (${df.lines} lines${via})\n  *Exports:* ` +
+            `${df.exports.slice(0, 4).join(", ")}${df.exports.length > 4 ? "..." : ""}`;
+    });
 
     return {
         content: [{
@@ -1029,13 +1028,33 @@ export async function handleFastGrep(
     // 10-20k tokens. Hits past the cap are summarized per file instead. An
     // explicit `limit` raises the cap for agents that really want every line.
     const maxLines = Math.max(FAST_GREP_MAX_LINES, explicitLimit ?? 0);
-    const chunks = await engine.fastGrep(query, limit);
+    // Exact case first. With no exact hit, any case: "LIMPIEZA" found nothing in
+    // a site that says "Limpieza", and the agent had to guess "impieza" (2026-11-27).
+    let ignoreCase = params.ignore_case === true;
+    let chunks = await engine.fastGrep(query, limit, { ignoreCase });
+    let caseNote = "";
+    if (chunks.length === 0 && !ignoreCase && query.toLowerCase() !== query.toUpperCase()) {
+        chunks = await engine.fastGrep(query, limit, { ignoreCase: true });
+        if (chunks.length > 0) {
+            ignoreCase = true;
+            caseNote = "No exact-case match; these match ignoring case.\n";
+        }
+    }
 
     if (chunks.length === 0) {
+        const tried = ignoreCase || query.toLowerCase() !== query.toUpperCase() ? " (in any case)" : "";
         return {
-            content: [{ type: "text" as const, text: `No matches found for exact substring: "${query}".` }],
+            content: [{ type: "text" as const, text: `No matches found for substring: "${query}"${tried}.` }],
         };
     }
+    const anyCase = ignoreCase ? new RegExp(escapeRegExp(query), "gi") : null;
+    /** Next match of the query in `raw` from `from`: its offset (-1 = none) and length. */
+    const nextMatch = (raw: string, from: number): { at: number; len: number } => {
+        if (!anyCase) return { at: raw.indexOf(query, from), len: query.length };
+        anyCase.lastIndex = from;
+        const m = anyCase.exec(raw);
+        return m ? { at: m.index, len: Math.max(1, m[0].length) } : { at: -1, len: 0 };
+    };
 
     const root = engine.getProjectRoot();
     const byFile = new Map<string, typeof chunks>();
@@ -1045,7 +1064,7 @@ export async function handleFastGrep(
         byFile.set(c.path, arr);
     }
 
-    const lines = [`## Semantic Fast Grep: "${query}"\n`];
+    const lines = [`## Semantic Fast Grep: "${query}"${ignoreCase ? " (any case)" : ""}\n${caseNote}`];
     let matchCount = 0;
     let shownCount = 0;
     const overflow: Array<{ relPath: string; count: number }> = [];
@@ -1082,7 +1101,8 @@ export async function handleFastGrep(
 
         for (const chunk of sortedChunks) {
             const symName = chunk.symbol_name || "<top-level>";
-            let scanPos = chunk.raw_code.indexOf(query);
+            let match = nextMatch(chunk.raw_code, 0);
+            let scanPos = match.at;
             if (scanPos === -1) continue;
 
             let currentLineOffset = 0;
@@ -1117,7 +1137,8 @@ export async function handleFastGrep(
                     }
                 }
 
-                scanPos = chunk.raw_code.indexOf(query, scanPos + query.length);
+                match = nextMatch(chunk.raw_code, scanPos + match.len);
+                scanPos = match.at;
             }
         }
 

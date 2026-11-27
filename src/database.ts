@@ -24,6 +24,37 @@ import { quarantineFile, signState, verifyState } from "./utils/trust.js";
 // ─── Motores de Búsqueda (Segregación de Dominio) ───
 import { KeywordIndex } from "./search/keyword-index.js";
 
+/**
+ * Rename `tmp` over `target`. Windows refuses (EPERM/EBUSY/EACCES) while another
+ * process has `target` open, e.g. a virus scan of the file just written: retried
+ * for up to ~100 ms. On failure the temporary is deleted before the error is
+ * rethrown; a 1.5 MB `.nreki.db.<hex>.tmp` once stayed in a project root for days.
+ */
+function renameOverOrDiscard(tmp: string, target: string): void {
+    for (let attempt = 0; ; attempt++) {
+        try {
+            fs.renameSync(tmp, target);
+            return;
+        } catch (err) {
+            const code = (err as NodeJS.ErrnoException).code;
+            const transient = process.platform === "win32" && (code === "EPERM" || code === "EBUSY" || code === "EACCES");
+            if (transient && attempt < 5) {
+                Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+                continue;
+            }
+            try { fs.unlinkSync(tmp); } catch { /* already gone */ }
+            throw err;
+        }
+    }
+}
+
+/** An ISO time ("…T…Z") in the text form SQLite's datetime('now') writes ("YYYY-MM-DD HH:MM:SS", UTC). */
+export function toSqliteUtc(iso: string): string {
+    if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(iso)) return iso; // already SQLite's form (Date.parse would read it as local time)
+    const t = Date.parse(iso);
+    return Number.isNaN(t) ? iso : new Date(t).toISOString().slice(0, 19).replace("T", " ");
+}
+
 // ─── Types ───────────────────────────────────────────────────────────
 
 export interface FileRecord {
@@ -816,7 +847,7 @@ export class NrekiDB {
         // `wx`: never through a link planted at the temporary's name. The rename
         // replaces a link at .nreki.db itself; it does not follow it.
         fs.writeFileSync(tmpDb, buffer, { flag: "wx" });
-        fs.renameSync(tmpDb, this.dbPath);
+        renameOverOrDiscard(tmpDb, this.dbPath);
         this.diskStamp = this.stampOnDisk();
         this.dirtyEngrams.clear();
         this.memoryKeysDirty.clear();
@@ -848,6 +879,19 @@ export class NrekiDB {
         const stmt = this.db.prepare("SELECT path FROM files");
         const paths: string[] = [];
         try {
+            while (stmt.step()) paths.push(String(stmt.get()[0]));
+        } finally {
+            stmt.free();
+        }
+        return paths;
+    }
+
+    /** Rows of the same file under another spelling (ASCII case; case-insensitive file systems only). */
+    pathsSpelledOtherwise(filePath: string): string[] {
+        const stmt = this.db.prepare("SELECT path FROM files WHERE lower(path) = lower(?) AND path != ?");
+        const paths: string[] = [];
+        try {
+            stmt.bind([filePath, filePath]);
             while (stmt.step()) paths.push(String(stmt.get()[0]));
         } finally {
             stmt.free();
@@ -1344,7 +1388,11 @@ export class NrekiDB {
         tool_calls: number;
     } {
         const whereClause = since ? "WHERE timestamp >= ?" : "";
-        const params = since ? [since] : [];
+        // Rows are stamped by SQLite's datetime('now') ("2026-11-27 08:15:30", UTC)
+        // and session starts are ISO strings ("2026-11-27T08:15:00.000Z"). As text
+        // " " < "T", so every row of the session's own UTC day was left out: the
+        // session total read 0 and the pressure valve never moved.
+        const params = since ? [toSqliteUtc(since)] : [];
 
         const stmt = this.db.prepare(
             `SELECT

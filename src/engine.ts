@@ -24,6 +24,7 @@ import { AdvancedCompressor, type CompressionLevel, type AdvancedCompressionResu
 import { shouldProcess, isSecondaryPath } from "./utils/file-filter.js";
 import { readSource } from "./utils/read-source.js";
 import { safePath } from "./utils/path-jail.js";
+import { caseInsensitiveFs, onDiskCase, onDiskCaseUnder } from "./utils/path-case.js";
 import { getOrGenerateRepoMap, type RepoMap, type DependencyGraph } from "./repo-map.js";
 import { logger } from "./utils/logger.js";
 import { FastGrepRAMCache } from "./search/fastgrep-cache.js";
@@ -179,6 +180,7 @@ export class NrekiEngine {
     private config: Required<EngineConfig>;
     private indexingQueue = new Set<string>();
     private usageBuffer: Array<[string, number, number, number]> = [];
+    private readonly sessionStartedAt = new Date().toISOString();
     private usageFlushTimer: NodeJS.Timeout | null = null;
     private static readonly USAGE_BATCH_SIZE = 50;
     private static readonly USAGE_FLUSH_INTERVAL_MS = 2000;
@@ -220,7 +222,10 @@ export class NrekiEngine {
     constructor(config: EngineConfig = {}) {
         this.config = {
             dbPath: config.dbPath ?? ".nreki.db",
-            watchPaths: config.watchPaths ?? ["./src"],
+            // An absolute root is keyed as spelled on disk: started once as d:\p
+            // (VS Code) and once as D:\p (a terminal), the same .nreki.db held
+            // every file twice (utils/path-case.ts).
+            watchPaths: (config.watchPaths ?? ["./src"]).map(w => (path.isAbsolute(w) ? onDiskCase(w) : w)),
             extensions: config.extensions ?? DEFAULT_EXTENSIONS,
             ignorePaths: config.ignorePaths ?? DEFAULT_IGNORE,
             wasmDir: config.wasmDir ?? "",
@@ -327,12 +332,22 @@ export class NrekiEngine {
 
     async indexFile(filePath: string): Promise<ParseResult | null> {
         await this.initialize();
-        const result = await this.indexer.indexFile(filePath);
+        // One row per file. On Windows a case-only rename (limpieza.ts →
+        // Limpieza.ts) reaches the watcher under both spellings, and each
+        // became a row: the old one froze with stale text for the session.
+        const file = path.isAbsolute(filePath) ? onDiskCaseUnder(this.getProjectRoot(), filePath) : filePath;
+        if (caseInsensitiveFs()) {
+            for (const twin of this.db.pathsSpelledOtherwise(file)) {
+                this.db.clearChunks(twin);
+                this.fgCache.tombstoneByPath(twin);
+            }
+        }
+        const result = await this.indexer.indexFile(file);
         // Incremental fgCache update: tombstone old slots of
         // this path, append fresh chunks. Avoids O(N) full
         // repopulate per file.
-        this.fgCache.tombstoneByPath(filePath);
-        const rows = this.db.exportChunksByPath(filePath);
+        this.fgCache.tombstoneByPath(file);
+        const rows = this.db.exportChunksByPath(file);
         this.fgCache.appendChunks(rows);
         return result;
     }
@@ -641,7 +656,9 @@ export class NrekiEngine {
     // ─── Cryptographic ticket API (internal-edit detection) ────────
 
     private normalizeInternalPath(filePath: string): string {
-        return path.resolve(this.getProjectRoot(), filePath).replace(/\\/g, "/");
+        const posix = path.resolve(this.getProjectRoot(), filePath).replace(/\\/g, "/");
+        // The watcher reports the on-disk spelling; a ticket filed as d:\… must still match D:\….
+        return caseInsensitiveFs() ? posix.toLowerCase() : posix;
     }
 
     public expectInternalEdit(filePath: string, content: string): void {
@@ -703,11 +720,17 @@ export class NrekiEngine {
         return this.db.getChunksBySymbolExact(symbolName, exact);
     }
 
-    /** Exact substring search via RAM-resident fgCache. */
-    async fastGrep(queryText: string, limit: number = 50): Promise<FastGrepHit[]> {
+    /**
+     * Exact substring search via RAM-resident fgCache. `ignoreCase` matches any
+     * case ("LIMPIEZA" finds "Limpieza"); it is slower, so callers ask for it.
+     */
+    async fastGrep(queryText: string, limit: number = 50, opts: { ignoreCase?: boolean } = {}): Promise<FastGrepHit[]> {
         await this.ensureIndexed();
         if (this.fgCache.size === 0) return [];
 
+        const anyCase = opts.ignoreCase === true
+            ? new RegExp(queryText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i")
+            : null;
         const cache = this.fgCache;
         const results: FastGrepHit[] = [];
         const N = cache.size;
@@ -733,7 +756,7 @@ export class NrekiEngine {
                 if (isSecondary(cache.paths[i]) !== wantSecondary) continue;
 
                 // V8 SIMD memchr fast path.
-                if (raw.indexOf(queryText) !== -1) {
+                if (anyCase ? anyCase.test(raw) : raw.indexOf(queryText) !== -1) {
                     results.push({
                         path: cache.paths[i],
                         raw_code: raw,
@@ -952,9 +975,30 @@ export class NrekiEngine {
         }
     }
 
-    /** Get aggregated usage statistics. */
+    /**
+     * Aggregated usage, rows still in the write buffer included (they are this
+     * session's: `report` used to miss up to 49 calls or 2 s of them).
+     */
     getUsageStats(since?: string) {
-        return this.db.getUsageStats(since);
+        const stats = this.db.getUsageStats(since);
+        for (const [, input, output, saved] of this.usageBuffer) {
+            stats.total_input += input;
+            stats.total_output += output;
+            stats.total_saved += saved;
+            stats.tool_calls++;
+        }
+        return stats;
+    }
+
+    /**
+     * When this engine (one workspace session) started, as an ISO time. Kept in
+     * memory: the old `nreki_session_start` metadata was written before the DB
+     * was open, so it never existed, and every "this session" total (pressure
+     * valve, report) summed the whole history of `.nreki.db`; past 150k
+     * tokens of history the heartbeat stayed off for good.
+     */
+    getSessionStart(): string {
+        return this.sessionStartedAt;
     }
 
     // ─── Cleanup ──────────────────────────────────────────────────

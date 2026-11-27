@@ -658,6 +658,95 @@ function relOf(root: string, p: string): string {
     return path.relative(root, p).replace(/\\/g, "/");
 }
 
+/** Lines listed per literal term, and literal terms per task. */
+const LITERAL_LINES_MAX = 40;
+const LITERAL_TERMS_MAX = 3;
+const RENAME_VERB = new RegExp(
+    "(?:^|[^\\p{L}])(?:rename|replace|change|cambiar|cambia|cambie|cambiá|reemplazar|reemplaza|reemplace|" +
+    "renombrar|renombra|renombre|sustituir|sustituye|sustituya)\\s+" +
+    "(?:(?:all|every|the|of|word|text|label|occurrences|mentions|instances|todas?|todos?|el|la|los|las|de|del|" +
+    "palabra|texto|t[eé]rmino|nombre|apariciones|ocurrencias|menciones)\\s+){0,4}" +
+    "[\"“«']?([\\p{L}\\p{N}_$][\\p{L}\\p{N}_$-]{2,39})",
+    "giu",
+);
+
+/**
+ * Text the task asks to change wherever it appears: a quoted string
+ * ("…", “…”, «…», '…'), or the capitalized object of rename/replace/cambiar/
+ * reemplazar/renombrar ("cambiar Limpieza en toda la página" → "Limpieza").
+ * A lower-case object ("change the label") is a plain word, not a literal.
+ */
+export function extractLiteralTerms(task: string): string[] {
+    const terms: string[] = [];
+    const add = (t: string) => {
+        const term = t.trim();
+        if (term.length < 3 || term.length > 60) return;
+        if (GENERIC_WORDS.has(term.toLowerCase()) || TASK_WORDS.has(term.toLowerCase())) return;
+        if (!terms.some(x => x.toLowerCase() === term.toLowerCase())) terms.push(term);
+    };
+    // A quoted value in a bug report ('"status" is "pending" instead of "paid"')
+    // names data, not text to change: quotes count when the task asks for a
+    // text change, or when the text is distinctive (a capital, a digit, a
+    // space, a non-ASCII letter: "Servicios Generales", "LIMPIEZA").
+    RENAME_VERB.lastIndex = 0;
+    const asksForTextChange = RENAME_VERB.test(task) || TEXT_CHANGE.test(task);
+    RENAME_VERB.lastIndex = 0;
+    const distinctive = (t: string) => /[\p{Lu}\d\s]|[^\x20-\x7e]/u.test(t);
+    const quoted = (t: string) => { if (asksForTextChange || distinctive(t)) add(t); };
+    for (const m of task.matchAll(/["“«]([^"”»\n]{3,60})["”»]/g)) quoted(m[1]);
+    for (const m of task.matchAll(/(?<![\p{L}\p{N}])'([^'\n]{3,60})'(?![\p{L}\p{N}])/gu)) quoted(m[1]);
+    for (const m of task.matchAll(RENAME_VERB)) if (/\p{Lu}|\d/u.test(m[1])) add(m[1]);
+    return terms.slice(0, LITERAL_TERMS_MAX);
+}
+
+/** "should say …", "debería decir …": a text change without a rename verb. */
+const TEXT_CHANGE = /\b(?:should (?:say|read|show)|must (?:say|read|show))\b|deber[ií]a (?:decir|mostrar)|debe (?:decir|mostrar)/iu;
+
+/**
+ * Every line of the project holding `term`, any case, grouped by file:
+ * `"Limpieza" (any case): 23 lines in 9 files — src/a.tsx:L3,L40; …`. A task
+ * such as "cambiar Limpieza en toda la página" got one search symbol from
+ * context, and the agent needed fast_grep to find the 20+ lines (2026-11-27).
+ */
+async function literalMentions(
+    engine: NrekiEngine, root: string, term: string, inScope: (file: string) => boolean,
+): Promise<{ full: string; short: string } | null> {
+    const hits = await engine.fastGrep(term, 400, { ignoreCase: true });
+    const anyCase = new RegExp(escapeRegExp(term), "i");
+    const byFile = new Map<string, Set<number>>();
+    for (const h of hits) {
+        if (!inScope(h.path)) continue;
+        const rel = relOf(root, h.path);
+        const rows = h.raw_code.split("\n");
+        for (let i = 0; i < rows.length; i++) {
+            if (!anyCase.test(rows[i])) continue;
+            const lines = byFile.get(rel) ?? new Set<number>();
+            lines.add(h.start_line + i);
+            byFile.set(rel, lines);
+        }
+    }
+    if (byFile.size === 0) return null;
+    const files = [...byFile.entries()].sort((a, b) =>
+        Number(isSecondaryPath(a[0])) - Number(isSecondaryPath(b[0])) || a[0].localeCompare(b[0]));
+    const total = files.reduce((n, [, lines]) => n + lines.size, 0);
+    const shown: string[] = [];
+    let listed = 0;
+    for (const [rel, lines] of files) {
+        if (listed >= LITERAL_LINES_MAX) break;
+        const sorted = [...lines].sort((a, b) => a - b).slice(0, LITERAL_LINES_MAX - listed);
+        listed += sorted.length;
+        shown.push(`${rel}:${sorted.map(l => `L${l}`).join(",")}${sorted.length < lines.size ? ",…" : ""}`);
+    }
+    const more = listed < total
+        ? ` … (${total - listed} more: fast_grep query:"${term}" ignore_case:true lists every line)`
+        : "";
+    const head = `"${term}" (any case): ${total} line(s) in ${files.length} file(s)`;
+    return {
+        full: `${head} — ${shown.join("; ")}${more}`,
+        short: `${head}: fast_grep query:"${term}" ignore_case:true lists them`,
+    };
+}
+
 /** Prefer production code and files whose path the task mentions. */
 function definitionOrder(root: string, pathHints: string[]) {
     const score = (c: ChunkRecord): number => {
@@ -970,7 +1059,19 @@ export async function handleContext(params: NavigateParams, deps: RouterDependen
         }
     }
 
-    if (blocks.length === 0 && occurrences.length === 0) {
+    // Text the task asks to change wherever it appears: every line holding it, any
+    // case, within token_budget (over it, one line saying where to get the list).
+    const literals: string[] = [];
+    for (const term of extractLiteralTerms(task)) {
+        const mention = await literalMentions(engine, root, term, inScope);
+        if (!mention) continue;
+        const fullCost = estimateTokens(mention.full) + 1;
+        const line = used + fullCost <= budget || (blocks.length === 0 && literals.length === 0) ? mention.full : mention.short;
+        used += estimateTokens(line) + 1;
+        literals.push(line);
+    }
+
+    if (blocks.length === 0 && occurrences.length === 0 && literals.length === 0) {
         return {
             content: [{
                 type: "text" as const,
@@ -993,7 +1094,9 @@ export async function handleContext(params: NavigateParams, deps: RouterDependen
         ? "current and complete code; no further read is needed"
         : "current code; the ones marked with a line count or listed below were not shown whole";
     const wholeNote = wholeShown.size > 0 ? ` — a "whole file" block is the complete current file: no further read of it is needed` : "";
-    parts.push(conceptual && naming.size > 0
+    parts.push(nSymbols === 0
+        ? "context: no code block to show; where the text the task names appears:"
+        : conceptual && naming.size > 0
         ? `context (the symbols the task names, plus best search hits for the ${searched.length} of its ${issueCount} issues that name no code): ${nSymbols} block(s)${wholeNote}`
         : viaSearch || conceptual
             ? `context (no symbol named in the task; best search hits${issueCount > 1 ? `, each of its ${issueCount} issues searched` : ""}): ${nSymbols} block(s)${wholeNote}`
@@ -1003,6 +1106,7 @@ export async function handleContext(params: NavigateParams, deps: RouterDependen
     if (blocks.length > 0) parts.push("```\n" + blocks.join("\n\n") + "\n```");
     if (helpers.length > 0) parts.push("what that code imports (short definitions):\n```\n" + helpers.join("\n") + "\n```");
     if (occurrences.length > 0) parts.push(occurrences.join("\n"));
+    if (literals.length > 0) parts.push(literals.join("\n"));
     if (pointers.length > 0) parts.push(`over budget, not shown: ${pointers.join("; ")}`);
     // Say which issues have no evidence, instead of a package that reads as complete.
     if (unfound.length > 0) {

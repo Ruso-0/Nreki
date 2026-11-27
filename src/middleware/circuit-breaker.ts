@@ -13,6 +13,16 @@
 
 import { CircuitBreaker, containsError } from "../circuit-breaker.js";
 import type { McpToolResponse } from "../router.js";
+import { latencyTracker } from "../utils/latency-tracker.js";
+import { estimateTokens } from "../utils/token-estimator.js";
+
+/** Time and size of every tool call, for nreki_guard status (never throws). */
+function recordCall(toolAction: string, startedAt: number, response: McpToolResponse): void {
+    try {
+        const text = response.content.map(c => c.text ?? "").join("\n");
+        latencyTracker.record(toolAction, Math.round(performance.now() - startedAt), estimateTokens(text));
+    } catch { /* telemetry must never break a tool call */ }
+}
 
 /** Inactivity timeout for auto-reset (60 seconds). */
 const INACTIVITY_TIMEOUT_MS = 60_000;
@@ -156,8 +166,9 @@ export function wrapWithCircuitBreaker(
     symbolName?: string,
     chronos?: { recordTrip: (file: string, reason: string) => void },
 ): Promise<McpToolResponse> {
-    return (async () => {
-        const toolAction = `${toolName}:${action}`;
+    const toolAction = `${toolName}:${action}`;
+    const startedAt = performance.now();
+    return (async (): Promise<McpToolResponse> => {
         const now = Date.now();
 
         // AUDIT FIX: State per CB instance, not global singleton
@@ -240,7 +251,10 @@ export function wrapWithCircuitBreaker(
         }
 
         return response;
-    })();
+    })().then((response) => {
+        recordCall(toolAction, startedAt, response);
+        return response;
+    });
 }
 
 /**

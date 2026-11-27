@@ -17,6 +17,7 @@ import { readSource } from "../utils/read-source.js";
 import { validatePath } from "../utils/path-guard.js";
 import { addPin, removePin, listPins } from "../pin-memory.js";
 import { latencyTracker } from "../utils/latency-tracker.js";
+import { trackedNrekiState } from "../utils/state-hygiene.js";
 import { logger } from "../utils/logger.js";
 import { computeAudit, formatAuditReport } from "../audit.js";
 
@@ -114,10 +115,38 @@ export async function handleStatus(
     const { engine, monitor } = deps;
     await engine.initialize();
 
-    const report = monitor.generateReport();
+    // What NREKI itself measured. The agent's own token counter is not visible
+    // to an MCP server: the monitor reads ~/.claude/usage.jsonl, which Claude
+    // Code does not write, so it printed "Total Used: 0 tokens / API Calls: 0"
+    // and agents took that for NREKI's numbers (2026-11-27).
+    const burn = monitor.computeBurnRate();
     const prediction = monitor.predictExhaustion();
+    const calls = latencyTracker.getCallTotals();
+    const sinceUtc = new Date(calls.since).toISOString().slice(11, 16);
+    const header = [
+        "NREKI status",
+        calls.calls > 0
+            ? `  This session: ${calls.calls} NREKI call(s), ~${calls.tokens.toLocaleString("en-US")} tokens returned (since ${sinceUtc} UTC).`
+            : "  This session: no NREKI calls yet.",
+    ];
+    const report = burn.apiCalls > 0
+        ? `${header.join("\n")}\n${monitor.generateReport()}`
+        : `${header.join("\n")}\n  Agent token usage: not visible to NREKI (the agent does not share its counter).`;
 
     const stats = engine.getStats();
+    const root = engine.getProjectRoot();
+    const notes: string[] = [];
+    const tracked = trackedNrekiState(root);
+    if (tracked.length > 0) {
+        const shown = tracked.slice(0, 3).join(", ") + (tracked.length > 3 ? ` +${tracked.length - 3}` : "");
+        notes.push(
+            `  ⚠ git tracks NREKI's local state (${shown}). It is signed for this user only (other clones ` +
+            `quarantine it) and changes every session. Untrack it, keeping the files: git rm -r --cached .nreki.db .nreki`,
+        );
+    }
+    if (process.env.NREKI_NATIVE_PREFLIGHT !== "1") {
+        notes.push("  Native Edit/Write: not pre-validated (opt-in: NREKI_NATIVE_PREFLIGHT=1); batch_edit validates before writing.");
+    }
     const indexSection = [
         "",
         "Index Status:",
@@ -125,6 +154,7 @@ export async function handleStatus(
         `  Chunks: ${stats.totalChunks}`,
         `  Compression: ${(stats.compressionRatio * 100).toFixed(1)}%`,
         `  Watched: ${stats.watchedPaths.join(", ")}`,
+        ...notes,
     ].join("\n");
 
     const latencySection = [
@@ -141,7 +171,7 @@ export async function handleStatus(
             "DANGER ZONES (Heaviest unread files):",
             "Do NOT read these raw. Use nreki_code action:\"compress\".",
             ...heavyFiles.map(f =>
-                `  - ${path.relative(deps.engine.getProjectRoot(), f.path)} (~${f.estimated_tokens.toLocaleString()} tokens)`
+                `  - ${path.relative(root, f.path).replace(/\\/g, "/")} (~${f.estimated_tokens.toLocaleString()} tokens)`
             ),
         ].join("\n");
     }
@@ -186,7 +216,9 @@ export async function handleReport(
     const sessionReport = engine.getSessionReport();
     const burnRate = monitor.computeBurnRate();
     const prediction = monitor.predictExhaustion();
-    const usageStats = engine.getUsageStats();
+    // This session's rows only (buffered ones included): without `since` it summed every session the DB ever saw.
+    const usageStats = engine.getUsageStats(engine.getSessionStart?.());
+    const calls = latencyTracker.getCallTotals();
     const cbStats = circuitBreaker.getStats();
     const pins = listPins(deps.engine.getProjectRoot());
 
@@ -245,10 +277,18 @@ export async function handleReport(
         ) + "\n\n";
     }
 
+    const hostUsage = burnRate.apiCalls > 0
+        ? [
+            `Burn Rate: ${burnRate.tokensPerMinute.toLocaleString()} tok/min`,
+            `Trend: ${trendMsg}`,
+            `Prediction: ${prediction.message}`,
+        ]
+        : ["Agent token usage: not visible to NREKI (the agent does not share its counter)."];
     const report = [
         "NREKI - Session Report",
         "",
         `Session Duration: ${sessionReport.durationMinutes} min`,
+        `NREKI calls: ${calls.calls} (~${calls.tokens.toLocaleString("en-US")} tokens returned)`,
         `Total Tokens Saved: ${sessionReport.totalTokensSaved.toLocaleString()}`,
         `Total Processed: ${sessionReport.totalOriginalTokens.toLocaleString()}`,
         `Overall Compression: ${(sessionReport.overallRatio * 100).toFixed(1)}%`,
@@ -260,9 +300,7 @@ export async function handleReport(
         "Per-File-Type Breakdown:",
         fileTypeRows,
         "",
-        `Burn Rate: ${burnRate.tokensPerMinute.toLocaleString()} tok/min`,
-        `Trend: ${trendMsg}`,
-        `Prediction: ${prediction.message}`,
+        ...hostUsage,
         "",
         `Model Recommendation: ${modelRec}`,
     ].join("\n");

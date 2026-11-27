@@ -26,7 +26,9 @@ describe("safePath root casing", () => {
             const lowerDriveRoot = root.replace(/^[A-Z]:/, (drive) => drive.toLowerCase());
             const lowerDriveChild = child.replace(/^[A-Z]:/, (drive) => drive.toLowerCase());
 
-            expect(safePath(lowerDriveRoot, lowerDriveChild)).toBe(path.resolve(lowerDriveChild));
+            // Allowed, and spelled as on disk: VS Code's d:\ and a terminal's D:\ must
+            // key the same index row (utils/path-case.ts).
+            expect(safePath(lowerDriveRoot, lowerDriveChild)).toBe(path.resolve(child));
         } finally {
             fs.rmSync(root, { recursive: true, force: true });
         }

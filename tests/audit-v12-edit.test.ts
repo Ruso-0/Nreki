@@ -138,15 +138,27 @@ describe("edit pipeline regressions", () => {
     });
 
     it.runIf(isWin || process.platform === "darwin")(
-        "batch_edit rejects the same file referenced under two spellings (case-insensitive FS)", async () => {
+        "batch_edit never loses an edit when one file is named under two spellings (case-insensitive FS)", async () => {
             const dir = mkTmp("nreki-spell-");
-            fs.writeFileSync(path.join(dir, "Foo.ts"), "export function a() { return 1; }\nexport function b() { return 1; }\n");
+            const file = path.join(dir, "Foo.ts");
+            fs.writeFileSync(file, "export function a() { return 1; }\nexport function b() { return 1; }\n");
             const res = await batchSemanticEdit([
                 { path: "Foo.ts", symbol: "a", new_code: "export function a() { return 2; }" },
                 { path: "foo.ts", symbol: "b", new_code: "export function b() { return 2; }" },
             ], parser, sandbox, dir);
-            expect(res.success).toBe(false);
-            expect(res.error).toContain("two spellings");
+            const after = fs.readFileSync(file, "utf8");
+            if (isWin) {
+                // safePath spells both like the disk (utils/path-case.ts): one file, read and written once.
+                expect(res.success, res.error).toBe(true);
+            }
+            if (res.success) {
+                expect(after).toContain("function a() { return 2; }");
+                expect(after).toContain("function b() { return 2; }");
+            } else {
+                // Where the OS does not report the on-disk case, the inode guard still refuses.
+                expect(res.error).toContain("two spellings");
+                expect(after).toContain("function a() { return 1; }");
+            }
         });
 
     it("INT-07: edits keep the UTF-8 BOM", async () => {

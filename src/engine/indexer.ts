@@ -12,6 +12,7 @@ import type { NrekiDB } from "../database.js";
 import type { ASTParser, ParseResult } from "../parser.js";
 import { shouldProcess, SECONDARY_DIRS } from "../utils/file-filter.js";
 import { safePath } from "../utils/path-jail.js";
+import { caseInsensitiveFs, onDiskCase } from "../utils/path-case.js";
 import { qualifiedNames } from "../utils/engram-identity.js";
 import { readSource } from "../utils/read-source.js";
 import { logger } from "../utils/logger.js";
@@ -313,22 +314,24 @@ export class IndexPipeline {
         let errors = 0;
         let processedCount = 0;
 
-        const files = this.walkDirectory(dirPath);
-        const root = path.resolve(dirPath);
+        // Walk the on-disk spelling, so every row is keyed one way (utils/path-case.ts).
+        const walkRoot = path.isAbsolute(dirPath) ? onDiskCase(dirPath) : dirPath;
+        const root = path.resolve(walkRoot);
+        const files = this.walkDirectory(walkRoot);
         const watchRoots = this.config.watchPaths.map(w => path.resolve(w));
         const isInsideDir = (parent: string, candidate: string): boolean => {
             const rel = path.relative(parent, path.resolve(candidate));
             return rel === "" || (rel !== ".." && !rel.startsWith(".." + path.sep) && !path.isAbsolute(rel));
         };
-        const key = (file: string) => {
-            const absolute = path.resolve(file);
-            return process.platform === "win32" ? absolute.toLowerCase() : absolute;
-        };
-        const current = new Set(files.map(key));
+        // Exact spelling: a row for d:\p\a.ts next to the walked D:\p\a.ts is the
+        // same file indexed twice (a 12.3.0 DB held 186 rows for 93 files, and
+        // the stale twin kept serving renamed files and old text). It is cleared
+        // here and the walked spelling is re-indexed below.
+        const current = new Set(files.map(file => path.resolve(file)));
         for (const previous of this.db.getIndexedPaths()) {
             const insideTarget = isInsideDir(root, previous);
             const insideWatched = insideTarget || watchRoots.some(w => isInsideDir(w, previous));
-            if (!insideWatched || (insideTarget && !current.has(key(previous)))) {
+            if (!insideWatched || (insideTarget && !current.has(path.resolve(previous)))) {
                 this.db.clearChunks(previous);
             }
         }
@@ -357,8 +360,10 @@ export class IndexPipeline {
     private walkDirectory(dirPath: string): string[] {
         const files: string[] = [];
         const isIgnored = picomatch(this.config.ignorePaths);
-        // Explicitly indexed fallback languages remain managed across refreshes.
-        const known = new Set(this.db.getIndexedPaths().map(file => path.resolve(file)));
+        // Explicitly indexed fallback languages remain managed across refreshes,
+        // also when their row was keyed with another spelling of the root.
+        const fold = (file: string) => (caseInsensitiveFs() ? path.resolve(file).toLowerCase() : path.resolve(file));
+        const known = new Set(this.db.getIndexedPaths().map(fold));
 
         const walk = (dir: string) => {
             let entries: fs.Dirent[];
@@ -398,7 +403,7 @@ export class IndexPipeline {
                 // Voyage when enabled), bypassing the jail every read tool applies.
                 if (entry.isSymbolicLink() || entry.isFIFO() || entry.isSocket()) continue;
                 const ext = path.extname(entry.name).toLowerCase();
-                if (this.config.extensions.includes(ext) || known.has(path.resolve(fullPath))) files.push(fullPath);
+                if (this.config.extensions.includes(ext) || known.has(fold(fullPath))) files.push(fullPath);
             }
         };
 

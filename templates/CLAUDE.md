@@ -1,6 +1,7 @@
 # NREKI ACTIVE
 Every tool result stays in your context for the rest of the session, so ask for the smallest answer.
-Hook: a whole-file Read of a big code file (~6k+ tokens) is blocked once with its symbol list; re-Read only the lines you need (offset/limit) or repeat the Read.
+Hook: a whole-file Read or `cat` of a big code file (~6k+ tokens) is blocked once with its symbol list; read only the lines you need (offset/limit) or repeat the call.
+Deferred NREKI tools: load all three in one ToolSearch, `select:mcp__nreki__nreki_navigate,mcp__nreki__nreki_code,mcp__nreki__nreki_guard`.
 
 - Start: `nreki_navigate action:"context" query:"<the task, as given>"` returns the code the task names (symbols verbatim with line ranges, other mentions, importers) in one call. Often that is all you need to read before editing.
 - Find: `nreki_navigate action:"fast_grep"` (exact text, gives file:line + symbol) or `action:"search"` (concept). `map` is an overview, not a way to find code.

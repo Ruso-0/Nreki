@@ -9,6 +9,10 @@ import path from "path";
 import { quarantineFile, signState, verifyState } from "../utils/trust.js";
 import { memberName, splitQualifiedName } from "../utils/qualified-name.js";
 import { writeStateFile } from "../utils/path-jail.js";
+import { caseInsensitiveFs } from "../utils/path-case.js";
+
+/** One passport per file, whatever case its path was written in (utils/path-case.ts). */
+const passportKey = (filePath: string): string => (caseInsensitiveFs() ? filePath.toLowerCase() : filePath);
 
 /**
  * Patch 7 (v10.6.1): superset of params the enforcer inspects across
@@ -91,11 +95,11 @@ export class CognitiveEnforcer {
                 }
                 if (data.files) {
                     for (const [filePath, p] of Object.entries(data.files)) {
-                        this.passports.set(filePath, {
-                            outlined: !!p.outlined,
-                            rawRead: !!p.rawRead,
-                            focusedSymbols: new Set(p.focusedSymbols || [])
-                        });
+                        // State written before keys were case-folded can hold one file twice: merge.
+                        const pass = this.getPassport(filePath);
+                        pass.outlined ||= !!p.outlined;
+                        pass.rawRead ||= !!p.rawRead;
+                        for (const s of p.focusedSymbols || []) pass.focusedSymbols.add(s);
                     }
                 }
             }
@@ -122,10 +126,13 @@ export class CognitiveEnforcer {
     }
 
     private getPassport(filePath: string): FilePassport {
-        if (!this.passports.has(filePath)) {
-            this.passports.set(filePath, { outlined: false, rawRead: false, focusedSymbols: new Set() });
+        const key = passportKey(filePath);
+        let pass = this.passports.get(key);
+        if (!pass) {
+            pass = { outlined: false, rawRead: false, focusedSymbols: new Set() };
+            this.passports.set(key, pass);
         }
-        return this.passports.get(filePath)!;
+        return pass;
     }
 
     private countLines(filePath: string): number {

@@ -9,6 +9,7 @@
 import crypto from "crypto";
 import fs from "fs";
 import path from "path";
+import { onDiskCase, onDiskCaseUnder } from "./path-case.js";
 
 // ─── Sensitive File Blocklist ───────────────────────────────────────
 
@@ -47,6 +48,28 @@ const SENSITIVE_PATTERNS: RegExp[] = [
     /(?:^|[/\\])vault-token$/i,               // HashiCorp Vault token
     /(?:^|[/\\])\.terraform[/\\]/i,           // Terraform state (may contain secrets)
 ];
+
+/** The sensitive files that are refused because they run code (hooks, MCP servers, tasks), not for secrets. */
+const RUNS_CODE: RegExp[] = [
+    /(?:^|[/\\])\.git[/\\]hooks[/\\]/i,
+    /(?:^|[/\\])\.claude[/\\]hooks[/\\]/i,
+    /(?:^|[/\\])\.claude[/\\]settings.*?\.json$/i,
+    /(?:^|[/\\])\.mcp\.json$/i,
+    /(?:^|[/\\])\.(?:vscode|cursor|windsurf)[/\\](?:mcp|tasks|launch)\.json$/i,
+];
+
+/** onDiskCase of a workspace root, memoized: safePath runs once per file of an index walk. */
+const rootSpelling = new Map<string, string>();
+function canonicalRoot(root: string): string {
+    const key = path.resolve(root);
+    let canon = rootSpelling.get(key);
+    if (canon === undefined) {
+        canon = onDiskCase(key);
+        if (rootSpelling.size >= 32) rootSpelling.clear();
+        rootSpelling.set(key, canon);
+    }
+    return canon;
+}
 
 function normalizeForRootCheck(filePath: string): string {
     return process.platform === "win32" ? filePath.toLowerCase() : filePath;
@@ -144,8 +167,11 @@ export function safePath(workspaceRoot: string, inputPath: string): string {
     // NFC normalization: macOS uses NFD (decomposed), Linux uses NFC.
     // Without this, an attacker can bypass .env blocklist with NFD-encoded paths.
     const normalized = inputPath.normalize("NFC").replace(/\\/g, "/");
-    const resolved = path.resolve(workspaceRoot, normalized);
-    const resolvedRoot = path.resolve(workspaceRoot);
+    // One spelling per file (utils/path-case.ts): `d:\p\A.ts` and `D:\p\a.ts`
+    // are the same file on Windows, and callers key the index, read passports
+    // and edit tickets by the returned string. Only case changes, never a link.
+    const resolvedRoot = canonicalRoot(workspaceRoot);
+    const resolved = onDiskCaseUnder(resolvedRoot, path.resolve(workspaceRoot, normalized));
 
     if (!isInsideRoot(resolved, resolvedRoot)) {
         throw new Error(`Path traversal blocked: ${inputPath}`);
@@ -218,7 +244,13 @@ export function safePath(workspaceRoot: string, inputPath: string): string {
     }
 
     if (isSensitivePath(resolved) || isSensitivePath(realTarget)) {
-        throw new Error(`Access to sensitive file blocked: ${inputPath}`);
+        // Say why for agent/editor config: an agent took "sensitive" for a bug in
+        // NREKI when it refused .claude/hooks/ (2026-11-27). Still refused: these
+        // files run code, and NREKI never opens them for a model.
+        const runsCode = RUNS_CODE.some(re => re.test(resolved.replace(/\\/g, "/")) || re.test(realTarget.replace(/\\/g, "/")));
+        throw new Error(runsCode
+            ? `Access to sensitive file blocked: ${inputPath} (agent, editor or git configuration that runs code: NREKI never reads or writes it)`
+            : `Access to sensitive file blocked: ${inputPath}`);
     }
 
     return resolved;

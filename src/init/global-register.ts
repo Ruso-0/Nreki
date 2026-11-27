@@ -29,6 +29,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import type { DetectedAgent } from "./agent-detect.js";
 import { launchCommand, type McpAction, type McpHost } from "./mcp-register.js";
+import { hookVersion } from "./hook-upgrade.js";
 
 export type GlobalAgent = McpHost;
 
@@ -54,6 +55,16 @@ export interface GlobalRegisterOptions {
     /** Target platform (defaults to process.platform). */
     platform?: NodeJS.Platform;
 }
+
+/**
+ * Tools whose PreToolUse runs NREKI's enforcer hook. Bash and PowerShell (v6):
+ * the hook measures only a plain whole-file dump of a code file (`cat big.ts`,
+ * `Get-Content big.ts`) and lets every other command pass.
+ */
+export const CLAUDE_HOOK_TOOLS: readonly string[] = [
+    "Read", "ReadFile", "View", "ViewFile", "Write", "WriteFile", "Edit", "EditFile", "MultiEdit", "Replace",
+    "Bash", "PowerShell",
+];
 
 const BLOCK_BEGIN = "<!-- nreki:begin -->";
 const BLOCK_END = "<!-- nreki:end -->";
@@ -182,6 +193,19 @@ function wrapBlock(content: string): string {
     return `${BLOCK_BEGIN}\n${content.replace(/\s+$/, "")}\n${BLOCK_END}\n`;
 }
 
+/** The sentinel-delimited NREKI block of `text` (sentinels included), or null. */
+export function sentinelBlockOf(text: string): string | null {
+    const begin = text.indexOf(BLOCK_BEGIN);
+    const endTag = begin === -1 ? -1 : text.indexOf(BLOCK_END, begin);
+    return begin === -1 || endTag === -1 ? null : text.slice(begin, endTag + BLOCK_END.length);
+}
+
+/** Equal once line endings and trailing blanks are ignored. */
+export function sameText(a: string, b: string): boolean {
+    const norm = (s: string) => s.replace(/\r\n/g, "\n").replace(/\s+$/, "");
+    return norm(a) === norm(b);
+}
+
 function replaceSentinelBlock(current: string, marker: string, replacement: string): string | null {
     const begin = current.indexOf(BLOCK_BEGIN);
     const endTag = begin === -1 ? -1 : current.indexOf(BLOCK_END, begin);
@@ -223,6 +247,17 @@ function upsertMarkdownBlock(
         const current = fs.readFileSync(abs, "utf-8");
         const hasMarker = current.includes(marker);
         if (hasMarker && !force) {
+            // Between NREKI's sentinels the text is NREKI's: bring it up to date.
+            // Without --force an upgrade used to keep the old instructions forever.
+            const existing = sentinelBlockOf(current);
+            if (existing === null || sameText(existing, block)) {
+                return { path: label, op: "skipped", note: "NREKI block already present" };
+            }
+            const replaced = replaceSentinelBlock(current, marker, block);
+            if (replaced !== null) {
+                if (!dryRun) fs.writeFileSync(abs, replaced, "utf-8");
+                return { path: label, op: "rewritten", note: "NREKI block updated to this version; your content kept" };
+            }
             return { path: label, op: "skipped", note: "NREKI block already present" };
         }
         if (hasMarker) {
@@ -283,6 +318,12 @@ function writeOwnedFile(
         const existing = fs.readFileSync(abs, "utf-8");
         if (existing === content && !force) {
             return { path: label, op: "skipped", note: "up to date" };
+        }
+        // A hook written by a newer NREKI is never downgraded by an older `init`.
+        const mine = hookVersion(existing);
+        const theirs = hookVersion(content);
+        if (!force && mine !== null && theirs !== null && mine > theirs) {
+            return { path: label, op: "skipped", note: `a newer NREKI hook (v${mine}) is installed` };
         }
         if (!dryRun) {
             ensureDir(path.dirname(abs));
@@ -450,7 +491,7 @@ function mergeGlobalClaudeHooks(home: string, hookAbs: string, dryRun: boolean):
     if (!settings.hooks.PreToolUse) settings.hooks.PreToolUse = [];
 
     const hookCommand = `node ${JSON.stringify(hookAbs.replace(/\\/g, "/"))}`;
-    const tools = ["Read", "ReadFile", "View", "ViewFile", "Write", "WriteFile", "Edit", "EditFile", "MultiEdit", "Replace"];
+    const tools = CLAUDE_HOOK_TOOLS;
     let changed = 0;
     for (const tool of tools) {
         const entry = settings.hooks.PreToolUse.find((h) => h.matcher === tool);

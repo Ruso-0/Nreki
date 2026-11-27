@@ -83,6 +83,8 @@ export interface NavigateParams {
     direction?: string;
     max_nodes?: number;
     token_budget?: number;
+    /** fast_grep: match any case (exact case is tried first by default). */
+    ignore_case?: boolean;
 }
 
 /** Flat params for nreki_code (replaces path + options bag). */
@@ -346,7 +348,7 @@ export async function handleNavigate(
 
     // ─── PRESSURE VALVE (v9.0) + Karma ────────────────────────────
     try {
-        const sessionStart = deps.engine.getMetadata("nreki_session_start") || undefined;
+        const sessionStart = deps.engine.getSessionStart?.(); // in memory: the old metadata was never written
         const usage = deps.engine.getUsageStats(sessionStart);
         const basePressure = usage.total_output / 150_000;
         const karmaPenalty = parseFloat(deps.engine.getMetadata("nreki_karma_penalty") || "0");
@@ -424,7 +426,7 @@ export async function handleCode(
 
     // ─── PRESSURE VALVE (v9.0) + Karma ────────────────────────────
     try {
-        const sessionStart = deps.engine.getMetadata("nreki_session_start") || undefined;
+        const sessionStart = deps.engine.getSessionStart?.(); // in memory: the old metadata was never written
         const usage = deps.engine.getUsageStats(sessionStart);
         const basePressure = usage.total_output / 150_000;
         const karmaPenalty = parseFloat(deps.engine.getMetadata("nreki_karma_penalty") || "0");
@@ -507,7 +509,7 @@ export async function handleGuard(
 
     // ─── PRESSURE VALVE (v9.0) + Karma ───────────────────────────
     try {
-        const sessionStart = deps.engine.getMetadata("nreki_session_start") || undefined;
+        const sessionStart = deps.engine.getSessionStart?.(); // in memory: the old metadata was never written
         const usage = deps.engine.getUsageStats(sessionStart);
         const basePressure = usage.total_output / 150_000;
         const karmaPenalty = parseFloat(deps.engine.getMetadata("nreki_karma_penalty") || "0");

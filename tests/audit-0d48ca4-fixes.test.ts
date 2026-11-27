@@ -192,7 +192,7 @@ describe("2: NREKI's own files are never written through a `.nreki` link", () =>
 
     it("the installed hook (v4) writes its state through no link either", () => {
         const hook = fs.readFileSync(new URL("../templates/hooks/nreki-enforcer.mjs", import.meta.url), "utf8");
-        expect(hook).toContain("nreki-enforcer:v5");
+        expect(hook).toContain("nreki-enforcer:v6");
         expect(hook).toMatch(/lstatSync\(path\.dirname\(STATE_FILE\)\)\.isDirectory\(\)/);
         expect(hook).toContain("{ flag: \"wx\" }");
     });

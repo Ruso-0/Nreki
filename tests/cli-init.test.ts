@@ -228,8 +228,8 @@ describe("runInit — claude", () => {
         const hookAction = result.actions.find(a => a.path.endsWith("nreki-enforcer.mjs"));
         expect(hookAction?.op).toBe("rewritten");
         const final = fs.readFileSync(hookPath, "utf-8");
-        expect(final).toContain("nreki-enforcer:v5");
-        expect(final).toContain("cwdPosix"); // older servers' auto-patch must not mistake v5 for a legacy hook
+        expect(final).toContain("nreki-enforcer:v6");
+        expect(final).toContain("cwdPosix"); // older servers' auto-patch must not mistake v6 for a legacy hook
     });
 });
 

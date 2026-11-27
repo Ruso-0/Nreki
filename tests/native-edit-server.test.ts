@@ -16,7 +16,8 @@ function runNode(root: string, args: string[], input = "") {
     return new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve, reject) => {
         const child = spawn(process.execPath, args, {
             cwd: root,
-            env: { ...process.env, CLAUDE_PROJECT_DIR: root, NREKI_ENFORCE_EDITS: "" },
+            // No user-level Claude install: the developer's own ~/.claude hook would decide instead (hook v6 dedupe).
+            env: { ...process.env, CLAUDE_PROJECT_DIR: root, NREKI_ENFORCE_EDITS: "", CLAUDE_CONFIG_DIR: path.join(root, ".no-user-claude") },
             stdio: "pipe",
         });
         let stdout = "", stderr = "";
@@ -82,7 +83,7 @@ describe("built MCP server native-edit integration", () => {
             const init = await runNode(root, [builtServer, "init", "--agent", "claude"]);
             expect(init.code, init.stderr).toBe(0);
             const installedHook = path.join(root, ".claude", "hooks", "nreki-enforcer.mjs");
-            expect(fs.readFileSync(installedHook, "utf8")).toContain("nreki-enforcer:v5");
+            expect(fs.readFileSync(installedHook, "utf8")).toContain("nreki-enforcer:v6");
             expect(serverStderr).toContain("PROJECT mode detected");
             const pid = transport.pid;
             expect(pid).not.toBeNull();

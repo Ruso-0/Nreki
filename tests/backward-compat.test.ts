@@ -109,6 +109,7 @@ function createMockDeps(): RouterDependencies {
             savedUsdOpus: 0.075,
             byFileType: [],
         }),
+        getMetadata: vi.fn().mockReturnValue(null),
         getUsageStats: vi.fn().mockReturnValue({
             total_input: 1000,
             total_output: 500,
