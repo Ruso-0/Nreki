@@ -151,12 +151,28 @@ describe("engine watcher and fast_grep bootstrap", () => {
     });
 
     it("starts the reactive watcher after server connect", () => {
+        // v12.5.0 moved the watcher into each workspace runtime: it starts in
+        // startBackground(), which main() calls only after the handshake, and
+        // never in bootLive() (which may run before it).
         const source = fs.readFileSync(path.resolve("src", "index.ts"), "utf-8");
-        const connectIndex = source.indexOf("await server.connect(transport);");
-        const watcherIndex = source.indexOf("engine.startWatcher();", connectIndex);
+        const mainIndex = source.indexOf("async function main(");
+        const connectIndex = source.indexOf("await server.connect(transport);", mainIndex);
+        const backgroundIndex = source.indexOf("currentWorkspace?.startBackground();", connectIndex);
+        const bootStart = source.indexOf("bootLive: async");
+        const backgroundStart = source.indexOf("startBackground: () => {", bootStart);
+        const shutdownStart = source.indexOf("shutdown: () => {", backgroundStart);
+        const bootLive = source.slice(bootStart, backgroundStart);
+        const background = source.slice(backgroundStart, shutdownStart);
 
-        expect(connectIndex).toBeGreaterThan(-1);
-        expect(watcherIndex).toBeGreaterThan(connectIndex);
+        expect(mainIndex).toBeGreaterThan(-1);
+        expect(connectIndex).toBeGreaterThan(mainIndex);
+        expect(backgroundIndex).toBeGreaterThan(connectIndex);
+        expect(bootStart).toBeGreaterThan(-1);
+        expect(backgroundStart).toBeGreaterThan(bootStart);
+        expect(shutdownStart).toBeGreaterThan(backgroundStart);
+        expect(bootLive).not.toContain("startWatcher");
+        expect(background).toContain("engine.startWatcher();");
+        expect(source.match(/engine\.startWatcher\(\)/g)).toHaveLength(1);
     });
 
     it("ignores back-to-back internal edits and still detects a subsequent external edit", async () => {

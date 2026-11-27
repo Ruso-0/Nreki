@@ -22,9 +22,12 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport, getDefaultEnvironment } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { ListRootsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import {
+    hasProjectMarker,
     inferProjectRootFromPath,
     isNonProjectLaunchDir,
+    isSameOrInside,
     pickRootFromMcpRoots,
+    pickRootsFromMcpRoots,
     rootUriToDir,
 } from "../src/project-root.js";
 import {
@@ -35,7 +38,7 @@ import {
 } from "../src/init/global-register.js";
 import { parseInitArgs, runInit } from "../src/init/init-runner.js";
 import { askViaBrowserSetupUi, createSetupUiController } from "../src/init/setup-ui.js";
-import { dialogTexts, isHumanInteractiveSession } from "../src/init/voyage-prompt.js";
+import { dialogTexts, initTerminalDefaults, isHumanInteractiveSession } from "../src/init/voyage-prompt.js";
 
 const repoRoot = path.resolve(__dirname, "..");
 
@@ -96,6 +99,54 @@ describe("project-root helpers for global MCP", () => {
         fs.mkdirSync(path.dirname(nestedFile), { recursive: true });
         fs.writeFileSync(nestedFile, "export const x = 1;\n");
         expect(inferProjectRootFromPath(nestedFile, home)).toBe(path.resolve(projectA));
+    });
+
+    // 12.5.1: a project_root is now checked against this list, and "/" or the
+    // home folder used to pass (NREKI would have watched the whole disk).
+    it("never takes a drive root, a folder above home, or a hidden or system folder for a project", () => {
+        expect(isNonProjectLaunchDir(path.parse(projectA).root, home)).toBe(true);
+        expect(isNonProjectLaunchDir(path.dirname(home), home)).toBe(true);
+        expect(isNonProjectLaunchDir(path.join(home, ".ssh"), home)).toBe(true);
+        expect(isNonProjectLaunchDir(path.join(home, ".config", "nvim"), home)).toBe(true);
+        expect(isNonProjectLaunchDir(path.join(home, "AppData", "Local", "npm-cache", "_npx", "a1b2"), home)).toBe(true);
+        expect(isNonProjectLaunchDir(path.join(home, "code", "app"), home)).toBe(false);
+        expect(isNonProjectLaunchDir(projectA, home)).toBe(false);
+        if (process.platform === "win32") {
+            expect(isNonProjectLaunchDir("C:\\Windows\\System32", home)).toBe(true);
+            expect(isNonProjectLaunchDir("C:\\Program Files\\WindowsApps\\Some.App", home)).toBe(true);
+        } else {
+            expect(isNonProjectLaunchDir("/usr/lib/node_modules/npm", home)).toBe(true);
+        }
+    });
+
+    // The macOS CI failure of 12.5.0: HOME was /var/… and process.cwd() /private/var/….
+    it("recognizes the home folder reached through a link", (ctx) => {
+        const link = path.join(projectB, "home-link");
+        try {
+            fs.symlinkSync(home, link, process.platform === "win32" ? "junction" : "dir");
+        } catch (err) {
+            if ((err as NodeJS.ErrnoException).code === "EPERM") ctx.skip("environment blocks directory junctions");
+            throw err;
+        }
+        expect(isNonProjectLaunchDir(path.join(link, ".gemini", "config", "plugins", "nreki"), home)).toBe(true);
+        expect(isNonProjectLaunchDir(link, home)).toBe(true);
+        expect(isSameOrInside(path.join(link, "code"), home)).toBe(true);
+        expect(isSameOrInside(projectA, home)).toBe(false);
+    });
+
+    it("lists every local MCP root once, in order", () => {
+        const a = pathToFileURL(projectA).href;
+        const b = pathToFileURL(projectB).href;
+        expect(pickRootsFromMcpRoots([{ uri: "https://nope" }, { uri: a }, { uri: b }, { uri: a }]))
+            .toEqual([path.resolve(projectA), path.resolve(projectB)]);
+        expect(pickRootsFromMcpRoots(undefined)).toEqual([]);
+    });
+
+    it("counts .git or package.json as a project marker, not the .nreki.db NREKI creates itself", () => {
+        fs.writeFileSync(path.join(projectA, ".nreki.db"), "");
+        expect(hasProjectMarker(projectA)).toBe(false);
+        fs.writeFileSync(path.join(projectA, "package.json"), "{}\n");
+        expect(hasProjectMarker(projectA)).toBe(true);
     });
 });
 
@@ -201,6 +252,40 @@ describe("global user-scope registration (zero per-project approval)", () => {
         }
     });
 
+    // 12.5.0 dropped the whole matcher entry, and with it the user's own hook.
+    it("deinit --global removes only NREKI's command from a matcher the user already had", () => {
+        const settingsPath = path.join(home, ".claude", "settings.json");
+        fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+        const userHook = { type: "command", command: "node /opt/my-guard.mjs" };
+        fs.writeFileSync(settingsPath, JSON.stringify({
+            model: "opus",
+            hooks: { PreToolUse: [{ matcher: "Edit", hooks: [userHook] }] },
+        }, null, 2));
+
+        registerGlobalAgent("claude", { home, version: "12.5.1" });
+        const wired = JSON.parse(fs.readFileSync(settingsPath, "utf-8")) as {
+            hooks: { PreToolUse: Array<{ matcher: string; hooks: Array<{ command: string }> }> };
+        };
+        const editEntry = wired.hooks.PreToolUse.find((h) => h.matcher === "Edit");
+        expect(editEntry?.hooks.map((h) => h.command.includes("nreki-enforcer.mjs"))).toEqual([false, true]);
+
+        unregisterGlobalAll(home);
+        const after = JSON.parse(fs.readFileSync(settingsPath, "utf-8")) as Record<string, unknown>;
+        expect(after.model).toBe("opus");
+        expect(after.hooks).toEqual({ PreToolUse: [{ matcher: "Edit", hooks: [userHook] }] });
+    });
+
+    // 12.5.0: --no-prompt also turned the user-scope install into a project install.
+    it("--prompt and --no-prompt only decide the Voyage box, never the install scope", () => {
+        const person: NodeJS.ProcessEnv = {};
+        expect(initTerminalDefaults({}, person, true, true)).toEqual({ global: true, showVoyageBox: true });
+        expect(initTerminalDefaults({ prompt: false }, person, true, true)).toEqual({ global: true, showVoyageBox: false });
+        expect(initTerminalDefaults({ global: false }, person, true, true)).toEqual({ global: false, showVoyageBox: true });
+        expect(initTerminalDefaults({}, { CI: "true" }, true, true)).toEqual({ global: undefined, showVoyageBox: false });
+        expect(initTerminalDefaults({ prompt: true }, { CLAUDECODE: "1" }, false, false))
+            .toEqual({ global: undefined, showVoyageBox: true });
+    });
+
     it("parses --global, -g, --project, and --prompt flags", () => {
         expect(parseInitArgs(["--global"]).opts.global).toBe(true);
         expect(parseInitArgs(["-g"]).opts.global).toBe(true);
@@ -283,73 +368,140 @@ describe("local browser Voyage API Key setup box", () => {
 });
 
 describe("built MCP server — global launch folder + MCP roots/list", () => {
-    it("binds to the client's MCP root without polluting the global plugin folder", async () => {
+    const ALPHA = "export function alphaCondorBeacon(): number { return 7; }\n";
+    const BETA = "export function betaJaguarBeacon(): number { return 9; }\n";
+
+    /** The built server started in `cwd`; `roots` = null for a client without MCP roots. */
+    async function startBuiltServer(cwd: string, roots: string[] | null) {
         const builtServer = path.join(repoRoot, "dist", "index.js");
         if (!fs.existsSync(builtServer)) throw new Error("Run npm run build before the built-server test.");
-
-        const pluginFolder = path.join(home, ".gemini", "config", "plugins", "nreki");
-        fs.mkdirSync(pluginFolder, { recursive: true });
-        fs.writeFileSync(path.join(projectA, "alpha.ts"), "export function alphaCondorBeacon(): number { return 7; }\n");
-        fs.writeFileSync(path.join(projectB, "beta.ts"), "export function betaJaguarBeacon(): number { return 9; }\n");
-
-        const env = {
-            ...getDefaultEnvironment(),
-            HOME: home,
-            USERPROFILE: home,
-            NREKI_PROJECT_ROOT: "",
-            NREKI_TRUST_DIR: process.env.NREKI_TRUST_DIR ?? "",
-        };
-
         const transport = new StdioClientTransport({
             command: process.execPath,
             args: [builtServer],
-            cwd: pluginFolder,
-            env,
+            cwd,
+            env: {
+                ...getDefaultEnvironment(),
+                HOME: home,
+                USERPROFILE: home,
+                NREKI_PROJECT_ROOT: "",
+                NREKI_TRUST_DIR: process.env.NREKI_TRUST_DIR ?? "",
+            },
             stderr: "ignore",
         });
-
         const client = new Client(
             { name: "global-roots-test", version: "1.0.0" },
-            { capabilities: { roots: { listChanged: true } } },
+            { capabilities: roots ? { roots: { listChanged: true } } : {} },
         );
-        let activeRootUri = pathToFileURL(projectA).href;
-        client.setRequestHandler(ListRootsRequestSchema, async () => ({
-            roots: [{ uri: activeRootUri, name: "workspace" }],
-        }));
-
+        let current = roots ?? [];
+        if (roots) {
+            client.setRequestHandler(ListRootsRequestSchema, async () => ({
+                roots: current.map((dir) => ({ uri: pathToFileURL(dir).href, name: path.basename(dir) })),
+            }));
+        }
         await client.connect(transport);
-        const serverPid = transport.pid;
-        try {
-            let textA = "";
-            for (let i = 0; i < 40; i++) {
-                const r = await client.callTool({
-                    name: "nreki_navigate",
-                    arguments: { action: "fast_grep", query: "alphaCondorBeacon" },
-                });
-                textA = (r.content as Array<{ text: string }>).map((c) => c.text).join("\n");
-                if (textA.includes("alpha.ts")) break;
-                await new Promise((ok) => setTimeout(ok, 300));
-            }
-            expect(textA).toContain("alpha.ts");
+        return {
+            client,
+            pid: transport.pid,
+            /** The editor opens other folders: roots/list_changed. */
+            setRoots: async (dirs: string[]) => { current = dirs; await client.sendRootsListChanged(); },
+            close: async () => { await client.close(); await waitForExit(transport.pid); },
+        };
+    }
 
-            // Also supports switching via explicit project_root parameter
-            let textB = "";
-            for (let i = 0; i < 40; i++) {
-                const r = await client.callTool({
-                    name: "nreki_navigate",
-                    arguments: { action: "fast_grep", query: "betaJaguarBeacon", project_root: projectB },
-                });
-                textB = (r.content as Array<{ text: string }>).map((c) => c.text).join("\n");
-                if (textB.includes("beta.ts")) break;
-                await new Promise((ok) => setTimeout(ok, 300));
-            }
-            expect(textB).toContain("beta.ts");
+    async function navigate(client: Client, args: Record<string, unknown>): Promise<{ text: string; isError: boolean }> {
+        const r = await client.callTool({ name: "nreki_navigate", arguments: args });
+        return {
+            text: (r.content as Array<{ text: string }>).map((c) => c.text).join("\n"),
+            isError: r.isError === true,
+        };
+    }
+
+    async function navigateUntil(client: Client, args: Record<string, unknown>, needle: string): Promise<string> {
+        let text = "";
+        for (let i = 0; i < 40; i++) {
+            text = (await navigate(client, args)).text;
+            if (text.includes(needle)) break;
+            await new Promise((ok) => setTimeout(ok, 300));
+        }
+        return text;
+    }
+
+    it("binds to the client's MCP root, refuses a project_root outside the roots, and follows roots/list_changed", async () => {
+        const pluginFolder = path.join(home, ".gemini", "config", "plugins", "nreki");
+        fs.mkdirSync(pluginFolder, { recursive: true });
+        fs.writeFileSync(path.join(projectA, "alpha.ts"), ALPHA);
+        fs.writeFileSync(path.join(projectB, "beta.ts"), BETA);
+
+        const server = await startBuiltServer(pluginFolder, [projectA]);
+        try {
+            expect(await navigateUntil(server.client, { action: "fast_grep", query: "alphaCondorBeacon" }, "alpha.ts"))
+                .toContain("alpha.ts");
+
+            // A tool argument cannot move NREKI out of the folders the editor shared…
+            const refused = await navigate(server.client, { action: "fast_grep", query: "betaJaguarBeacon", project_root: projectB });
+            expect(refused.isError).toBe(true);
+            expect(refused.text).toContain("outside the workspace folders");
+
+            // …the editor opening another folder does.
+            await server.setRoots([projectB]);
+            expect(await navigateUntil(server.client, { action: "fast_grep", query: "betaJaguarBeacon" }, "beta.ts"))
+                .toContain("beta.ts");
         } finally {
-            await client.close();
-            await waitForExit(serverPid);
+            await server.close();
         }
 
-        // Global plugin folder stayed 100% clean (no .nreki.db or .nreki created there!)
+        // The global plugin folder stayed clean (no .nreki.db or .nreki created there).
         expect(fs.readdirSync(pluginFolder)).toEqual([]);
+    }, 120_000);
+
+    it("without MCP roots waits for project_root and refuses the home, hidden and system folders", async () => {
+        const pluginFolder = path.join(home, ".gemini", "config", "plugins", "nreki");
+        fs.mkdirSync(pluginFolder, { recursive: true });
+        fs.mkdirSync(path.join(home, ".claude"), { recursive: true });
+        fs.writeFileSync(path.join(projectB, "beta.ts"), BETA);
+
+        const server = await startBuiltServer(pluginFolder, null);
+        try {
+            const unbound = await navigate(server.client, { action: "fast_grep", query: "betaJaguarBeacon" });
+            expect(unbound.isError).toBe(true);
+            expect(unbound.text).toContain("project_root");
+
+            for (const forbidden of [home, path.join(home, ".claude"), path.parse(home).root]) {
+                const r = await navigate(server.client, { action: "fast_grep", query: "betaJaguarBeacon", project_root: forbidden });
+                expect(r.isError, forbidden).toBe(true);
+                expect(r.text, forbidden).toContain("not a project");
+            }
+
+            expect(await navigateUntil(server.client,
+                { action: "fast_grep", query: "betaJaguarBeacon", project_root: projectB }, "beta.ts")).toContain("beta.ts");
+        } finally {
+            await server.close();
+        }
+
+        expect(fs.readdirSync(pluginFolder)).toEqual([]);
+        expect(fs.existsSync(path.join(home, ".nreki.db"))).toBe(false);
+        expect(fs.readdirSync(path.join(home, ".claude"))).toEqual([]);
+    }, 120_000);
+
+    it("started inside a project (Claude Code), a project_root outside it is refused", async () => {
+        fs.writeFileSync(path.join(projectA, "package.json"), "{}\n");
+        fs.writeFileSync(path.join(projectA, "alpha.ts"), ALPHA);
+        fs.writeFileSync(path.join(projectB, "beta.ts"), BETA);
+
+        const server = await startBuiltServer(projectA, null);
+        try {
+            const refused = await navigate(server.client, { action: "fast_grep", query: "betaJaguarBeacon", project_root: projectB });
+            expect(refused.isError).toBe(true);
+            expect(refused.text).toContain("the project it was started in");
+
+            // Naming the project it already serves is fine.
+            expect(await navigateUntil(server.client,
+                { action: "fast_grep", query: "alphaCondorBeacon", project_root: projectA }, "alpha.ts")).toContain("alpha.ts");
+        } finally {
+            await server.close();
+        }
+
+        expect(fs.existsSync(path.join(projectB, ".nreki.db"))).toBe(false);
+        expect(fs.existsSync(path.join(projectB, ".nreki"))).toBe(false);
     }, 120_000);
 });

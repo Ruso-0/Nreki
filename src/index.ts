@@ -53,9 +53,12 @@ import { validateNativeEdit } from "./hooks/native-edit-validator.js";
 import { ensureHologramReady } from "./handlers/code/kernel-bridge.js";
 import {
     decideProjectRoot,
+    hasProjectMarker,
     inferProjectRootFromPath,
     isNonProjectLaunchDir,
-    pickRootFromMcpRoots,
+    isSameOrInside,
+    pickRootsFromMcpRoots,
+    sameDir,
 } from "./project-root.js";
 
 // Patch 7 (v10.6.1): shape of .claude/settings.json. Kept loose on unknown
@@ -319,7 +322,9 @@ if (args[0] === "key") {
         for (const line of answer.lines) process.stderr.write(`${line}\n`);
         if (answer.voyage !== undefined) {
             const userHome = process.env.NREKI_USER_HOME ? path.resolve(process.env.NREKI_USER_HOME) : os.homedir();
-            const result = runInit({ global: true, home: userHome, voyage: answer.voyage });
+            // cwd = home: changing the key only updates the user-scope entries; it
+            // must not migrate the .mcp.json of whatever folder `key` runs in.
+            const result = runInit({ global: true, home: userHome, cwd: userHome, voyage: answer.voyage });
             for (const action of result.actions) {
                 if (action.op !== "skipped") process.stderr.write(`  ${formatAction(action)}\n`);
             }
@@ -350,20 +355,14 @@ if (args[0] === "init") {
         const userHome = process.env.NREKI_USER_HOME ? path.resolve(process.env.NREKI_USER_HOME) : os.homedir();
         opts.home = userHome;
 
-        const { isHumanInteractiveSession, promptForVoyage } = await import("./init/voyage-prompt.js");
-        const interactive = isHumanInteractiveSession(
-            process.env,
-            Boolean(process.stdin.isTTY),
-            Boolean(process.stderr.isTTY),
-            opts.prompt,
-        );
-
-        // In an interactive user terminal, default to global user-scope install
-        // so Claude Code, Antigravity, Cursor, and Codex work across all projects
-        // without per-repo `.mcp.json` approval prompts (`--project` opts into repo-local).
-        if (opts.global === undefined && interactive) {
-            opts.global = true;
-        }
+        // In a person's terminal, default to the user-scope install so Claude Code,
+        // Antigravity, Cursor, and Codex work across all projects without per-repo
+        // `.mcp.json` approval prompts (`--project` opts into repo-local).
+        // --prompt/--no-prompt only control the Voyage box, never the scope.
+        const { initTerminalDefaults, promptForVoyage } = await import("./init/voyage-prompt.js");
+        const defaults = initTerminalDefaults(opts);
+        opts.global = defaults.global;
+        const interactive = defaults.showVoyageBox;
 
         const voyageLines: string[] = [];
         if (interactive && !opts.dryRun && opts.mcp !== false && opts.voyage !== false) {
@@ -401,21 +400,36 @@ if (args[0] === "init") {
 
 // ─── Dynamic Workspace Runtime (supports Global MCP + MCP roots/list) ───────
 
+/**
+ * Who chose the workspace. It bounds every read and write (safePath), so a tool
+ * argument may only move it when the host did not choose: "env" (pinned by
+ * NREKI_PROJECT_ROOT), "roots" (the client's MCP roots) and "launch" (started in
+ * a folder with a project marker) hold; "guess" (started in an unmarked folder)
+ * and "explicit" (named by project_root or a path) can be replaced.
+ */
+type WorkspaceSource = "env" | "roots" | "launch" | "guess" | "explicit";
+
 interface WorkspaceRuntime {
     root: string;
+    source: WorkspaceSource;
     deps: RouterDependencies;
     liveBooted: boolean;
+    /** Session marker, native-edit endpoint and hook upgrade (may run before connect). */
     bootLive: () => Promise<void>;
+    /** File watcher and WASM preload: only once the transport is connected (v11.2.1). */
+    startBackground: () => void;
     shutdown: () => void;
 }
 
 const pinnedByEnv = decideProjectRoot(process.env.NREKI_PROJECT_ROOT).kind === "apply";
 let currentWorkspace: WorkspaceRuntime | null = null;
 let liveTransportConnected = false;
+let transportReady = false;
+let clientRootDirs: string[] = [];
 let switchChain: Promise<void> = Promise.resolve();
-let initialRootsPromise: Promise<void> | null = null;
+let rootsSync: Promise<void> | null = null;
 
-async function buildWorkspaceRuntime(targetDir: string): Promise<WorkspaceRuntime> {
+async function buildWorkspaceRuntime(targetDir: string, source: WorkspaceSource): Promise<WorkspaceRuntime> {
     const root = path.resolve(targetDir);
     if (path.resolve(process.cwd()) !== root) process.chdir(root);
 
@@ -488,9 +502,11 @@ async function buildWorkspaceRuntime(targetDir: string): Promise<WorkspaceRuntim
     let nativeEdits: NativeEditServer | undefined;
     let removeSessionMarker: (() => void) | null = null;
     let closed = false;
+    let backgroundStarted = false;
 
     const runtime: WorkspaceRuntime = {
         root,
+        source,
         deps,
         liveBooted: false,
         bootLive: async () => {
@@ -544,6 +560,13 @@ async function buildWorkspaceRuntime(targetDir: string): Promise<WorkspaceRuntim
                 if (upgrade === "upgraded") logger.info("Auto-patched legacy nreki-enforcer hook for security.");
                 if (upgrade === "unsafe-path") logger.warn(".claude/hooks/nreki-enforcer.mjs is a symbolic link or leaves the project: not upgraded.");
             } catch { /* Fail silently, never block boot */ }
+        },
+        // v11.2.1: the watcher's first directory walk must never run before the
+        // MCP handshake (Claude Code reported the silence as "connection closed:
+        // EOF"), and it is not awaited: tool handlers index on first use.
+        startBackground: () => {
+            if (backgroundStarted || closed) return;
+            backgroundStarted = true;
 
             const watcherReady = engine.startWatcher();
             watcherReady.then(
@@ -578,28 +601,33 @@ async function buildWorkspaceRuntime(targetDir: string): Promise<WorkspaceRuntim
             try { removeSessionMarker?.(); } catch { /* already gone */ }
             try { nativeEdits?.close(); } catch { /* already closed */ }
             try { engine.shutdown(); } catch { /* swallow */ }
+            // A switched-away workspace must not keep its gopls/pyright running
+            // until the process exits (their exit hooks only fire then).
+            if (kernel) void kernel.shutdownSidecars().catch(() => { /* best effort */ });
         },
     };
     return runtime;
 }
 
-function switchWorkspace(targetDir: string): Promise<void> {
+function switchWorkspace(targetDir: string, source: WorkspaceSource): Promise<void> {
     const next = switchChain.then(async () => {
         const resolved = path.resolve(targetDir);
-        if (currentWorkspace && path.resolve(currentWorkspace.root) === resolved) {
+        if (currentWorkspace && sameDir(currentWorkspace.root, resolved)) {
             if (liveTransportConnected && !currentWorkspace.liveBooted) {
                 await currentWorkspace.bootLive();
             }
+            if (transportReady) currentWorkspace.startBackground();
             return;
         }
         if (currentWorkspace) {
             currentWorkspace.shutdown();
             currentWorkspace = null;
         }
-        currentWorkspace = await buildWorkspaceRuntime(resolved);
+        currentWorkspace = await buildWorkspaceRuntime(resolved, source);
         if (liveTransportConnected) {
             await currentWorkspace.bootLive();
         }
+        if (transportReady) currentWorkspace.startBackground();
         logger.info(`Workspace bound to ${resolved}`);
     });
     switchChain = next.catch((err) => {
@@ -608,12 +636,53 @@ function switchWorkspace(targetDir: string): Promise<void> {
     return next;
 }
 
-// Boot immediately when started inside an actual project folder (or pinned by
-// NREKI_PROJECT_ROOT). When a global host launches NREKI inside its own config
-// dir (`~/.gemini/config/plugins/nreki`, `~`, etc.), defer until MCP roots/list
-// or `project_root` arrives so the host's config folder is never polluted.
-if (pinnedByEnv || !isNonProjectLaunchDir(process.cwd())) {
-    currentWorkspace = await buildWorkspaceRuntime(process.cwd());
+/**
+ * The workspace a `project_root` (or a path's enclosing project) may bind, or
+ * why not. Inside the current workspace: keep it. Otherwise it must be inside
+ * one of the client's MCP roots; when the host chose the folder (pinned, its
+ * MCP roots, or started in a project) it cannot be left; a folder named by the model is
+ * never the home folder, a folder above it, a hidden folder in it or a system
+ * folder (a prompt injection would otherwise point NREKI at ~/.claude or ~/.ssh).
+ */
+function workspaceTarget(requested: string): { dir: string; source: WorkspaceSource } | { error: string } {
+    const dir = path.resolve(requested);
+    if (currentWorkspace && isSameOrInside(dir, currentWorkspace.root)) {
+        return { dir: currentWorkspace.root, source: currentWorkspace.source };
+    }
+    if (clientRootDirs.length > 0) {
+        const root = clientRootDirs.find((r) => isSameOrInside(dir, r));
+        if (root) return { dir: root, source: "roots" };
+        return {
+            error: `project_root "${dir}" is outside the workspace folders your editor shared with NREKI ` +
+                `(${clientRootDirs.join(", ")}). Open that folder in your editor to work on it.`,
+        };
+    }
+    if (currentWorkspace && currentWorkspace.source !== "guess" && currentWorkspace.source !== "explicit") {
+        const chosenBy = currentWorkspace.source === "launch" ? "the project it was started in"
+            : currentWorkspace.source === "env" ? "the project NREKI_PROJECT_ROOT names"
+            : "the project your editor opened";
+        return {
+            error: `NREKI is bound to ${currentWorkspace.root}, ${chosenBy}; ` +
+                `project_root "${dir}" is outside it. Open that folder in your editor to work on it.`,
+        };
+    }
+    if (isNonProjectLaunchDir(dir)) {
+        return {
+            error: `project_root "${dir}" is a home, hidden or system folder, not a project. ` +
+                "Pass the absolute path of the project folder.",
+        };
+    }
+    return { dir, source: "explicit" };
+}
+
+// Boot immediately when started inside a folder that can be a project (or pinned
+// by NREKI_PROJECT_ROOT). When a global host launches NREKI inside its own config
+// dir (`~/.gemini/config/plugins/nreki`, `~`, `/`, etc.), defer until MCP
+// roots/list or `project_root` arrives so that folder is never polluted.
+if (pinnedByEnv) {
+    currentWorkspace = await buildWorkspaceRuntime(process.cwd(), "env");
+} else if (!isNonProjectLaunchDir(process.cwd())) {
+    currentWorkspace = await buildWorkspaceRuntime(process.cwd(), hasProjectMarker(process.cwd()) ? "launch" : "guess");
 }
 
 const server = new McpServer({
@@ -636,31 +705,37 @@ const optStr = (v: unknown): string | undefined => (typeof v === "string" ? v : 
 const optNum = (v: unknown): number | undefined => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
 const optBool = (v: unknown): boolean | undefined => (typeof v === "boolean" ? v : undefined);
 
-async function resolveWorkspaceDeps(rawArgs: Record<string, unknown>): Promise<RouterDependencies | null> {
-    if (initialRootsPromise) await initialRootsPromise;
+const MISSING_WORKSPACE = "NREKI was started outside a workspace without MCP roots. Re-run this call with " +
+    "project_root:\"<absolute workspace path>\" once to bind the active project.";
+
+/** The dependencies of the workspace this call runs in, or why there is none. */
+async function resolveWorkspaceDeps(rawArgs: Record<string, unknown>): Promise<RouterDependencies | string> {
+    if (rootsSync) await rootsSync;
+    await switchChain;
     if (!pinnedByEnv) {
-        const explicit = optStr(rawArgs.project_root);
+        let requested: string | null = null;
+        const explicit = optStr(rawArgs.project_root)?.trim();
         if (explicit) {
             const d = decideProjectRoot(explicit);
-            if (d.kind === "apply") await switchWorkspace(d.dir);
+            if (d.kind === "apply") requested = d.dir;
         } else if (!currentWorkspace) {
             const firstEditPath = Array.isArray(rawArgs.edits) && rawArgs.edits[0] && typeof rawArgs.edits[0] === "object"
                 ? optStr((rawArgs.edits[0] as Record<string, unknown>).path)
                 : undefined;
-            const inferred = inferProjectRootFromPath(optStr(rawArgs.path) ?? firstEditPath);
-            if (inferred) await switchWorkspace(inferred);
+            requested = inferProjectRootFromPath(optStr(rawArgs.path) ?? firstEditPath);
+        }
+        if (requested) {
+            const target = workspaceTarget(requested);
+            if ("error" in target) return target.error;
+            await switchWorkspace(target.dir, target.source);
         }
     }
-    return currentWorkspace?.deps ?? null;
+    return currentWorkspace?.deps ?? MISSING_WORKSPACE;
 }
 
-const MISSING_WORKSPACE_RESPONSE = {
-    isError: true,
-    content: [{
-        type: "text" as const,
-        text: "NREKI was started outside a workspace without MCP roots. Re-run this call with project_root:\"<absolute workspace path>\" once to bind the active project.",
-    }],
-};
+function workspaceError(text: string) {
+    return { isError: true, content: [{ type: "text" as const, text }] };
+}
 
 server.registerTool(
     "nreki_navigate",
@@ -682,7 +757,7 @@ server.registerTool(
     async (args) => {
         const a: Record<string, unknown> = args;
         const activeDeps = await resolveWorkspaceDeps(a);
-        if (!activeDeps) return MISSING_WORKSPACE_RESPONSE;
+        if (typeof activeDeps === "string") return workspaceError(activeDeps);
         const params: NavigateParams = {
             action: args.action, query: args.query, symbol: args.symbol, path: args.path, limit: args.limit,
             include_raw: optBool(a.include_raw), kind: optStr(a.kind), signatures: optBool(a.signatures),
@@ -737,7 +812,7 @@ server.registerTool(
     async (args) => {
         const a: Record<string, unknown> = args;
         const activeDeps = await resolveWorkspaceDeps(a);
-        if (!activeDeps) return MISSING_WORKSPACE_RESPONSE;
+        if (typeof activeDeps === "string") return workspaceError(activeDeps);
         const params: CodeParams = {
             action: args.action, path: args.path, symbol: args.symbol, focus: args.focus, mode: args.mode,
             new_code: args.new_code, search_text: args.search_text, replace_text: args.replace_text,
@@ -778,7 +853,7 @@ server.registerTool(
     async (args) => {
         const a: Record<string, unknown> = args;
         const activeDeps = await resolveWorkspaceDeps(a);
-        if (!activeDeps) return MISSING_WORKSPACE_RESPONSE;
+        if (typeof activeDeps === "string") return workspaceError(activeDeps);
         const { action, text, index, path: guardPath, symbol } = args;
         const params: GuardParams = { action, text, index, id: optStr(a.id), path: guardPath, symbol };
         return wrapWithCircuitBreaker(
@@ -835,29 +910,39 @@ async function main(): Promise<void> {
         parentWatchdog.unref();
     }
 
+    // The client's roots bound the workspace from now on (see workspaceTarget).
+    // A root that is the home folder, above it or hidden in it is not a project.
     const syncClientRoots = async (): Promise<void> => {
         if (pinnedByEnv) return;
         if (!server.server.getClientCapabilities()?.roots) return;
         try {
             const res = await server.server.listRoots({}, { timeout: 2500 });
-            const rootDir = pickRootFromMcpRoots(res?.roots);
-            if (rootDir) await switchWorkspace(rootDir);
+            clientRootDirs = pickRootsFromMcpRoots(res?.roots).filter((dir) => !isNonProjectLaunchDir(dir));
+            const current = currentWorkspace;
+            if (clientRootDirs.length === 0) return;
+            if (current && clientRootDirs.some((r) => isSameOrInside(current.root, r))) return;
+            await switchWorkspace(clientRootDirs[0], "roots");
         } catch (err) {
             logger.warn(`MCP roots/list unavailable: ${(err as Error).message}`);
         }
     };
 
+    // Tool calls wait for a roots sync in flight (resolveWorkspaceDeps), the first
+    // one and each roots/list_changed, instead of running in the old workspace.
+    const trackRootsSync = (): Promise<void> => {
+        const p = syncClientRoots().finally(() => {
+            if (rootsSync === p) rootsSync = null;
+        });
+        rootsSync = p;
+        return p;
+    };
+
     server.server.oninitialized = () => {
-        if (!pinnedByEnv && server.server.getClientCapabilities()?.roots) {
-            const p = syncClientRoots().finally(() => {
-                if (initialRootsPromise === p) initialRootsPromise = null;
-            });
-            initialRootsPromise = p;
-        }
+        if (!pinnedByEnv && server.server.getClientCapabilities()?.roots) void trackRootsSync();
     };
 
     server.server.setNotificationHandler(RootsListChangedNotificationSchema, async () => {
-        await syncClientRoots();
+        await trackRootsSync();
     });
 
     liveTransportConnected = true;
@@ -866,6 +951,10 @@ async function main(): Promise<void> {
     }
 
     await server.connect(transport);
+
+    // v11.2.1: the file watcher starts only after the handshake (not awaited).
+    transportReady = true;
+    currentWorkspace?.startBackground();
 }
 
 // v11.2.1: defensive process-level handlers. The MCP transport speaks

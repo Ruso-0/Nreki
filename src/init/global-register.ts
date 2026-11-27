@@ -800,11 +800,23 @@ export function unregisterGlobalAll(
             const raw = fs.readFileSync(claudeSettings, "utf-8");
             const parsed = JSON.parse(raw.replace(/^\uFEFF/, "")) as Record<string, any>;
             if (Array.isArray(parsed?.hooks?.PreToolUse)) {
-                const before = parsed.hooks.PreToolUse.length;
-                parsed.hooks.PreToolUse = parsed.hooks.PreToolUse.filter((h: any) =>
-                    !Array.isArray(h?.hooks) || !h.hooks.some((c: any) => typeof c?.command === "string" && c.command.includes("nreki-enforcer.mjs")),
-                );
-                if (parsed.hooks.PreToolUse.length !== before) {
+                // mergeGlobalClaudeHooks adds NREKI's command to a matcher the user
+                // already had: remove that command only, and the matcher only when
+                // nothing of the user's is left in it.
+                const isNrekiHook = (c: any) => typeof c?.command === "string" && c.command.includes("nreki-enforcer.mjs");
+                let removedHooks = 0;
+                const kept: any[] = [];
+                for (const h of parsed.hooks.PreToolUse) {
+                    if (!Array.isArray(h?.hooks) || !h.hooks.some(isNrekiHook)) {
+                        kept.push(h);
+                        continue;
+                    }
+                    const rest = h.hooks.filter((c: any) => !isNrekiHook(c));
+                    removedHooks += h.hooks.length - rest.length;
+                    if (rest.length > 0) kept.push({ ...h, hooks: rest });
+                }
+                if (removedHooks > 0) {
+                    parsed.hooks.PreToolUse = kept;
                     if (parsed.hooks.PreToolUse.length === 0) delete parsed.hooks.PreToolUse;
                     if (parsed.hooks && Object.keys(parsed.hooks).length === 0) delete parsed.hooks;
                     if (!dryRun) {

@@ -1,5 +1,18 @@
 # Changelog
 
+## [12.5.1] - 2026-11-27
+
+12.5.0 was tagged on GitHub but never published to npm: CI failed on all 9 jobs (the full suite had not been run). Found by reviewing it:
+
+- **The file watcher starts after the MCP handshake again.** 12.5.0's per-workspace runtime started it before `server.connect`, which the v11.2.1 guard test caught on every OS. `bootLive` now writes the session marker and upgrades the hook; the new `startBackground` starts the watcher and the WASM preload once the transport is connected.
+- **A global server recognizes host folders reached through a link.** On macOS the temp folder is `/var/…` for `HOME` and `/private/var/…` for `process.cwd()`, so 12.5.0 took the Antigravity plugin folder for a project and wrote `.nreki/` into it (macOS CI). Folders are now compared with their links resolved.
+- **`project_root` can no longer point NREKI at any folder.** The workspace folder bounds every read and write NREKI makes (safePath), and in 12.5.0 any tool call could rebind it to any existing folder: the home folder (NREKI then watched all of it), `~/.claude` (its hooks run code), `~/.ssh`, or a drive root. Now a folder inside the current workspace keeps it; with MCP roots it must be inside one of them; a server pinned by `NREKI_PROJECT_ROOT` or started in a project (a folder with `.git`, `package.json`, `tsconfig.json`…) cannot leave it; only a host that gave no folder (Antigravity's global plugin) lets `project_root` choose, and never the home folder, a folder above it, a hidden folder in it, a drive root or a system folder. The same list keeps a server started in `/`, `C:\` or `Program Files` from binding there.
+- **`deinit --global` keeps your own hooks.** `init` adds NREKI's command to a PreToolUse matcher you already had in `~/.claude/settings.json` (your own `Edit` hook, say); 12.5.0's `deinit --global` deleted that whole matcher, your hook included. It now removes NREKI's command only.
+- **`--no-prompt` no longer changes the install scope.** In 12.5.0 it also turned the user-scope install into a project install; `--prompt`/`--no-prompt` now only decide whether the Voyage box opens.
+- **`npx nreki key` leaves the folder it runs in alone** (it migrated that folder's `.mcp.json` entry).
+- **Switching workspace stops the old one's gopls/pyright** (they kept running until the process exited), and a tool call waits for a `roots/list_changed` switch in flight instead of running in the workspace being closed.
+- Note: Cursor does not load `~/.cursor/rules/*.mdc` as global rules (forum reports; its global rules live in Settings › Rules), so in Cursor the first NREKI call may answer with the `project_root` hint.
+
 ## [12.5.0] - 2026-11-27
 
 - **Zero-approval global install (`npx nreki init`).** In an interactive terminal (including Git Bash on Windows), `npx nreki init` now registers NREKI at **user scope** across Claude Code (`~/.claude.json` + `~/.claude/`), Antigravity (`~/.gemini/config/plugins/nreki/`), Cursor (`~/.cursor/mcp.json` + `~/.cursor/rules/nreki.mdc`), Codex (`~/.codex/config.toml` + `~/.codex/AGENTS.md`), and VS Code (`Code/User/mcp.json` when installed), migrating away stale NREKI `.mcp.json` project entries while preserving other servers. `--project` keeps repo-scoped installs, and `npx nreki deinit --global` removes user-scoped registrations cleanly.

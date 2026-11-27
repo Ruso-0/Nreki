@@ -8,6 +8,10 @@
  * in each registration, either with the host's own `cwd` field or with
  * NREKI_PROJECT_ROOT, and the server switches to that folder before any module
  * reads process.cwd() (see bootstrap-root.ts).
+ *
+ * v12.5.0 also registers NREKI once per user. Such a server learns the project
+ * from the folder it was started in, the client's MCP roots, or a `project_root`
+ * argument, and the helpers below decide which folders can be a project.
  */
 
 import fs from "fs";
@@ -47,9 +51,58 @@ const PROJECT_MARKERS = [
     ".nreki.db",
 ];
 
+/** Markers that make a launch folder a project NREKI stays bound to (.nreki.db is
+ *  left out: NREKI itself creates it in whatever folder it was started in). */
+const LOCKING_MARKERS = PROJECT_MARKERS.filter((m) => m !== ".nreki.db");
+
+/**
+ * `p` with its symbolic links and junctions resolved, also when its last parts
+ * do not exist yet. Without it a folder reached through a link never matched:
+ * on macOS the temp folder is /var/… for HOME but /private/var/… for
+ * process.cwd(), so NREKI took the global plugin folder for a project (CI, v12.5.0).
+ */
+function canonicalPath(p: string): string {
+    const resolved = path.resolve(p);
+    const tail: string[] = [];
+    let cur = resolved;
+    for (;;) {
+        try {
+            const real = fs.realpathSync.native(cur);
+            return tail.length === 0 ? real : path.join(real, ...tail.reverse());
+        } catch {
+            const parent = path.dirname(cur);
+            if (parent === cur) return resolved;
+            tail.push(path.basename(cur));
+            cur = parent;
+        }
+    }
+}
+
 function normCompare(p: string, platform: NodeJS.Platform = process.platform): string {
-    const resolved = path.resolve(p).replace(/\\/g, "/").replace(/\/+$/, "");
+    const resolved = canonicalPath(p).replace(/\\/g, "/").replace(/\/+$/, "");
     return platform === "win32" || platform === "darwin" ? resolved.toLowerCase() : resolved;
+}
+
+/** True when `child` is `parent` or a folder/file inside it (links resolved). */
+export function isSameOrInside(child: string, parent: string, platform: NodeJS.Platform = process.platform): boolean {
+    const c = normCompare(child, platform);
+    const p = normCompare(parent, platform);
+    return c === p || c.startsWith(`${p}/`);
+}
+
+/** True when `a` and `b` name the same folder (links resolved, case per platform). */
+export function sameDir(a: string, b: string, platform: NodeJS.Platform = process.platform): boolean {
+    return normCompare(a, platform) === normCompare(b, platform);
+}
+
+/** True when `dir` holds a project marker such as .git or package.json. */
+export function hasProjectMarker(dir: string): boolean {
+    return LOCKING_MARKERS.some((m) => isFileOrDir(path.join(dir, m)));
+}
+
+function isFilesystemRoot(p: string): boolean {
+    const resolved = path.resolve(p);
+    return path.parse(resolved).root === resolved;
 }
 
 /**
@@ -78,24 +131,36 @@ export function rootUriToDir(
     return statDir(resolved) ? resolved : null;
 }
 
+/** Every valid local directory of an MCP `roots/list` response, in order. */
+export function pickRootsFromMcpRoots(
+    roots: ReadonlyArray<{ uri: string; name?: string }> | undefined,
+    statDir: (p: string) => boolean = isDirectory,
+): string[] {
+    const dirs: string[] = [];
+    for (const root of roots ?? []) {
+        const dir = rootUriToDir(root?.uri, statDir);
+        if (dir && !dirs.includes(dir)) dirs.push(dir);
+    }
+    return dirs;
+}
+
 /** Pick the first valid local directory from an MCP `roots/list` response. */
 export function pickRootFromMcpRoots(
     roots: ReadonlyArray<{ uri: string; name?: string }> | undefined,
     statDir: (p: string) => boolean = isDirectory,
 ): string | null {
-    if (!roots) return null;
-    for (const root of roots) {
-        const dir = rootUriToDir(root?.uri, statDir);
-        if (dir) return dir;
-    }
-    return null;
+    return pickRootsFromMcpRoots(roots, statDir)[0] ?? null;
 }
 
 /**
- * True when `dir` is an MCP host's own config/system folder rather than a user
- * project (e.g. `~/.gemini/config/plugins/nreki`, `~`, `_npx`, `System32`).
- * When launched there without `NREKI_PROJECT_ROOT`, NREKI waits for MCP `roots`
- * or `project_root` instead of creating `.nreki.db` inside the config folder.
+ * True when `dir` is never a user project: the home folder, a folder above it
+ * (`/`, `/Users`, `C:\Users`) or any drive root, a hidden folder in home
+ * (`~/.gemini/config/plugins/nreki`, `~/.claude`, `~/.ssh`, `~/.aws`…), npx's
+ * cache (`_npx`) or a system folder (`C:\Windows`, `Program Files`, `/usr`…).
+ * Started there without `NREKI_PROJECT_ROOT`, NREKI waits for MCP `roots` or
+ * `project_root` instead of creating `.nreki.db` (and watching every file)
+ * there, and a `project_root` naming such a folder is refused: the project
+ * folder bounds every read and write NREKI makes.
  */
 export function isNonProjectLaunchDir(
     dir: string,
@@ -104,13 +169,11 @@ export function isNonProjectLaunchDir(
 ): boolean {
     const d = normCompare(dir, platform);
     const h = normCompare(home, platform);
-    if (d === h) return true;
-    for (const dot of [".gemini", ".claude", ".cursor", ".codex", ".nreki"]) {
-        const prefix = `${h}/${dot}`;
-        if (d === prefix || d.startsWith(`${prefix}/`)) return true;
-    }
+    if (d === h || h.startsWith(`${d}/`) || isFilesystemRoot(dir)) return true;
+    if (d.startsWith(`${h}/`) && d.slice(h.length + 1).startsWith(".")) return true;
     if (/(?:^|\/)_npx(?:\/|$)/i.test(d)) return true;
-    if (platform === "win32" && /\/windows\/(?:system32|syswow64)(?:\/|$)/i.test(d)) return true;
+    if (platform === "win32" && /^[a-z]:\/(?:windows|program files(?: \(x86\))?|programdata)(?:\/|$)/i.test(d)) return true;
+    if (platform !== "win32" && /^\/(?:usr|bin|sbin|etc|dev|proc|sys|system|applications|library)(?:\/|$)/i.test(d)) return true;
     return false;
 }
 

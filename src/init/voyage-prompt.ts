@@ -79,6 +79,25 @@ export function isHumanInteractiveSession(
     return false;
 }
 
+/**
+ * What `nreki init` does by default here. A person's terminal installs at user
+ * scope unless --global/--project says otherwise; --prompt/--no-prompt only
+ * decide whether the Voyage box opens. (In 12.5.0 --no-prompt also turned the
+ * install into a project install.)
+ */
+export function initTerminalDefaults(
+    opts: { global?: boolean; prompt?: boolean },
+    env: NodeJS.ProcessEnv = process.env,
+    stdinIsTty: boolean = Boolean(process.stdin.isTTY),
+    stderrIsTty: boolean = Boolean(process.stderr.isTTY),
+): { global: boolean | undefined; showVoyageBox: boolean } {
+    const person = isHumanInteractiveSession(env, stdinIsTty, stderrIsTty);
+    return {
+        global: opts.global ?? (person ? true : undefined),
+        showVoyageBox: isHumanInteractiveSession(env, stdinIsTty, stderrIsTty, opts.prompt),
+    };
+}
+
 function defaultLocale(): string {
     return process.env.LC_ALL || process.env.LANG || Intl.DateTimeFormat().resolvedOptions().locale || "en";
 }
